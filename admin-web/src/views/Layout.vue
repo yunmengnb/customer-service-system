@@ -1,0 +1,112 @@
+<!-- 忆梦云团队开发 - 管理员布局 -->
+<script setup>
+import { ref, computed } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
+
+const router = useRouter()
+const route = useRoute()
+const sidebarOpen = ref(false)
+
+const adminInfo = computed(() => {
+  try { return JSON.parse(localStorage.getItem('admin_info') || '{}') } catch { return {} }
+})
+
+const navItems = [
+  { path: '/dashboard', icon: '📊', label: '仪表盘' },
+  { path: '/tenants', icon: '🏢', label: '租户管理' },
+]
+
+function navClick(path) {
+  router.push(path)
+  sidebarOpen.value = false
+}
+
+function logout() {
+  localStorage.removeItem('admin_token')
+  localStorage.removeItem('admin_info')
+  router.replace('/login')
+}
+
+function initials(name) {
+  if (!name) return 'A'
+  return name.slice(0, 1).toUpperCase()
+}
+</script>
+
+<template>
+  <div class="admin-app">
+    <!-- 移动端遮罩 -->
+    <div
+      v-if="sidebarOpen"
+      style="position:fixed;inset:0;background:rgba(15,23,42,.4);z-index:40;"
+      @click="sidebarOpen = false"
+    ></div>
+
+    <!-- 侧边栏 -->
+    <aside class="admin-sidebar" :class="{ open: sidebarOpen }">
+      <div class="admin-sidebar-brand">
+        <div class="logo-row">
+          <div class="logo-icon">Y</div>
+          <div>
+            <h1>忆梦云客服</h1>
+            <div class="sub">平台管理</div>
+          </div>
+        </div>
+      </div>
+
+      <nav class="admin-sidebar-nav">
+        <div class="nav-group-title">主菜单</div>
+        <div
+          v-for="item in navItems"
+          :key="item.path"
+          class="nav-item"
+          :class="{ active: route.path.startsWith(item.path) }"
+          @click="navClick(item.path)"
+        >
+          <span class="icon">{{ item.icon }}</span>
+          <span class="nav-text">{{ item.label }}</span>
+        </div>
+      </nav>
+
+      <div class="admin-sidebar-footer">
+        <div class="avatar">{{ initials(adminInfo.username || 'A') }}</div>
+        <div class="who">
+          <div class="name">{{ adminInfo.username || 'admin' }}</div>
+          <div class="role">{{ adminInfo.role === 'super' ? '超级管理员' : '运营管理员' }}</div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 主内容 -->
+    <div class="admin-main">
+      <header class="admin-header">
+        <button class="menu-btn" @click="sidebarOpen = !sidebarOpen" aria-label="菜单">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+          </svg>
+        </button>
+        <div class="page-title">
+          <span v-if="route.path.startsWith('/dashboard')">仪表盘</span>
+          <span v-else-if="route.path.startsWith('/tenants')">租户管理</span>
+        </div>
+
+        <div class="header-right">
+          <div class="header-action" title="通知">
+            🔔
+            <span class="badge"></span>
+          </div>
+          <div class="user-badge" @click="logout" title="点击退出">
+            <div class="avatar">{{ initials(adminInfo.username || 'A') }}</div>
+            <span class="name">{{ adminInfo.username || 'admin' }}</span>
+          </div>
+        </div>
+      </header>
+
+      <main class="admin-content">
+        <router-view v-slot="{ Component }">
+          <component :is="Component" />
+        </router-view>
+      </main>
+    </div>
+  </div>
+</template>
