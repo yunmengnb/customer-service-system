@@ -1,6 +1,6 @@
 // 忆梦云团队开发
 const PlatformAdmin = require('../models/PlatformAdmin');
-const { ok, error, comparePassword, signToken, getClientIp } = require('../utils');
+const { ok, error, hashPassword, comparePassword, signToken } = require('../utils');
 
 class AdminAuthController {
   // POST /api/admin/auth/login
@@ -49,6 +49,40 @@ class AdminAuthController {
     });
   }
   
+  // PATCH /api/admin/auth/profile
+  async updateProfile(req, res) {
+    const admin = await PlatformAdmin.findById(req.admin.id);
+    if (!admin || admin.status !== 'active') return error(res, '账号不存在或已禁用', 404);
+
+    const { username, email, avatarUrl, currentPassword, newPassword } = req.body || {};
+    const nextUsername = String(username || '').trim();
+    const nextEmail = String(email || '').trim().toLowerCase();
+    if (nextUsername.length < 3 || nextUsername.length > 50) return error(res, '管理员账号须为 3-50 位');
+    if (!/^\S+@\S+\.\S+$/.test(nextEmail)) return error(res, '邮箱格式不正确');
+
+    const duplicate = await PlatformAdmin.findOne({
+      _id: { $ne: admin._id },
+      $or: [{ username: nextUsername }, { email: nextEmail }],
+    });
+    if (duplicate) return error(res, duplicate.username === nextUsername ? '管理员账号已存在' : '邮箱已被使用');
+
+    if (newPassword) {
+      if (String(newPassword).length < 6 || String(newPassword).length > 72) return error(res, '新密码须为 6-72 位');
+      if (!currentPassword || !comparePassword(String(currentPassword), admin.password)) return error(res, '当前密码不正确', 4002, 400);
+      admin.password = hashPassword(String(newPassword));
+    }
+
+    admin.username = nextUsername;
+    admin.email = nextEmail;
+    admin.avatarUrl = String(avatarUrl || '').trim();
+    await admin.save();
+
+    const token = signToken({
+      type: 'admin', id: admin._id.toString(), username: admin.username, role: admin.role,
+    });
+    return ok(res, { token, admin: admin.toJSON() }, '资料已更新');
+  }
+
   // POST /api/admin/auth/logout
   async logout(req, res) {
     // 无状态 JWT，前端自行清除 token 即可

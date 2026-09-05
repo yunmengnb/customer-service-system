@@ -2,6 +2,12 @@
 const mongoose = require('mongoose');
 
 const CustomerSchema = new mongoose.Schema({
+  accountId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'CustomerAccount',
+    index: true,
+    default: null,
+  },
   tenantId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Tenant',
@@ -63,13 +69,25 @@ const CustomerSchema = new mongoose.Schema({
     enum: ['active', 'disabled'],
     default: 'active',
   },
+  messageReceivingDisabled: {
+    type: Boolean,
+    default: false,
+  },
+  blocked: {
+    type: Boolean,
+    default: false,
+  },
 }, {
   timestamps: true,
   versionKey: false,
 });
 
-// 同一 channel 内 phone 唯一
+// Customer 保留为渠道绑定实体，确保历史会话和消息中的 Customer 引用继续有效。
 CustomerSchema.index({ channelId: 1, phone: 1 }, { unique: true });
+CustomerSchema.index(
+  { accountId: 1, channelId: 1 },
+  { unique: true, partialFilterExpression: { accountId: { $type: 'objectId' } } },
+);
 
 CustomerSchema.methods.toJSON = function() {
   const obj = this.toObject();

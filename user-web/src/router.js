@@ -49,7 +49,10 @@ const routes = [
       { path: '', redirect: `${desktopPrefix}/messages` },
       { path: 'messages', component: () => import('./views/desktop/Messages.vue') },
       { path: 'channels', component: () => import('./views/desktop/Channels.vue') },
+      { path: 'announcements', component: () => import('./views/desktop/Announcements.vue') },
+      { path: 'announcements/:id', component: () => import('./views/AnnouncementDetail.vue') },
       { path: 'employees', component: () => import('./views/desktop/Agents.vue'), meta: { adminOnly: true } },
+      { path: 'profile', component: () => import('./views/desktop/Profile.vue') },
     ],
   },
   { path: `${desktopPrefix}/messages/:id`, component: () => import('./views/desktop/ChatRoom.vue'), meta: { device: 'desktop', standalone: true } },
@@ -63,14 +66,18 @@ const routes = [
       { path: '', redirect: `${mobilePrefix}/messages` },
       { path: 'messages', component: () => import('./views/mobile/Messages.vue') },
       { path: 'channels', component: () => import('./views/mobile/Channels.vue') },
+      { path: 'announcements', component: () => import('./views/mobile/Announcements.vue') },
+      { path: 'announcements/:id', component: () => import('./views/AnnouncementDetail.vue') },
+      { path: 'profile', component: () => import('./views/mobile/Profile.vue') },
       { path: 'employees', component: () => import('./views/mobile/Agents.vue'), meta: { adminOnly: true } },
     ],
   },
   { path: `${mobilePrefix}/messages/:id`, component: () => import('./views/mobile/ChatRoom.vue'), meta: { device: 'mobile', standalone: true } },
   { path: `${mobilePrefix}/channels/:id`, component: () => import('./views/mobile/ChannelDetail.vue'), meta: { device: 'mobile', standalone: true } },
+  { path: `${mobilePrefix}/profile/edit`, component: () => import('./views/mobile/ProfileEdit.vue'), meta: { device: 'mobile', standalone: true } },
 
   // 原 URL 保持可访问，并按当前设备跳转到新的独立页面文件。
-  ...['/messages', '/messages/:id', '/channels', '/channels/:id', '/employees'].map((path) => ({
+  ...['/messages', '/messages/:id', '/channels', '/channels/:id', '/announcements', '/announcements/:id', '/employees', '/profile'].map((path) => ({
     path,
     redirect: (to) => ({
       path: mapPathToDevice(to.path),
@@ -88,7 +95,7 @@ const router = createRouter({ history: createWebHistory(), routes })
 
 router.beforeEach((to) => {
   const isPublic = publicPaths.has(to.path)
-  const token = localStorage.getItem('tenant_token')
+  const token = sessionStorage.getItem('tenant_token') || localStorage.getItem('tenant_token')
   if (!isPublic && !token) return { path: '/login', query: { redirect: to.fullPath } }
   if (isPublic) return true
 

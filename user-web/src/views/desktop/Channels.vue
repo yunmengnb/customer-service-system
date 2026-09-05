@@ -1,6 +1,6 @@
 <!-- 忆梦云团队开发 - 桌面端渠道列表独立视图 -->
 <script setup>
-import { computed, ref, onMounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import api from '../../api'
 import ConfirmDialog from '../../components/ConfirmDialog.vue'
 import ChannelDetail from './ChannelDetail.vue'
@@ -30,9 +30,10 @@ async function createChannel() {
 }
 
 function copyLink(link) {
-  // 用当前 host，但把端口从 5175 换成 5176（client-web）
   const host = window.location.hostname
-  const url = `${window.location.protocol}//${host}:5176${link}`
+  const url = /^https?:\/\//i.test(link)
+    ? link
+    : `${window.location.protocol}//${host}:5176${link}`
 
   const doCopy = (text) => {
     // Clipboard API（HTTPS / localhost）
@@ -84,7 +85,28 @@ async function runConfirmedAction() {
   confirmAction.value = null
 }
 
-onMounted(load)
+let previousBodyOverflow = ''
+watch(configuringId, (channelId, previousChannelId) => {
+  if (channelId && !previousChannelId) {
+    previousBodyOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+  } else if (!channelId && previousChannelId) {
+    document.body.style.overflow = previousBodyOverflow
+  }
+})
+
+function closeConfigOnEscape(event) {
+  if (event.key === 'Escape' && configuringId.value) configuringId.value = null
+}
+
+onMounted(() => {
+  load()
+  window.addEventListener('keydown', closeConfigOnEscape)
+})
+onUnmounted(() => {
+  window.removeEventListener('keydown', closeConfigOnEscape)
+  document.body.style.overflow = previousBodyOverflow
+})
 </script>
 
 <template>
@@ -99,8 +121,7 @@ onMounted(load)
         <tr><th>名称</th><th>品牌</th><th>状态</th><th>客服链接</th><th>创建时间</th><th>操作</th></tr>
       </thead>
       <tbody>
-        <template v-for="ch in channels" :key="ch._id">
-          <tr>
+        <tr v-for="ch in channels" :key="ch._id">
             <td>{{ ch.name }}</td>
             <td>{{ ch.brandName || '-' }}</td>
             <td>
@@ -109,24 +130,35 @@ onMounted(load)
               </span>
             </td>
             <td style="max-width:320px;">
-              <code style="font-size:12px;background:#f3f4f6;padding:2px 6px;border-radius:4px;">/c/{{ ch.publicToken?.slice(0, 12) }}...</code>
+              <code style="font-size:12px;background:#f3f4f6;padding:2px 6px;border-radius:4px;overflow-wrap:anywhere;">{{ ch.link }}</code>
             </td>
             <td>{{ new Date(ch.createdAt).toLocaleDateString() }}</td>
             <td>
-              <button class="action-btn" @click="configuringId = configuringId === ch._id ? null : ch._id">{{ configuringId === ch._id ? '收起' : '配置' }}</button>
+              <button class="action-btn" @click="configuringId = ch._id">配置</button>
               <button class="action-btn" @click="copyLink(ch.link)">复制链接</button>
               <button v-if="isAdmin" class="action-btn" @click="toggleStatus(ch)">切{{ ch.status === 'online' ? '离线' : '在线' }}</button>
               <button v-if="isAdmin" class="action-btn" @click="confirmAction = { type: 'rotate', channel: ch }">重置</button>
               <button v-if="isAdmin" class="action-btn danger" @click="confirmAction = { type: 'remove', channel: ch }">删除</button>
             </td>
           </tr>
-          <tr v-if="configuringId === ch._id" class="config-row">
-            <td colspan="6"><ChannelDetail embedded :channel-id="ch._id" @close="configuringId = null" @saved="load" /></td>
-          </tr>
-        </template>
         <tr v-if="channels.length === 0"><td colspan="6" style="text-align:center;color:#9ca3af;padding:40px;">暂无渠道</td></tr>
       </tbody>
     </table>
+
+    <Teleport to="body">
+      <div
+        v-if="configuringId"
+        class="channel-config-overlay"
+        role="dialog"
+        aria-modal="true"
+        aria-label="授权渠道配置"
+        @click.self="configuringId = null"
+      >
+        <div class="channel-config-dialog">
+          <ChannelDetail embedded :channel-id="configuringId" @close="configuringId = null" @saved="load" />
+        </div>
+      </div>
+    </Teleport>
 
     <!-- 新建弹窗 -->
     <div v-if="showCreate" class="modal-overlay" @click.self="showCreate = false">
@@ -166,9 +198,32 @@ onMounted(load)
 </template>
 
 <style scoped>
-/* 桌面端表格已在全局 style.css 里定义，这里只补内嵌配置与手机端卡片化 */
-.config-row > td { padding: 12px; background: #f8fafc; }
-.config-row:hover > td { background: #f8fafc; }
+/* 桌面端配置在独立遮罩中展示，内容区域保持可滚动。 */
+.channel-config-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: rgba(15, 23, 42, .48);
+  backdrop-filter: blur(6px);
+}
+.channel-config-dialog {
+  width: min(1120px, calc(100vw - 64px));
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 24px 80px rgba(15, 23, 42, .24);
+}
+.channel-config-dialog :deep(.detail-page.embedded) {
+  border: 0;
+  border-radius: 0;
+  background: #fff;
+}
 @media (max-width: 768px) {
   .page-content { padding: 12px; }
   .page-title { margin-bottom: 14px; font-size: 16px; }

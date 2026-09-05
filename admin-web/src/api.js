@@ -1,3 +1,4 @@
+// 忆梦云团队开发
 import axios from 'axios'
 const api = axios.create({ baseURL: '/api', timeout: 15000 })
 
@@ -6,6 +7,10 @@ api.interceptors.request.use(config => {
   if (token) config.headers.Authorization = `Bearer ${token}`
   return config
 })
+api.upload = function(url, formData) {
+  return api.post(url, formData, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 30000 })
+}
+
 api.interceptors.response.use(
   res => res.data,
   err => {

@@ -9,8 +9,11 @@ const path = require('path');
 
 const config = require('./src/config');
 const connectDB = require('./src/config/db');
+const { connectRedis, getRedis } = require('./src/config/redis');
 const { requestId } = require('./src/middleware/auth');
 const rateLimit = require('express-rate-limit');
+const { RedisStore } = require('rate-limit-redis');
+const mongoose = require('mongoose');
 const fs = require('fs');
 
 // 路由
@@ -24,8 +27,9 @@ const setupSocketIO = require('./src/sockets');
 const ChatController = require('./src/controllers/ChatController');
 
 async function start() {
-  // 连接数据库
+  // 连接数据库；Redis 为可选依赖，失败时自动降级
   await connectDB();
+  await connectRedis();
   
   const app = express();
   const server = http.createServer(app);
@@ -39,7 +43,7 @@ async function start() {
     transports: ['websocket', 'polling'],
   });
   
-  setupSocketIO(io);
+  await setupSocketIO(io);
   ChatController.setIO(io);
   
   // 中间件
@@ -52,11 +56,13 @@ async function start() {
   app.use(requestId);
   
   // ============ 限流（登录接口）============
+  const redis = getRedis();
   const loginLimiter = rateLimit({
     windowMs: 60 * 1000,
     max: 20,
     standardHeaders: true,
     legacyHeaders: false,
+    store: redis ? new RedisStore({ sendCommand: (...args) => redis.sendCommand(args), prefix: 'rate-limit:auth:' }) : undefined,
     message: { code: 4290, message: '尝试过于频繁，请稍后再试' },
   });
 
@@ -66,21 +72,37 @@ async function start() {
   app.use('/uploads', express.static(UPLOAD_DIR));
   
   // 健康检查
-  app.get('/api/health', (req, res) => {
-    res.json({ ok: true, env: config.nodeEnv });
+  app.get('/api/health', async (req, res) => {
+    const redisClient = getRedis();
+    let redisStatus = config.redis.url ? 'down' : 'disabled';
+    if (redisClient) {
+      try {
+        redisStatus = await redisClient.ping() === 'PONG' ? 'up' : 'down';
+      } catch (_) {
+        redisStatus = 'down';
+      }
+    }
+    const mongoStatus = mongoose.connection.readyState === 1 ? 'up' : 'down';
+    const ok = mongoStatus === 'up';
+    res.status(ok ? 200 : 503).json({
+      ok,
+      env: config.nodeEnv,
+      services: { mongo: mongoStatus, redis: redisStatus },
+      degraded: redisStatus === 'down',
+    });
   });
-  
-  // 路由（登录限流直接挂在 auth/login 路由内部）
-  app.use('/api/admin', adminRoutes);
-  app.use('/api/tenant', tenantRoutes);
-  app.use('/api/client', clientRoutes);
-  app.use('/api/upload', uploadRoutes);
 
-  // 限流专用单路由：挂载在对应登录路由前
+  // 分布式认证限流必须在业务路由之前挂载
   app.use('/api/admin/auth/login', loginLimiter);
   app.use('/api/tenant/auth/login', loginLimiter);
   app.use('/api/tenant/auth/register', loginLimiter);
   app.use('/api/client/channels/:token/auth', loginLimiter);
+
+  // 路由
+  app.use('/api/admin', adminRoutes);
+  app.use('/api/tenant', tenantRoutes);
+  app.use('/api/client', clientRoutes);
+  app.use('/api/upload', uploadRoutes);
   
   // 404
   app.use((req, res) => {

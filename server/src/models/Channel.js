@@ -38,6 +38,15 @@ const ChannelSchema = new mongoose.Schema({
     default: '您好，欢迎咨询，请问有什么可以帮助您？',
     maxlength: 500,
   },
+  welcomeImageUrl: {
+    type: String,
+    default: '',
+  },
+  welcomeImageName: {
+    type: String,
+    default: '',
+    maxlength: 255,
+  },
   offlineMessage: {
     type: String,
     default: '当前客服暂不在线，请稍后再试。',

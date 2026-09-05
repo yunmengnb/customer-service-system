@@ -2,11 +2,14 @@
 const Tenant = require('../models/Tenant');
 const TenantUser = require('../models/TenantUser');
 const { ok, error, hashPassword, comparePassword, signToken, getClientIp } = require('../utils');
+const { getSystemSettings } = require('../utils/systemSettings');
 
 class TenantAuthController {
   // POST /api/tenant/auth/register
   async register(req, res) {
     const { name, username, password, email } = req.body;
+    const settings = await getSystemSettings();
+    if (!settings.registerEnabled) return error(res, '系统暂未开放注册', 4034, 403);
     
     // 检查用户名
     if (await Tenant.findOne({ username })) {
@@ -42,6 +45,8 @@ class TenantAuthController {
   // POST /api/tenant/auth/login
   async login(req, res) {
     const { username, password } = req.body;
+    const settings = await getSystemSettings();
+    if (!settings.loginEnabled) return error(res, '系统暂时关闭登录', 4034, 403);
     
     // 先尝试用 Tenant 主账号登录
     const tenant = await Tenant.findOne({ username });
@@ -138,6 +143,39 @@ class TenantAuthController {
   // POST /api/tenant/auth/logout
   async logout(req, res) {
     return ok(res, null, '已退出');
+  }
+
+  // PATCH /api/tenant/auth/profile
+  async updateProfile(req, res) {
+    const user = await TenantUser.findById(req.user.id);
+    if (!user) return error(res, '账号不存在', 404);
+
+    const { displayName, avatarUrl } = req.body || {};
+
+    if (displayName !== undefined) {
+      const name = String(displayName).trim();
+      if (!name) return error(res, '昵称不能为空');
+      if (name.length > 50) return error(res, '昵称最多 50 字');
+      user.displayName = name;
+    }
+
+    if (avatarUrl !== undefined) {
+      user.avatarUrl = String(avatarUrl).trim();
+    }
+
+    await user.save();
+
+    // 更新本地存储中的 user 信息
+    const token = signToken({
+      type: 'tenant_user',
+      id: user._id.toString(),
+      tenantId: user.tenantId.toString(),
+      username: user.username,
+      displayName: user.displayName,
+      role: user.role,
+    });
+
+    return ok(res, { token, user: user.toJSON() }, '资料已更新');
   }
 }
 

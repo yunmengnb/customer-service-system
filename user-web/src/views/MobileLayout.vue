@@ -16,16 +16,12 @@ const tabs = computed(() => [
   ...(['owner', 'admin'].includes(user?.role)
     ? [{ path: '/m/employees', icon: '👥', label: '员工', badge: 0 }]
     : []),
-  { path: '/me', icon: '👤', label: '我的', badge: 0 },
+  { path: '/m/profile', icon: '👤', label: '我的', badge: 0 },
 ])
 
-const current = computed(() => tabs.value.find(t => route.path === t.path) || tabs.value[0])
+const current = computed(() => tabs.value.find(t => route.path === t.path || route.path.startsWith(`${t.path}/`)) || tabs.value[0])
 
 function go(tab) {
-  if (tab.path === '/me') {
-    showLogoutConfirm.value = true
-    return
-  }
   if (route.path !== tab.path) {
     router.push(tab.path)
   }
@@ -47,7 +43,7 @@ function activeIcon(tab) {
 </script>
 
 <template>
-  <div class="mob-app">
+  <div class="mob-app" :class="{ 'message-list-page': route.path === '/m/messages' }">
     <!-- 顶部状态栏 -->
     <header class="mob-header">
       <div class="mob-header-title">{{ current.label }}</div>
@@ -116,6 +112,18 @@ function activeIcon(tab) {
 .mob-content {
   flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
   padding-bottom: calc(60px + env(safe-area-inset-bottom, 0));
+}
+.message-list-page {
+  display: block;
+  height: 100vh;
+  height: 100dvh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: calc(60px + env(safe-area-inset-bottom, 0));
+}
+.message-list-page .mob-content {
+  overflow: visible;
+  padding-bottom: 0;
 }
 
 /* 底部 Tab */

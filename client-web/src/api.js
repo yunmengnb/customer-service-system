@@ -1,3 +1,4 @@
+// 忆梦云团队开发
 import axios from 'axios'
 import { io } from 'socket.io-client'
 
@@ -28,9 +29,14 @@ api.interceptors.response.use(
 
 // Socket.IO 单例
 let socket = null
+let socketToken = null
 function getSocket(token) {
-  if (socket?.connected) return socket
+  if (socket && socketToken === token) {
+    if (!socket.connected) socket.connect()
+    return socket
+  }
   if (socket) socket.disconnect()
+  socketToken = token
   socket = io({
     auth: { token, type: 'customer' },
     transports: ['websocket', 'polling'],

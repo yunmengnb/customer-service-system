@@ -4,7 +4,37 @@ const KeywordReply = require('../models/KeywordReply');
 const QuickReply = require('../models/QuickReply');
 const Tenant = require('../models/Tenant');
 const TenantUser = require('../models/TenantUser');
+const config = require('../config');
+const cache = require('../utils/cache');
 const { ok, error, generateToken } = require('../utils');
+const { getSystemSettings, buildCustomerServiceLink } = require('../utils/systemSettings');
+
+function invalidateChannelConfig(...tokens) {
+  return cache.remove(...tokens.map(token => token && `config:channel:token:${token}`));
+}
+
+function keywordRuntimeCacheKey(tenantId, channelId) {
+  return `replies:keyword:runtime:${tenantId}:${channelId}`;
+}
+
+function keywordListCacheKey(tenantId, channelId) {
+  return `replies:keyword:list:${tenantId}:${channelId}`;
+}
+
+function quickReplyListCacheKey(tenantId, channelId) {
+  return `replies:quick:list:${tenantId}:${channelId}`;
+}
+
+function invalidateKeywordReplies(tenantId, channelId) {
+  return cache.remove(
+    keywordRuntimeCacheKey(tenantId, channelId),
+    keywordListCacheKey(tenantId, channelId),
+  );
+}
+
+function invalidateQuickReplies(tenantId, channelId) {
+  return cache.remove(quickReplyListCacheKey(tenantId, channelId));
+}
 
 function channelScope(req, id) {
   const where = { _id: id, tenantId: req.tenantId };
@@ -17,11 +47,13 @@ class ChannelController {
   async list(req, res) {
     const where = { tenantId: req.tenantId };
     if (req.user.role === 'agent') where.agentIds = req.user.id;
-    const channels = await Channel.find(where).sort({ createdAt: -1 });
+    const [channels, settings] = await Promise.all([
+      Channel.find(where).sort({ createdAt: -1 }),
+      getSystemSettings(),
+    ]);
     return ok(res, channels.map(c => {
       const obj = c.toJSON();
-      // 给链接
-      obj.link = `/c/${c.publicToken}`;
+      obj.link = buildCustomerServiceLink(settings, c.publicToken);
       return obj;
     }));
   }
@@ -59,7 +91,8 @@ class ChannelController {
     const channel = await Channel.findOne(channelScope(req, req.params.id));
     if (!channel) return error(res, '渠道不存在或无权访问', 404);
     const obj = channel.toJSON();
-    obj.link = `/c/${channel.publicToken}`;
+    const settings = await getSystemSettings();
+    obj.link = buildCustomerServiceLink(settings, channel.publicToken);
     const employees = await TenantUser.find({ _id: { $in: channel.agentIds }, tenantId: req.tenantId });
     obj.employees = employees.map(employee => ({
       id: employee._id,
@@ -75,12 +108,13 @@ class ChannelController {
     if (!channel) return error(res, '渠道不存在或无权访问', 404);
     
     const allowed = req.user.role === 'agent'
-      ? ['brandName', 'brandColor', 'avatarUrl', 'welcomeMessage', 'offlineMessage']
-      : ['name', 'brandName', 'brandColor', 'avatarUrl', 'welcomeMessage', 'offlineMessage', 'assignmentMode', 'status'];
+      ? ['brandName', 'brandColor', 'avatarUrl', 'welcomeMessage', 'welcomeImageUrl', 'welcomeImageName', 'offlineMessage']
+      : ['name', 'brandName', 'brandColor', 'avatarUrl', 'welcomeMessage', 'welcomeImageUrl', 'welcomeImageName', 'offlineMessage', 'assignmentMode', 'status'];
     for (const k of allowed) {
       if (req.body[k] !== undefined) channel[k] = req.body[k];
     }
     await channel.save();
+    await invalidateChannelConfig(channel.publicToken);
     return ok(res, channel.toJSON());
   }
   
@@ -89,11 +123,14 @@ class ChannelController {
     const channel = await Channel.findOne({ _id: req.params.id, tenantId: req.tenantId });
     if (!channel) return error(res, '渠道不存在', 404);
     
+    const oldToken = channel.publicToken;
     channel.publicToken = generateToken(24);
     await channel.save();
+    await invalidateChannelConfig(oldToken, channel.publicToken);
     
     const obj = channel.toJSON();
-    obj.link = `/c/${channel.publicToken}`;
+    const settings = await getSystemSettings();
+    obj.link = buildCustomerServiceLink(settings, channel.publicToken);
     return ok(res, obj);
   }
   
@@ -103,6 +140,11 @@ class ChannelController {
     if (!channel) return error(res, '渠道不存在', 404);
     
     await Channel.deleteOne({ _id: channel._id });
+    await Promise.all([
+      invalidateChannelConfig(channel.publicToken),
+      invalidateKeywordReplies(req.tenantId, channel._id),
+      invalidateQuickReplies(req.tenantId, channel._id),
+    ]);
     // 清理关联数据
     await KeywordReply.deleteMany({ channelId: channel._id });
     await QuickReply.deleteMany({ channelId: channel._id });
@@ -138,7 +180,14 @@ class ChannelController {
     const channel = await Channel.findOne(channelScope(req, channelId));
     if (!channel) return error(res, '渠道不存在或无权访问', 404);
     
-    const items = await KeywordReply.find({ channelId }).sort({ priority: -1, createdAt: -1 });
+    const key = keywordListCacheKey(req.tenantId, channelId);
+    let items = await cache.getJson(key);
+    if (!items) {
+      items = await KeywordReply.find({ tenantId: req.tenantId, channelId })
+        .sort({ priority: -1, createdAt: -1 })
+        .lean();
+      await cache.setJson(key, items, config.redis.cacheTtlSeconds);
+    }
     return ok(res, items);
   }
   
@@ -147,16 +196,22 @@ class ChannelController {
     const channel = await Channel.findOne(channelScope(req, channelId));
     if (!channel) return error(res, '渠道不存在或无权访问', 404);
     
-    const { keyword, matchType, replyContent, priority, status } = req.body;
+    const { keyword, matchType, replyContent, imageUrl, imageName, priority, status } = req.body;
+    if (!String(replyContent || '').trim() && !String(imageUrl || '').trim()) {
+      return error(res, '回复内容和图片至少填写一项');
+    }
     const item = await KeywordReply.create({
       keyword,
       matchType,
-      replyContent,
+      replyContent: String(replyContent || '').trim(),
+      imageUrl: String(imageUrl || '').trim(),
+      imageName: imageName || '',
       priority,
       status,
       tenantId: req.tenantId,
       channelId,
     });
+    await invalidateKeywordReplies(req.tenantId, channelId);
     return ok(res, item);
   }
   
@@ -166,13 +221,18 @@ class ChannelController {
     const item = await KeywordReply.findOne({ _id: req.params.krId, channelId: req.params.channelId, tenantId: req.tenantId });
     if (!item) return error(res, '配置不存在', 404);
     
-    const { keyword, matchType, replyContent, priority, status } = req.body;
-    if (keyword !== undefined) item.keyword = keyword;
+    const { keyword, matchType, replyContent, imageUrl, imageName, priority, status } = req.body;
+    if (keyword !== undefined && !String(keyword).trim()) return error(res, '关键词不能为空');
+    if (keyword !== undefined) item.keyword = String(keyword).trim();
     if (matchType !== undefined) item.matchType = matchType;
-    if (replyContent !== undefined) item.replyContent = replyContent;
+    if (replyContent !== undefined) item.replyContent = String(replyContent || '').trim();
+    if (imageUrl !== undefined) item.imageUrl = String(imageUrl || '').trim();
+    if (imageName !== undefined) item.imageName = imageName || '';
+    if (!item.replyContent && !item.imageUrl) return error(res, '回复内容和图片至少填写一项');
     if (priority !== undefined) item.priority = priority;
     if (status !== undefined) item.status = status;
     await item.save();
+    await invalidateKeywordReplies(req.tenantId, req.params.channelId);
     return ok(res, item);
   }
   
@@ -181,6 +241,7 @@ class ChannelController {
     if (!channel) return error(res, '渠道不存在或无权访问', 404);
     const result = await KeywordReply.deleteOne({ _id: req.params.krId, channelId: req.params.channelId, tenantId: req.tenantId });
     if (result.deletedCount === 0) return error(res, '配置不存在', 404);
+    await invalidateKeywordReplies(req.tenantId, req.params.channelId);
     return ok(res, null, '已删除');
   }
   
@@ -194,10 +255,15 @@ class ChannelController {
     if (!channel) return error(res, '渠道不存在或无权访问', 404);
 
     // 返回该渠道专属 + 租户通用（channelId=null）
-    const items = await QuickReply.find({
-      tenantId: req.tenantId,
-      $or: [{ channelId }, { channelId: null }],
-    }).sort({ sortOrder: 1, createdAt: -1 });
+    const key = quickReplyListCacheKey(req.tenantId, channelId);
+    let items = await cache.getJson(key);
+    if (!items) {
+      items = await QuickReply.find({
+        tenantId: req.tenantId,
+        $or: [{ channelId }, { channelId: null }],
+      }).sort({ sortOrder: 1, createdAt: -1 }).lean();
+      await cache.setJson(key, items, config.redis.cacheTtlSeconds);
+    }
     return ok(res, items);
   }
   
@@ -206,11 +272,22 @@ class ChannelController {
     const channel = await Channel.findOne(channelScope(req, channelId));
     if (!channel) return error(res, '渠道不存在或无权访问', 404);
     
+    const { title, content, imageUrl, imageName, sortOrder, status } = req.body;
+    if (!String(content || '').trim() && !String(imageUrl || '').trim()) {
+      return error(res, '回复内容和图片至少填写一项');
+    }
     const item = await QuickReply.create({
       tenantId: req.tenantId,
       channelId,
-      ...req.body,
+      title,
+      content: String(content || '').trim(),
+      imageUrl: String(imageUrl || '').trim(),
+      imageName: imageName || '',
+      sortOrder,
+      status,
+      createdBy: req.user.id,
     });
+    await invalidateQuickReplies(req.tenantId, channelId);
     return ok(res, item);
   }
   
@@ -220,12 +297,17 @@ class ChannelController {
     const item = await QuickReply.findOne({ _id: req.params.qrId, channelId: req.params.channelId, tenantId: req.tenantId });
     if (!item) return error(res, '配置不存在', 404);
     
-    const { title, content, sortOrder, status } = req.body;
+    const { title, content, imageUrl, imageName, sortOrder, status } = req.body;
+    if (title !== undefined && !String(title).trim()) return error(res, '标题不能为空');
     if (title !== undefined) item.title = title;
-    if (content !== undefined) item.content = content;
+    if (content !== undefined) item.content = String(content || '').trim();
+    if (imageUrl !== undefined) item.imageUrl = String(imageUrl || '').trim();
+    if (imageName !== undefined) item.imageName = imageName || '';
+    if (!item.content && !item.imageUrl) return error(res, '回复内容和图片至少填写一项');
     if (sortOrder !== undefined) item.sortOrder = sortOrder;
     if (status !== undefined) item.status = status;
     await item.save();
+    await invalidateQuickReplies(req.tenantId, req.params.channelId);
     return ok(res, item);
   }
   
@@ -234,6 +316,7 @@ class ChannelController {
     if (!channel) return error(res, '渠道不存在或无权访问', 404);
     const result = await QuickReply.deleteOne({ _id: req.params.qrId, channelId: req.params.channelId, tenantId: req.tenantId });
     if (result.deletedCount === 0) return error(res, '配置不存在', 404);
+    await invalidateQuickReplies(req.tenantId, req.params.channelId);
     return ok(res, null, '已删除');
   }
 }

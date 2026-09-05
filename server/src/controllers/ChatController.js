@@ -6,6 +6,9 @@ const Customer = require('../models/Customer');
 const TenantUser = require('../models/TenantUser');
 const Channel = require('../models/Channel');
 const mongoose = require('mongoose');
+const config = require('../config');
+const cache = require('../utils/cache');
+const { getSystemSettings } = require('../utils/systemSettings');
 const { ok, error, generateToken } = require('../utils');
 
 // 关联 socket.io（在 app.js 中注入）
@@ -109,6 +112,57 @@ class ChatController {
       }
       where.channelId = req.query.channelId;
     }
+
+    const keyword = String(req.query.keyword || '').trim().slice(0, 100);
+    let searchMessageMap = {};
+    if (keyword) {
+      const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const keywordRegex = new RegExp(escapedKeyword, 'i');
+      const [matchingCustomers, matchingChannels, matchingMessages] = await Promise.all([
+        Customer.find({
+          tenantId,
+          $or: [
+            { phone: keywordRegex },
+            { qq: keywordRegex },
+            { nickname: keywordRegex },
+          ],
+        }).distinct('_id'),
+        Channel.find({ tenantId, name: keywordRegex }).distinct('_id'),
+        Message.aggregate([
+          {
+            $match: {
+              tenantId: new mongoose.Types.ObjectId(tenantId),
+              deletedForAgentAt: null,
+              recalledAt: null,
+              $or: [
+                { content: keywordRegex },
+                { attachmentName: keywordRegex },
+              ],
+            },
+          },
+          { $sort: { createdAt: -1 } },
+          {
+            $group: {
+              _id: '$conversationId',
+              count: { $sum: 1 },
+              message: { $first: '$$ROOT' },
+            },
+          },
+        ]),
+      ]);
+
+      searchMessageMap = Object.fromEntries(
+        matchingMessages.map(item => [item._id.toString(), {
+          count: item.count,
+          message: item.message,
+        }]),
+      );
+      where.$or = [
+        { customerId: { $in: matchingCustomers } },
+        { channelId: { $in: matchingChannels } },
+        { _id: { $in: matchingMessages.map(item => item._id) } },
+      ];
+    }
     
     const sort = req.query.unread === '1' 
       ? { agentUnreadCount: -1, lastMessageAt: -1 }
@@ -141,6 +195,8 @@ class ChatController {
       const cust = customerMap[c.customerId.toString()];
       obj.customer = cust ? cust.toJSON() : null;
       obj.lastMessage = lastMsgMap[c._id.toString()] || null;
+      const searchMatch = searchMessageMap[c._id.toString()];
+      obj.searchMatch = searchMatch || null;
       return obj;
     });
     
@@ -225,6 +281,34 @@ class ChatController {
     return ok(res, updated.toJSON());
   }
   
+  // GET /api/tenant/conversations/:id/messages/search
+  async searchConversationMessages(req, res) {
+    const conv = await Conversation.findOne({ _id: req.params.id, tenantId: req.tenantId });
+    if (!conv) return error(res, '会话不存在', 404);
+    if (!await canAccessConversation(req, conv)) return error(res, '无权访问', 403);
+
+    const keyword = String(req.query.keyword || '').trim().slice(0, 100);
+    if (!keyword) return ok(res, { items: [], total: 0 });
+
+    const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const keywordRegex = new RegExp(escapedKeyword, 'i');
+    const query = {
+      conversationId: conv._id,
+      tenantId: req.tenantId,
+      deletedForAgentAt: null,
+      recalledAt: null,
+      $or: [
+        { content: keywordRegex },
+        { attachmentName: keywordRegex },
+      ],
+    };
+    const [items, total] = await Promise.all([
+      Message.find(query).sort({ createdAt: -1 }).limit(200).lean(),
+      Message.countDocuments(query),
+    ]);
+    return ok(res, { items, total });
+  }
+
   // GET /api/tenant/conversations/:id/messages
   async getMessages(req, res) {
     const conv = await Conversation.findOne({ _id: req.params.id, tenantId: req.tenantId });
@@ -232,7 +316,49 @@ class ChatController {
     if (!await canAccessConversation(req, conv)) return error(res, '无权访问', 403);
     
     const beforeId = req.query.before;
-    const limit = parseInt(req.query.limit) || 50;
+    const aroundId = req.query.around;
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+
+    if (aroundId) {
+      if (!mongoose.isValidObjectId(aroundId)) return error(res, '无效的消息定位参数', 4001, 400);
+      const target = await Message.findOne({
+        _id: aroundId,
+        conversationId: conv._id,
+        tenantId: req.tenantId,
+        deletedForAgentAt: null,
+      });
+      if (!target) return error(res, '消息不存在或已被清理', 404);
+
+      const half = Math.floor(limit / 2);
+      const [older, newer] = await Promise.all([
+        Message.find({
+          conversationId: conv._id,
+          tenantId: req.tenantId,
+          deletedForAgentAt: null,
+          _id: { $lt: target._id },
+        }).populate({ path: 'senderId', select: 'displayName avatarUrl' }).sort({ _id: -1 }).limit(half),
+        Message.find({
+          conversationId: conv._id,
+          tenantId: req.tenantId,
+          deletedForAgentAt: null,
+          _id: { $gt: target._id },
+        }).populate({ path: 'senderId', select: 'displayName avatarUrl' }).sort({ _id: 1 }).limit(half),
+      ]);
+      await target.populate({ path: 'senderId', select: 'displayName avatarUrl' });
+      const locatedMessages = [...older.reverse(), target, ...newer];
+      return ok(res, locatedMessages.map(message => {
+        const obj = message.toJSON();
+        if (message.senderType === 'agent' && message.senderId) {
+          obj.sender = {
+            id: message.senderId._id,
+            displayName: message.senderId.displayName,
+            avatarUrl: message.senderId.avatarUrl || '',
+          };
+          obj.senderId = message.senderId._id;
+        }
+        return obj;
+      }));
+    }
     
     let query = { conversationId: conv._id, tenantId: req.tenantId, deletedForAgentAt: null };
     if (beforeId) {
@@ -280,7 +406,7 @@ class ChatController {
     
     const agent = await TenantUser.findById(req.user.id);
     
-    const { content, clientMessageId, messageType, attachmentUrl, attachmentName } = req.body;
+    const { content, clientMessageId, messageType, attachmentUrl, attachmentName, thumbnailUrl } = req.body;
     const effectiveType = ['image', 'video', 'file'].includes(messageType) ? messageType : 'text';
     
     // text 类型必须有 content；附件类型 content 可选（显示用附件链接代替）
@@ -289,6 +415,14 @@ class ChatController {
     }
     if (['image', 'video', 'file'].includes(effectiveType) && !attachmentUrl) {
       return error(res, '附件 URL 不能为空');
+    }
+
+    const normalizedContent = String(content || '').trim().toLowerCase();
+    if (normalizedContent) {
+      const settings = await getSystemSettings();
+      if (settings.forbiddenWords.some(word => normalizedContent.includes(word.toLowerCase()))) {
+        return error(res, '识别到违禁词，禁止发送');
+      }
     }
     
     const msg = await Message.create({
@@ -301,6 +435,7 @@ class ChatController {
       content: (content || '').trim(),
       attachmentUrl: attachmentUrl || '',
       attachmentName: attachmentName || '',
+      thumbnailUrl: effectiveType === 'video' ? (thumbnailUrl || '') : '',
       clientMessageId: clientMessageId || undefined,
     });
     
@@ -339,6 +474,42 @@ class ChatController {
     return ok(res, messageData);
   }
 
+  // PATCH /api/tenant/conversations/:id/customer-settings
+  async updateCustomerSettings(req, res) {
+    const conv = await Conversation.findOne({ _id: req.params.id, tenantId: req.tenantId });
+    if (!conv) return error(res, '会话不存在', 4041, 404);
+    if (!await canAccessConversation(req, conv)) return error(res, '无权访问', 4031, 403);
+
+    const customer = await Customer.findOne({ _id: conv.customerId, tenantId: req.tenantId });
+    if (!customer) return error(res, '客户不存在', 4042, 404);
+
+    if (typeof req.body.messageReceivingDisabled === 'boolean') {
+      customer.messageReceivingDisabled = req.body.messageReceivingDisabled;
+    }
+    if (typeof req.body.blocked === 'boolean') customer.blocked = req.body.blocked;
+    await customer.save();
+
+    return ok(res, {
+      messageReceivingDisabled: customer.messageReceivingDisabled,
+      blocked: customer.blocked,
+    });
+  }
+
+  // DELETE /api/tenant/conversations/:id/messages
+  async clearAgentMessages(req, res) {
+    const conv = await Conversation.findOne({ _id: req.params.id, tenantId: req.tenantId });
+    if (!conv) return error(res, '会话不存在', 4041, 404);
+    if (!await canAccessConversation(req, conv)) return error(res, '无权访问', 4031, 403);
+
+    await Message.updateMany(
+      { conversationId: conv._id, tenantId: req.tenantId, deletedForAgentAt: null },
+      { $set: { deletedForAgentAt: new Date() } }
+    );
+    const summaries = await refreshConversationSummary(conv);
+    broadcastSideDelete(conv, 'agent', { conversationId: conv._id, clearAll: true, side: 'agent' }, summaries);
+    return ok(res, { conversationId: conv._id });
+  }
+
   // POST /api/tenant/conversations/:id/messages/:messageId/recall
   async recallMessage(req, res) {
     const conv = await Conversation.findOne({ _id: req.params.id, tenantId: req.tenantId });
@@ -366,6 +537,7 @@ class ChatController {
     message.content = '';
     message.attachmentUrl = '';
     message.attachmentName = '';
+    message.thumbnailUrl = '';
     await message.save();
 
     const messageData = { ...message.toJSON(), messageId: message._id };
@@ -453,7 +625,15 @@ class ChatController {
       status: { $in: ['waiting', 'active'] },
     }).sort({ lastMessageAt: -1 });
     
-    return ok(res, conv ? conv.toJSON() : null);
+    if (!conv) return ok(res, null);
+
+    const data = conv.toJSON();
+    if (conv.assignedAgentId) {
+      const agent = await TenantUser.findById(conv.assignedAgentId).select('_id displayName');
+      data.agent = agent ? { id: agent._id, name: agent.displayName } : null;
+    }
+
+    return ok(res, data);
   }
   
   // GET /api/client/conversation/messages
@@ -539,6 +719,7 @@ class ChatController {
     message.content = '';
     message.attachmentUrl = '';
     message.attachmentName = '';
+    message.thumbnailUrl = '';
     await message.save();
 
     const messageData = { ...message.toJSON(), messageId: message._id };
@@ -581,8 +762,19 @@ class ChatController {
   // POST /api/client/conversation/messages
   async customerSendMessage(req, res) {
     const { customer } = req;
-    const { content, clientMessageId, messageType, attachmentUrl, attachmentName } = req.body;
+    const { content, clientMessageId, messageType, attachmentUrl, attachmentName, thumbnailUrl } = req.body;
     
+    const currentCustomer = await Customer.findOne({
+      _id: customer.id,
+      tenantId: customer.tenantId,
+      channelId: customer.channelId,
+    }).select('messageReceivingDisabled blocked');
+    if (!currentCustomer) return error(res, '客户不存在', 4042, 404);
+    if (currentCustomer.blocked) return error(res, '消息发送失败', 4034, 403);
+    if (currentCustomer.messageReceivingDisabled) {
+      return error(res, '客服当前不接收您的消息', 4035, 403);
+    }
+
     const effectiveType = ['image', 'video', 'file'].includes(messageType) ? messageType : 'text';
     if (effectiveType === 'text' && (!content || !content.trim())) {
       return error(res, '消息内容不能为空');
@@ -625,6 +817,7 @@ class ChatController {
       content: (content || '').trim(),
       attachmentUrl: attachmentUrl || '',
       attachmentName: attachmentName || '',
+      thumbnailUrl: effectiveType === 'video' ? (thumbnailUrl || '') : '',
       clientMessageId: clientMessageId || undefined,
     });
     
@@ -635,11 +828,16 @@ class ChatController {
     // 关键词自动回复：仅匹配文本，同优先级时精确匹配优先
     let replyMsg = null;
     if (effectiveType === 'text') {
-      const keywordReplies = await KeywordReply.find({
-        tenantId: customer.tenantId,
-        channelId: customer.channelId,
-        status: 'active',
-      }).sort({ priority: -1, createdAt: 1 });
+      const key = `replies:keyword:runtime:${customer.tenantId}:${customer.channelId}`;
+      let keywordReplies = await cache.getJson(key);
+      if (!keywordReplies) {
+        keywordReplies = await KeywordReply.find({
+          tenantId: customer.tenantId,
+          channelId: customer.channelId,
+          status: 'active',
+        }).sort({ priority: -1, createdAt: 1 }).lean();
+        await cache.setJson(key, keywordReplies, config.redis.cacheTtlSeconds);
+      }
       keywordReplies.sort((a, b) => {
         if (b.priority !== a.priority) return b.priority - a.priority;
         if (a.matchType === b.matchType) return 0;
@@ -653,13 +851,16 @@ class ChatController {
           ? lowerContent === keyword
           : lowerContent.includes(keyword);
         if (matched) {
+          const imageUrl = String(kr.imageUrl || '').trim();
           replyMsg = await Message.create({
             tenantId: customer.tenantId,
             conversationId: conv._id,
             senderType: 'bot',
-            messageType: 'text',
+            messageType: imageUrl ? 'image' : 'text',
             autoReplyType: 'keyword',
-            content: kr.replyContent,
+            content: String(kr.replyContent || '').trim(),
+            attachmentUrl: imageUrl,
+            attachmentName: kr.imageName || '',
           });
           conv.lastMessageAt = replyMsg.createdAt;
           conv.customerUnreadCount += 1;

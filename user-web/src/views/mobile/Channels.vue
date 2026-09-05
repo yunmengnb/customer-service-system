@@ -1,18 +1,14 @@
 <!-- 忆梦云团队开发 - 手机端渠道列表独立视图 -->
 <script setup>
 import { computed, ref, onMounted } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 import api from '../../api'
 import ConfirmDialog from '../../components/ConfirmDialog.vue'
-import ChannelDetail from './ChannelDetail.vue'
 
-const route = useRoute()
 const router = useRouter()
-const routePrefix = '/m'
 const user = JSON.parse(sessionStorage.getItem('tenant_user') || localStorage.getItem('tenant_user') || 'null')
 const isAdmin = computed(() => ['owner', 'admin'].includes(user?.role))
 const channels = ref([])
-const configuringId = ref(null)
 const showCreate = ref(false)
 const createForm = ref({ name: '', brandName: '', welcomeMessage: '' })
 const confirmAction = ref(null)
@@ -35,9 +31,10 @@ async function createChannel() {
 }
 
 function copyLink(link) {
-  // 用当前 host，但把端口从 5175 换成 5176（client-web）
   const host = window.location.hostname
-  const url = `${window.location.protocol}//${host}:5176${link}`
+  const url = /^https?:\/\//i.test(link)
+    ? link
+    : `${window.location.protocol}//${host}:5176${link}`
 
   const doCopy = (text) => {
     // Clipboard API（HTTPS / localhost）
@@ -89,6 +86,10 @@ async function runConfirmedAction() {
   confirmAction.value = null
 }
 
+function openChannelConfig(channelId) {
+  router.push(`/m/channels/${channelId}`)
+}
+
 onMounted(load)
 </script>
 
@@ -113,19 +114,16 @@ onMounted(load)
             </span>
           </td>
           <td style="max-width:320px;">
-            <code style="font-size:12px;background:#f3f4f6;padding:2px 6px;border-radius:4px;">/c/{{ ch.publicToken?.slice(0, 12) }}...</code>
+            <code style="font-size:12px;background:#f3f4f6;padding:2px 6px;border-radius:4px;overflow-wrap:anywhere;">{{ ch.link }}</code>
           </td>
           <td>{{ new Date(ch.createdAt).toLocaleDateString() }}</td>
           <td>
-            <button class="action-btn" @click="configuringId = configuringId === ch._id ? null : ch._id">{{ configuringId === ch._id ? '收起' : '配置' }}</button>
+            <button class="action-btn" @click="openChannelConfig(ch._id)">配置</button>
             <button class="action-btn" @click="copyLink(ch.link)">复制链接</button>
             <button v-if="isAdmin" class="action-btn" @click="toggleStatus(ch)">切{{ ch.status === 'online' ? '离线' : '在线' }}</button>
             <button v-if="isAdmin" class="action-btn" @click="confirmAction = { type: 'rotate', channel: ch }">重置</button>
             <button v-if="isAdmin" class="action-btn danger" @click="confirmAction = { type: 'remove', channel: ch }">删除</button>
           </td>
-        </tr>
-        <tr v-if="configuringId" class="config-row">
-          <td colspan="6"><ChannelDetail embedded :channel-id="configuringId" @close="configuringId = null" @saved="load" /></td>
         </tr>
         <tr v-if="channels.length === 0"><td colspan="6" style="text-align:center;color:#9ca3af;padding:40px;">暂无渠道</td></tr>
       </tbody>
@@ -169,9 +167,6 @@ onMounted(load)
 </template>
 
 <style scoped>
-/* 桌面端表格已在全局 style.css 里定义，这里只补内嵌配置与手机端卡片化 */
-.config-row > td { padding: 10px; background: #f8fafc; }
-.config-row:hover > td { background: #f8fafc; }
 @media (max-width: 768px) {
   .page-content { padding: 12px; }
   .page-title { margin-bottom: 14px; font-size: 16px; }

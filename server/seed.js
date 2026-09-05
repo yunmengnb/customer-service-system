@@ -22,7 +22,7 @@ async function seed() {
       role: 'super',
       status: 'active',
     });
-    console.log(`[Seed] 创建默认管理员: ${config.defaults.admin.username} / ${config.defaults.admin.password}`);
+    console.log(`[Seed] 创建默认管理员: ${config.defaults.admin.username}`);
   } else {
     console.log(`[Seed] 管理员已存在: ${admin.username}`);
   }
@@ -37,7 +37,7 @@ async function seed() {
       email: `${config.defaults.tenant.username}@example.com`,
       status: 'active',
     });
-    console.log(`[Seed] 创建默认租户: ${config.defaults.tenant.username} / ${config.defaults.tenant.password}`);
+    console.log(`[Seed] 创建默认租户: ${config.defaults.tenant.username}`);
   } else {
     console.log(`[Seed] 租户已存在: ${tenant.username}`);
   }
@@ -59,7 +59,6 @@ async function seed() {
   }
   
   // ===== 默认渠道 =====
-  const Channel = require('./src/models/Channel');
   const defaultChannelName = '官方客服';
   let channel = await Channel.findOne({ tenantId: tenant._id, name: defaultChannelName });
   if (!channel) {
@@ -74,8 +73,9 @@ async function seed() {
       agentIds: [owner._id],
       createdBy: owner._id,
     });
+    const clientPublicUrl = (process.env.CLIENT_PUBLIC_URL || 'http://localhost:5176').replace(/\/$/, '');
     console.log(`[Seed] 创建默认渠道: ${channel.name}`);
-    console.log(`[Seed] 客服链接: http://localhost:5176/c/${channel.publicToken}`);
+    console.log(`[Seed] 客服链接: ${clientPublicUrl}/c/${channel.publicToken}`);
   } else {
     console.log(`[Seed] 默认渠道已存在: ${channel.name}`);
   }

@@ -46,11 +46,11 @@ bash <(curl -Ls https://raw.githubusercontent.com/yunmengnb/customer-service-sys
 9. 构建并启动全部容器。
 10. 等待后端健康检查并初始化管理员、示例租户和默认渠道。
 
-如需使用其他安装包地址：
+也可以在安装命令中显式指定 GitHub 安装包地址：
 
 ```bash
-KF_PACKAGE_URL=https://example.com/KF.tar.gz \
-bash <(curl -Ls https://raw.githubusercontent.com/yunmengnb/customer-service-system/initial-version/KF/install.sh)
+KF_PACKAGE_URL=https://raw.githubusercontent.com/yunmengnb/customer-service-system/initial-version/KF.tar.gz \
+bash <(curl -Ls https://raw.githubusercontent.com/yunmengnb/customer-service-system/initial-version/install.sh)
 ```
 
 ## 安装过程中的配置

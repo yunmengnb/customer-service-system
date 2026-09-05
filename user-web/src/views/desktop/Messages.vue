@@ -12,6 +12,13 @@ const conversations = ref([])
 const loading = ref(true)
 const filter = ref('all') // all / waiting / active / closed
 const search = ref('')
+const searching = ref(false)
+const searchDialog = ref(null)
+const searchResults = ref([])
+const searchResultsLoading = ref(false)
+const targetMessageId = ref(null)
+let searchTimer = null
+let requestSequence = 0
 let socket = null
 let notificationAudioContext = null
 
@@ -63,25 +70,34 @@ watch([loading, conversations], () => {
 const filteredConversations = computed(() => {
   let list = conversations.value
   if (filter.value !== 'all') list = list.filter(c => c.status === filter.value)
-  if (search.value.trim()) {
-    const s = search.value.trim()
-    list = list.filter(c =>
-      (c.customer?.phone && c.customer.phone.includes(s)) ||
-      (c.channel?.name && c.channel.name.includes(s))
-    )
-  }
   return list
 })
 
 const unreadCount = computed(() => conversations.value.reduce((a, c) => a + (c.agentUnreadCount || 0), 0))
 
 async function loadConversations() {
+  const sequence = ++requestSequence
+  const keyword = search.value.trim()
+  if (keyword) searching.value = true
   try {
-    const res = await api.get('/tenant/conversations')
-    if (res.code === 0) conversations.value = res.data.items
-  } catch (e) { console.error(e) }
-  loading.value = false
+    const res = await api.get('/tenant/conversations', {
+      params: { limit: 100, keyword: keyword || undefined },
+    })
+    if (sequence === requestSequence && res.code === 0) conversations.value = res.data.items
+  } catch (e) {
+    console.error(e)
+  } finally {
+    if (sequence === requestSequence) {
+      loading.value = false
+      searching.value = false
+    }
+  }
 }
+
+watch(search, () => {
+  clearTimeout(searchTimer)
+  searchTimer = setTimeout(loadConversations, 300)
+})
 
 function setupSocket() {
   const token = sessionStorage.getItem('tenant_token') || localStorage.getItem('tenant_token')
@@ -108,13 +124,58 @@ function handleNewMessage(message) {
   loadConversations()
 }
 
-function selectConv(id) { selectedId.value = id }
+function clearConversationUnread(id) {
+  const conversation = conversations.value.find(item => String(item._id) === String(id))
+  if (conversation) conversation.agentUnreadCount = 0
+}
+
+function selectConv(id) {
+  selectedId.value = id
+  targetMessageId.value = null
+  clearConversationUnread(id)
+}
+
+async function openSearchMatches(conversation) {
+  if (!search.value.trim() || !conversation.searchMatch) return selectConv(conversation._id)
+  searchDialog.value = conversation
+  searchResults.value = []
+  searchResultsLoading.value = true
+  try {
+    const res = await api.get(`/tenant/conversations/${conversation._id}/messages/search`, {
+      params: { keyword: search.value.trim() },
+    })
+    if (res.code === 0 && searchDialog.value?._id === conversation._id) {
+      searchResults.value = res.data.items || []
+    }
+  } catch (error) {
+    console.error(error)
+  } finally {
+    searchResultsLoading.value = false
+  }
+}
+
+function locateSearchMessage(message) {
+  selectedId.value = searchDialog.value._id
+  targetMessageId.value = message._id
+  clearConversationUnread(selectedId.value)
+  searchDialog.value = null
+}
+
+function senderName(message) {
+  if (message.senderType === 'customer') return '客户'
+  if (message.senderType === 'bot') return '机器人'
+  if (message.senderType === 'system') return '系统'
+  return '客服'
+}
 
 function formatTime(iso) {
   if (!iso) return ''
   const d = new Date(iso); const now = new Date()
   if (d.toDateString() === now.toDateString()) return d.toTimeString().slice(0, 5)
   return `${d.getMonth()+1}/${d.getDate()}`
+}
+function formatDateTime(iso) {
+  return iso ? new Date(iso).toLocaleString('zh-CN', { hour12: false }) : ''
 }
 function convStatusTag(s) {
   if (s === 'active') return { text: '处理中', cls: 'active' }
@@ -142,6 +203,7 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener('pointerdown', unlockNotificationSound)
   window.removeEventListener('keydown', unlockNotificationSound)
+  clearTimeout(searchTimer)
   socket?.disconnect()
   notificationAudioContext?.close().catch(() => {})
 })
@@ -160,7 +222,7 @@ onUnmounted(() => {
               <span v-if="unreadCount > 0" class="msg-sider-badge">{{ unreadCount }}</span>
             </div>
             <div class="msg-sider-search">
-              <input v-model="search" type="text" placeholder="搜索手机号或渠道..." />
+              <input v-model="search" type="search" placeholder="搜索客户、渠道或聊天内容..." />
             </div>
             <div class="msg-sider-tabs">
               <button
@@ -178,7 +240,7 @@ onUnmounted(() => {
               :key="conv._id"
               class="msg-item"
               :class="{ active: selectedId === conv._id }"
-              @click="selectConv(conv._id)"
+              @click="openSearchMatches(conv)"
             >
               <img v-if="conv.customer?.avatarUrl" class="mi-avatar" :src="conv.customer.avatarUrl" alt="客户QQ头像" />
               <div v-else class="mi-avatar" :style="{ background: getAvatarColor(conv._id) }">
@@ -193,8 +255,9 @@ onUnmounted(() => {
                   <span class="mi-time">{{ formatTime(conv.lastMessageAt) }}</span>
                 </div>
                 <div class="mi-row mi-row-2">
-                  <span class="mi-last">{{ latestMessageText(conv.lastMessage) }}</span>
-                  <span v-if="conv.agentUnreadCount > 0" class="mi-unread">{{ conv.agentUnreadCount }}</span>
+                  <span class="mi-last">{{ conv.searchMatch ? latestMessageText(conv.searchMatch.message) : latestMessageText(conv.lastMessage) }}</span>
+                  <span v-if="conv.searchMatch" class="mi-match-count">{{ conv.searchMatch.count }}条相关</span>
+                  <span v-else-if="conv.agentUnreadCount > 0" class="mi-unread">{{ conv.agentUnreadCount }}</span>
                 </div>
                 <div v-if="conv.channel?.name" class="mi-channel">📡 {{ conv.channel.name }}</div>
               </div>
@@ -203,14 +266,14 @@ onUnmounted(() => {
 
           <div v-else class="msg-sider-empty">
             <div class="mse-emoji">💬</div>
-            <div class="mse-title">暂无会话</div>
-            <div class="mse-desc" v-if="filter !== 'all'">切换到「全部」查看</div>
+            <div class="mse-title">{{ searching ? '正在搜索...' : (search.trim() ? '没有找到相关聊天记录' : '暂无会话') }}</div>
+            <div class="mse-desc" v-if="filter !== 'all' && !search.trim()">切换到「全部」查看</div>
           </div>
         </aside>
 
         <!-- 右栏：聊天面板 -->
         <main class="msg-main">
-          <ChatPanel v-if="selectedId" :conversationId="selectedId" />
+          <ChatPanel v-if="selectedId" :conversationId="selectedId" :target-message-id="targetMessageId" @conversation-read="clearConversationUnread" @message-located="targetMessageId = null" />
           <div v-else class="msg-welcome">
             <div class="mw-emoji">👋</div>
             <div class="mw-title">欢迎来到消息中心</div>
@@ -254,6 +317,28 @@ onUnmounted(() => {
 
     <!-- 加载中 -->
     <div v-else class="msg-loading">加载中...</div>
+
+    <div v-if="searchDialog" class="search-dialog-mask" @click.self="searchDialog = null">
+      <section class="search-dialog" role="dialog" aria-modal="true" aria-label="相关聊天内容">
+        <header class="search-dialog-head">
+          <div>
+            <strong>相关聊天内容</strong>
+            <span>{{ searchDialog.searchMatch?.count || 0 }} 条结果</span>
+          </div>
+          <button type="button" aria-label="关闭" @click="searchDialog = null">×</button>
+        </header>
+        <div class="search-dialog-keyword">搜索“{{ search }}”</div>
+        <div v-if="searchResultsLoading" class="search-dialog-state">正在加载...</div>
+        <div v-else-if="searchResults.length" class="search-result-list">
+          <button v-for="message in searchResults" :key="message._id" class="search-result-item" @click="locateSearchMessage(message)">
+            <span class="search-result-meta"><b>{{ senderName(message) }}</b><time>{{ formatDateTime(message.createdAt) }}</time></span>
+            <span class="search-result-content">{{ latestMessageText(message) }}</span>
+            <span class="search-result-locate">定位到聊天位置 →</span>
+          </button>
+        </div>
+        <div v-else class="search-dialog-state">没有找到相关内容</div>
+      </section>
+    </div>
   </div>
 </template>
 
@@ -315,6 +400,7 @@ onUnmounted(() => {
   background: #ef4444; color: #fff; font-size: 10px; font-weight: 600;
   padding: 1px 6px; border-radius: 9px; flex-shrink: 0; min-width: 16px; text-align: center;
 }
+.mi-match-count { flex-shrink: 0; color: #2563eb; font-size: 10px; font-weight: 600; }
 .mi-channel { margin-top: 3px; font-size: 10px; color: #94a3b8; }
 
 .mi-status { font-size: 10px; padding: 1px 6px; border-radius: 8px; font-weight: 600; }
@@ -336,6 +422,24 @@ onUnmounted(() => {
 .mw-emoji { font-size: 64px; margin-bottom: 12px; opacity: .6; }
 .mw-title { font-size: 16px; font-weight: 600; color: #475569; }
 .mw-desc { font-size: 13px; margin-top: 6px; }
+
+/* 搜索结果弹窗 */
+.search-dialog-mask { position: fixed; inset: 0; z-index: 1200; display: grid; place-items: center; padding: 24px; background: rgba(15,23,42,.42); }
+.search-dialog { width: min(560px, 92vw); max-height: min(680px, 82vh); display: flex; flex-direction: column; overflow: hidden; border-radius: 16px; background: #fff; box-shadow: 0 24px 70px rgba(15,23,42,.22); }
+.search-dialog-head { display: flex; justify-content: space-between; align-items: center; padding: 18px 20px 12px; border-bottom: 1px solid #f1f5f9; }
+.search-dialog-head div { display: flex; align-items: baseline; gap: 10px; }
+.search-dialog-head strong { color: #0f172a; font-size: 17px; }
+.search-dialog-head span, .search-dialog-keyword { color: #64748b; font-size: 12px; }
+.search-dialog-head button { width: 34px; height: 34px; border: 0; border-radius: 9px; background: #f1f5f9; color: #475569; font-size: 22px; cursor: pointer; }
+.search-dialog-keyword { padding: 10px 20px; background: #f8fafc; }
+.search-result-list { overflow-y: auto; padding: 6px 0; }
+.search-result-item { display: flex; width: 100%; flex-direction: column; gap: 7px; padding: 14px 20px; border: 0; border-bottom: 1px solid #f1f5f9; background: #fff; text-align: left; cursor: pointer; }
+.search-result-item:hover { background: #f8fafc; }
+.search-result-meta { display: flex; justify-content: space-between; color: #94a3b8; font-size: 11px; }
+.search-result-meta b { color: #475569; font-size: 12px; }
+.search-result-content { color: #0f172a; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+.search-result-locate { align-self: flex-end; color: #2563eb; font-size: 11px; }
+.search-dialog-state { padding: 56px 20px; color: #94a3b8; text-align: center; }
 
 /* 加载中 */
 .msg-loading { padding: 60px; text-align: center; color: #94a3b8; }

@@ -10,20 +10,30 @@
   </div>
 
   <!-- 聊天页 -->
-  <div v-else class="chat-page">
+  <div
+    v-else
+    class="chat-page"
+    :style="{ position: 'fixed', insetInline: 0, height: viewportHeight, top: viewportTop }"
+  >
     <div class="chat-header">
       <img v-if="channel.avatarUrl" class="chat-avatar" :src="channel.avatarUrl" alt="渠道头像" />
       <div v-else class="chat-avatar">{{ channel.brandName?.[0] || '客' }}</div>
       <div class="chat-header-info">
-        <div class="chat-header-name">{{ channel.brandName || '在线客服' }}</div>
+        <div class="chat-header-name">
+          <span>{{ channel.brandName || '在线客服' }}</span>
+          <span class="agent-presence" :class="agentOnline ? 'is-online' : 'is-offline'">
+            <span class="agent-presence-dot"></span>
+            {{ agentOnline ? '在线' : '离线' }}
+          </span>
+        </div>
         <div class="chat-header-status">
           <span v-if="conversationStatus === 'active'">客服已接入</span>
           <span v-else-if="conversationStatus === 'closed'">会话已结束，再次发送消息可重新咨询</span>
           <span v-else>等待客服接入...</span>
         </div>
       </div>
-      <button class="profile-trigger" v-if="customer" @click="openQQModal">
-        {{ customer.qq ? `QQ ${customer.qq}` : '完善QQ' }}
+      <button class="profile-trigger" v-if="customer" @click="openDashboard">
+        控制面板
       </button>
     </div>
 
@@ -60,23 +70,45 @@
             {{ msg.senderType === 'customer' ? (customer?.qq?.slice(-1) || '我') : (msg.senderType === 'bot' ? 'AI' : (channel.brandName?.[0] || '客')) }}
           </div>
           <div class="msg-content">
+            <div class="msg-main">
+              <span v-if="msg.sendFailed" class="message-send-error" title="消息发送失败">!</span>
             <div
               class="msg-bubble"
-              :class="{ 'image-message-bubble': msg.messageType === 'image' && msg.attachmentUrl }"
+              :class="{ 'media-message-bubble': ['image', 'video', 'file'].includes(msg.messageType) && msg.attachmentUrl, 'message-menu-active': contextMenu?.msg === msg }"
               @contextmenu="showContextMenu($event, msg)"
               @touchstart="startLongPress($event, msg)"
-              @touchend="cancelLongPress"
+              @touchend="finishLongPress"
               @touchcancel="cancelLongPress"
-              @touchmove="cancelLongPress"
+              @touchmove="moveLongPress"
+              @click.capture="handleBubbleClick"
             >
               <span v-if="msg.recalledAt" class="message-recalled">消息已撤回</span>
-              <img v-else-if="msg.messageType === 'image' && msg.attachmentUrl" class="message-image" :src="msg.attachmentUrl" :alt="msg.attachmentName || '图片'" loading="lazy" decoding="async" @load="scheduleScroll(false)" @click="openPreview(msg)" />
-              <video v-else-if="msg.messageType === 'video' && msg.attachmentUrl" class="message-image message-video" :src="msg.attachmentUrl" preload="none" @click.prevent="openPreview(msg)"></video>
+              <template v-else-if="msg.messageType === 'image' && msg.attachmentUrl"><img class="message-image" :src="msg.attachmentUrl" :alt="msg.attachmentName || '图片'" loading="lazy" decoding="async" @load="scheduleScroll(false)" @click="openPreview(msg)" /><div v-if="imageCaption(msg)" class="message-caption">{{ imageCaption(msg) }}</div></template>
+              <template v-else-if="msg.messageType === 'video' && msg.attachmentUrl">
+                <button type="button" class="message-video-wrap" :aria-label="`播放${msg.attachmentName || '视频'}`" @click="openPreview(msg)">
+                  <span class="video-thumbnail-placeholder">视频</span>
+                  <img class="message-image message-video" :src="videoPosterUrl(msg)" :alt="msg.attachmentName || '视频封面'" loading="lazy" decoding="async" @load="handleVideoThumbnailLoad" @error="handleVideoThumbnailError" />
+                  <span class="video-play-icon" aria-hidden="true">▶</span>
+                </button>
+              </template>
               <button v-else-if="msg.messageType === 'file' && msg.attachmentUrl" type="button" class="message-file" @click="downloadFile(msg.attachmentUrl, msg.attachmentName)">
                 <span class="message-file-icon">▤</span>
                 <span>{{ msg.attachmentName || '下载文件' }}</span>
               </button>
-              <template v-else>{{ msg.content }}</template>
+              <template v-else>
+                <template v-for="(part, index) in parseMessageContent(msg.content)" :key="index">
+                  <a
+                    v-if="part.type === 'link'"
+                    class="message-link"
+                    :href="part.href"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    @click.stop
+                  >{{ part.text }}</a>
+                  <span v-else>{{ part.text }}</span>
+                </template>
+              </template>
+            </div>
             </div>
             <div v-if="msg.autoReplyType === 'keyword'" class="keyword-reply-notice">关键词自动回复内容可作为参考</div>
             <div class="msg-time">{{ formatTime(msg.createdAt) }}</div>
@@ -91,6 +123,10 @@
           <button type="button" class="attachment-action" :disabled="uploading" @click="imageInput?.click()">
             <span class="attachment-icon attachment-image-icon">▧</span>
             <span>上传图片</span>
+          </button>
+          <button type="button" class="attachment-action" :disabled="uploading" @click="videoInput?.click()">
+            <span class="attachment-icon attachment-video-icon">▷</span>
+            <span>上传视频</span>
           </button>
           <button type="button" class="attachment-action" :disabled="uploading" @click="fileInput?.click()">
             <span class="attachment-icon attachment-file-icon">▤</span>
@@ -112,7 +148,8 @@
           v-model="inputText"
           :disabled="!customer || uploading"
           :placeholder="uploading ? '正在上传...' : '请输入消息...'"
-          @keydown.enter.exact.prevent="sendMessage"
+          @focus="handleComposerFocus"
+          @keydown.enter.exact="handleMessageEnter"
           rows="1"
         ></textarea>
         <button class="send-button" @click="sendMessage" :disabled="!customer || !inputText.trim() || sending || uploading">
@@ -121,6 +158,7 @@
       </div>
 
       <input ref="imageInput" class="hidden-file-input" type="file" accept="image/*" @change="handleAttachment($event, 'image')" />
+      <input ref="videoInput" class="hidden-file-input" type="file" accept="video/*" @change="handleAttachment($event, 'video')" />
       <input ref="fileInput" class="hidden-file-input" type="file" @change="handleAttachment($event, 'file')" />
     </div>
 
@@ -147,6 +185,60 @@
     </div>
     <div v-else-if="toast" class="bottom-toast">{{ toast }}</div>
 
+    <!-- 客户控制面板 -->
+    <div v-if="showDashboard" class="modal-overlay dashboard-overlay" @click.self="closeDashboard">
+      <section class="dashboard-panel" role="dialog" aria-modal="true" aria-labelledby="dashboard-title">
+        <header class="dashboard-header">
+          <div>
+            <div class="dashboard-eyebrow">客户中心</div>
+            <h2 id="dashboard-title">控制面板</h2>
+          </div>
+          <button type="button" class="dashboard-close" aria-label="关闭控制面板" @click="closeDashboard">×</button>
+        </header>
+
+        <div class="dashboard-profile">
+          <img v-if="customer?.avatarUrl" :src="customer.avatarUrl" alt="客户头像" />
+          <div v-else class="dashboard-avatar">{{ customer?.nickname?.[0] || '我' }}</div>
+          <div>
+            <strong>{{ customer?.nickname || '访客' }}</strong>
+            <span>{{ customer?.phone }}</span>
+          </div>
+        </div>
+
+        <nav class="dashboard-tabs" aria-label="控制面板导航">
+          <button type="button" :class="{ active: dashboardTab === 'profile' }" @click="dashboardTab = 'profile'">账号资料</button>
+          <button type="button" :class="{ active: dashboardTab === 'security' }" @click="dashboardTab = 'security'">安全设置</button>
+        </nav>
+
+        <div v-if="dashboardTab === 'profile'" class="dashboard-content">
+          <div class="dashboard-info-grid">
+            <div><span>手机号</span><strong>{{ customer?.phone || '-' }}</strong></div>
+            <div><span>QQ号</span><strong>{{ customer?.qq || '未完善' }}</strong></div>
+            <div><span>邮箱</span><strong>{{ customer?.email || '未完善' }}</strong></div>
+            <div><span>注册时间</span><strong>{{ formatDate(customer?.createdAt) }}</strong></div>
+          </div>
+          <button type="button" class="dashboard-primary" @click="goToAccount">进入客户后台</button>
+        </div>
+
+        <form v-else class="dashboard-content password-form" @submit.prevent="submitPassword">
+          <div class="form-item">
+            <label for="current-password">当前密码</label>
+            <input id="current-password" v-model="passwordForm.currentPassword" type="password" autocomplete="current-password" placeholder="请输入当前密码" />
+          </div>
+          <div class="form-item">
+            <label for="new-password">新密码</label>
+            <input id="new-password" v-model="passwordForm.newPassword" type="password" autocomplete="new-password" placeholder="请输入6-72位新密码" />
+          </div>
+          <div class="form-item">
+            <label for="confirm-password">确认新密码</label>
+            <input id="confirm-password" v-model="passwordForm.confirmPassword" type="password" autocomplete="new-password" placeholder="请再次输入新密码" />
+          </div>
+          <div v-if="passwordMessage" :class="['password-feedback', passwordSuccess ? 'success' : 'error']">{{ passwordMessage }}</div>
+          <button type="submit" class="dashboard-primary" :disabled="passwordLoading">{{ passwordLoading ? '修改中...' : '确认修改密码' }}</button>
+        </form>
+      </section>
+    </div>
+
     <!-- 登录弹窗 -->
     <div v-if="showLogin" class="modal-overlay">
       <div class="modal-content">
@@ -160,9 +252,28 @@
           <label>密码</label>
           <input v-model="loginForm.password" type="password" placeholder="请输入密码" @keyup.enter="doLogin" />
         </div>
+        <div v-if="captcha.enabled && captcha.provider === 'image'" class="form-item">
+          <label>图形验证码</label>
+          <div class="captcha-row">
+            <input
+              v-model.trim="captchaCode"
+              autocomplete="off"
+              maxlength="8"
+              placeholder="请输入验证码"
+              @keyup.enter="doLogin"
+            />
+            <button type="button" class="captcha-image-button" :disabled="captchaLoading" @click="loadCaptcha">
+              <img v-if="captcha.image" :src="captcha.image" alt="图形验证码" />
+              <span v-else>{{ captchaLoading ? '加载中...' : '点击刷新' }}</span>
+            </button>
+          </div>
+        </div>
+        <div v-else-if="captcha.enabled && captcha.provider === 'geetest'" class="captcha-tip">
+          {{ geetestReady ? '点击进入聊天后完成安全验证' : (captchaLoading ? '正在加载安全验证...' : '安全验证加载失败，请重试') }}
+        </div>
         <div class="err" v-if="loginErr">{{ loginErr }}</div>
         <div class="modal-actions">
-          <button class="btn btn-primary" @click="doLogin" :disabled="loginLoading">
+          <button class="btn btn-primary" @click="doLogin" :disabled="loginLoading || captchaLoading">
             {{ loginLoading ? '处理中...' : '进入聊天' }}
           </button>
         </div>
@@ -192,22 +303,26 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted, nextTick, computed, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { api, getSocket } from '../api'
 
 const route = useRoute()
+const router = useRouter()
 const token = computed(() => route.params.token)
 
 const loading = ref(true)
 const channel = ref(null)
 const customer = ref(null)
 const conversationStatus = ref('waiting')
+const assignedAgentId = ref('')
+const agentOnline = ref(false)
 const messages = ref([])
 const inputText = ref('')
 const sending = ref(false)
 const uploading = ref(false)
 const showAttachments = ref(false)
 const imageInput = ref(null)
+const videoInput = ref(null)
 const fileInput = ref(null)
 const msgContainer = ref(null)
 const loadingHistory = ref(false)
@@ -216,24 +331,124 @@ const preview = ref(null)
 const contextMenu = ref(null)
 const downloadProgress = ref(null)
 const toast = ref('')
+const viewportHeight = ref('100dvh')
+const viewportTop = ref('0px')
 
 const showLogin = ref(false)
 const loginForm = ref({ phone: '', password: '' })
 const loginLoading = ref(false)
 const loginErr = ref('')
+const captcha = ref({ enabled: false, provider: '', captchaId: '', image: '' })
+const captchaCode = ref('')
+const captchaLoading = ref(false)
+const geetestReady = ref(false)
 
 const showQQModal = ref(false)
 const qqForm = ref({ qq: '' })
 const qqLoading = ref(false)
 const qqErr = ref('')
 
+const showDashboard = ref(false)
+const dashboardTab = ref('profile')
+const passwordForm = ref({ currentPassword: '', newPassword: '', confirmPassword: '' })
+const passwordLoading = ref(false)
+const passwordMessage = ref('')
+const passwordSuccess = ref(false)
+
 let socket = null
 let notificationAudioContext = null
+let messageSyncTimer = null
+let messageSyncInFlight = false
 let toastTimer = null
 let longPressTimer = null
+let longPressStart = null
+let suppressBubbleClickUntil = 0
 let initialScrollTimers = []
 let scrollFrame = null
 let pendingScrollForce = false
+let geetestInstance = null
+let geetestScriptPromise = null
+
+function loadGeetestScript() {
+  if (window.initGeetest) return Promise.resolve()
+  if (geetestScriptPromise) return geetestScriptPromise
+  geetestScriptPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script')
+    script.src = 'https://static.geetest.com/static/tools/gt.js'
+    script.async = true
+    script.onload = () => window.initGeetest ? resolve() : reject(new Error('极验组件初始化失败'))
+    script.onerror = () => reject(new Error('极验组件加载失败'))
+    document.head.appendChild(script)
+  }).catch(error => {
+    geetestScriptPromise = null
+    throw error
+  })
+  return geetestScriptPromise
+}
+
+async function initializeGeetest(captchaConfig) {
+  const gt = captchaConfig.gt
+  const challenge = captchaConfig.challenge
+  if (!gt || !challenge) throw new Error('极验 V3 初始化参数不完整')
+
+  geetestReady.value = false
+  geetestInstance?.destroy?.()
+  geetestInstance = null
+  await loadGeetestScript()
+  await new Promise((resolve, reject) => {
+    window.initGeetest({
+      gt,
+      challenge,
+      offline: captchaConfig.success === false || captchaConfig.success === 0,
+      new_captcha: captchaConfig.new_captcha ?? captchaConfig.newCaptcha ?? true,
+      product: 'bind',
+      width: '100%',
+    }, instance => {
+      geetestInstance = instance
+      instance.onReady(() => {
+        geetestReady.value = true
+        resolve()
+      })
+      instance.onError(error => reject(new Error(error?.msg || '极验组件初始化失败')))
+    })
+  })
+}
+
+async function loadCaptcha() {
+  captchaLoading.value = true
+  captchaCode.value = ''
+  geetestReady.value = false
+  try {
+    const res = await api.get(`/client/channels/${token.value}/captcha`)
+    if (res.code !== 0) throw new Error(res.message || '验证码加载失败')
+    captcha.value = { enabled: false, provider: '', captchaId: '', image: '', ...res.data }
+    if (captcha.value.enabled && captcha.value.provider === 'geetest') {
+      await initializeGeetest(captcha.value)
+    }
+  } catch (error) {
+    captcha.value = { enabled: true, provider: '', captchaId: '', image: '' }
+    loginErr.value = error?.message || '验证码加载失败，请刷新重试'
+  } finally {
+    captchaLoading.value = false
+  }
+}
+
+function getGeetestValidation() {
+  return new Promise((resolve, reject) => {
+    if (!geetestInstance || !geetestReady.value) {
+      reject(new Error('安全验证尚未加载完成'))
+      return
+    }
+    geetestInstance.onSuccess(() => {
+      const result = geetestInstance.getValidate()
+      if (result) resolve(result)
+      else reject(new Error('请完成安全验证'))
+    })
+    geetestInstance.onError(error => reject(new Error(error?.msg || '安全验证失败')))
+    geetestInstance.onClose(() => reject(new Error('请完成安全验证')))
+    geetestInstance.verify()
+  })
+}
 
 function getNotificationAudioContext() {
   if (!notificationAudioContext) {
@@ -285,16 +500,31 @@ async function loadChannel() {
       return
     }
     channel.value = channelRes.data
+    document.title = channelRes.data.brandName || '在线客服'
+    if (!assignedAgentId.value) agentOnline.value = Boolean(channelRes.data.agentOnline)
 
-    const meRes = meResult.status === 'fulfilled' ? meResult.value : null
+    let meRes = meResult.status === 'fulfilled' ? meResult.value : null
+    if (meRes?.code === 0 && String(meRes.data.channelId) !== String(channelRes.data.id)) {
+      try {
+        const switchRes = await api.post(`/client/channels/${token.value}/switch`)
+        if (switchRes.code === 0) {
+          localStorage.setItem('client_token', switchRes.data.token)
+          meRes = await api.get('/client/me')
+        } else {
+          meRes = null
+        }
+      } catch {
+        meRes = null
+      }
+    }
     if (meRes?.code === 0) {
       customer.value = meRes.data
       setupSocket()
       await Promise.all([loadConversation(), loadMessages()])
       if (!customer.value.qq) showQQModal.value = true
     } else {
-      if (saved) localStorage.removeItem('client_token')
       showLogin.value = true
+      await loadCaptcha()
     }
   } finally {
     loading.value = false
@@ -322,12 +552,27 @@ async function doLogin() {
     loginErr.value = '请填写完整信息'
     return
   }
+  if (captcha.value.enabled && captcha.value.provider === 'image' && !captchaCode.value) {
+    loginErr.value = '请输入图形验证码'
+    return
+  }
+  if (captcha.value.enabled && !['image', 'geetest'].includes(captcha.value.provider)) {
+    loginErr.value = '安全验证加载失败，请刷新页面重试'
+    return
+  }
   loginLoading.value = true
   try {
+    let captchaPayload = {}
+    if (captcha.value.enabled && captcha.value.provider === 'image') {
+      captchaPayload = { captchaId: captcha.value.captchaId, captchaCode: captchaCode.value }
+    } else if (captcha.value.enabled && captcha.value.provider === 'geetest') {
+      captchaPayload = await getGeetestValidation()
+    }
     const res = await api.post(`/client/channels/${token.value}/auth`, {
       phone: loginForm.value.phone,
       password: loginForm.value.password,
       fingerprint: generateFingerprint(),
+      ...captchaPayload,
     })
     if (res.code === 0) {
       localStorage.setItem('client_token', res.data.token)
@@ -346,6 +591,8 @@ async function doLogin() {
     }
   } catch (e) {
     loginErr.value = e?.message || '网络错误'
+    if (captcha.value.enabled && captcha.value.provider === 'image') await loadCaptcha()
+    geetestInstance?.reset?.()
   } finally {
     loginLoading.value = false
   }
@@ -355,6 +602,66 @@ function openQQModal() {
   qqForm.value.qq = customer.value?.qq || ''
   qqErr.value = ''
   showQQModal.value = true
+}
+
+function openDashboard() {
+  dashboardTab.value = 'profile'
+  passwordForm.value = { currentPassword: '', newPassword: '', confirmPassword: '' }
+  passwordMessage.value = ''
+  passwordSuccess.value = false
+  showDashboard.value = true
+}
+
+function closeDashboard() {
+  showDashboard.value = false
+  passwordForm.value = { currentPassword: '', newPassword: '', confirmPassword: '' }
+  passwordMessage.value = ''
+}
+
+function goToAccount() {
+  showDashboard.value = false
+  router.push('/account')
+}
+
+function editQQFromDashboard() {
+  showDashboard.value = false
+  openQQModal()
+}
+
+async function submitPassword() {
+  passwordMessage.value = ''
+  passwordSuccess.value = false
+  const { currentPassword, newPassword, confirmPassword } = passwordForm.value
+  if (!currentPassword || !newPassword || !confirmPassword) {
+    passwordMessage.value = '请填写完整密码信息'
+    return
+  }
+  if (newPassword.length < 6 || newPassword.length > 72) {
+    passwordMessage.value = '新密码须为6-72位'
+    return
+  }
+  if (newPassword !== confirmPassword) {
+    passwordMessage.value = '两次输入的新密码不一致'
+    return
+  }
+
+  passwordLoading.value = true
+  try {
+    const res = await api.post('/client/profile/password', passwordForm.value)
+    if (res.code !== 0) throw new Error(res.message || '密码修改失败')
+    passwordSuccess.value = true
+    passwordMessage.value = res.message || '密码修改成功'
+    passwordForm.value = { currentPassword: '', newPassword: '', confirmPassword: '' }
+    localStorage.removeItem('client_token')
+    setTimeout(() => {
+      showDashboard.value = false
+      showLogin.value = true
+    }, 1200)
+  } catch (error) {
+    passwordMessage.value = error?.message || '密码修改失败'
+  } finally {
+    passwordLoading.value = false
+  }
 }
 
 async function submitQQ() {
@@ -384,6 +691,8 @@ async function loadConversation() {
     const res = await api.get('/client/conversation')
     if (res.code === 0 && res.data) {
       conversationStatus.value = res.data.status
+      assignedAgentId.value = String(res.data.agent?.id || res.data.assignedAgentId || '')
+      queryAgentPresence()
     }
   } catch {}
 }
@@ -397,6 +706,24 @@ async function loadMessages() {
       await scrollToBottom()
     }
   } catch {}
+}
+
+async function syncLatestMessages() {
+  if (!customer.value || messageSyncInFlight) return
+  messageSyncInFlight = true
+  try {
+    const res = await api.get('/client/conversation/messages', { params: { limit: 50 } })
+    if (res.code === 0) {
+      const previousLength = messages.value.length
+      ;(res.data || []).forEach(mergeMessage)
+      if (messages.value.length > previousLength) scheduleScroll(false)
+    }
+  } catch {}
+  finally { messageSyncInFlight = false }
+}
+
+function handleVisibilityChange() {
+  if (document.visibilityState === 'visible') syncLatestMessages()
 }
 
 async function loadPreviousMessages() {
@@ -427,6 +754,7 @@ async function loadPreviousMessages() {
 }
 
 function handleMessageScroll() {
+  cancelLongPress()
   const container = msgContainer.value
   if ((container?.scrollTop || 0) <= 24) loadPreviousMessages()
 }
@@ -446,10 +774,47 @@ function mergeMessage(message) {
   return true
 }
 
+function markMessageFailed(message) {
+  const index = messages.value.findIndex(item => String(item._id) === String(message?._id))
+  if (index < 0) return
+  messages.value.splice(index, 1, { ...messages.value[index], sendFailed: true })
+}
+
 function showToast(message) {
   toast.value = message
   clearTimeout(toastTimer)
   toastTimer = setTimeout(() => { toast.value = '' }, 2200)
+}
+
+function imageCaption(msg) {
+  const content = String(msg.content || '').trim()
+  if (!content || content === '[图片]' || content === String(msg.attachmentUrl || '').trim()) return ''
+  return content
+}
+
+function parseMessageContent(content = '') {
+  const urlPattern = /((?:https?:\/\/|www\.)[^\s<]+)/gi
+  const parts = []
+  let lastIndex = 0
+
+  for (const match of String(content).matchAll(urlPattern)) {
+    if (match.index > lastIndex) {
+      parts.push({ type: 'text', text: content.slice(lastIndex, match.index) })
+    }
+
+    const trailing = match[0].match(/[，。！？；：、,.!?;:]+$/)?.[0] || ''
+    const text = trailing ? match[0].slice(0, -trailing.length) : match[0]
+    parts.push({
+      type: 'link',
+      text,
+      href: text.toLowerCase().startsWith('www.') ? `https://${text}` : text,
+    })
+    if (trailing) parts.push({ type: 'text', text: trailing })
+    lastIndex = match.index + match[0].length
+  }
+
+  if (lastIndex < content.length) parts.push({ type: 'text', text: content.slice(lastIndex) })
+  return parts.length ? parts : [{ type: 'text', text: content }]
 }
 
 function openPreview(msg) {
@@ -497,15 +862,41 @@ function showContextMenu(event, msg) {
   contextMenu.value = { msg, x, y }
 }
 
+function closeContextMenu() {
+  contextMenu.value = null
+}
+
 function startLongPress(event, msg) {
   clearTimeout(longPressTimer)
   const point = event.touches?.[0]
-  const position = { preventDefault() {}, clientX: point?.clientX, clientY: point?.clientY }
-  longPressTimer = setTimeout(() => showContextMenu(position, msg), 550)
+  if (!point) return
+  longPressStart = { x: point.clientX, y: point.clientY }
+  const position = { preventDefault() {}, clientX: point.clientX, clientY: point.clientY }
+  longPressTimer = setTimeout(() => {
+    suppressBubbleClickUntil = Date.now() + 700
+    showContextMenu(position, msg)
+  }, 550)
+}
+
+function moveLongPress(event) {
+  const point = event.touches?.[0]
+  if (!point || !longPressStart) return
+  if (Math.hypot(point.clientX - longPressStart.x, point.clientY - longPressStart.y) > 10) cancelLongPress()
+}
+
+function finishLongPress() {
+  cancelLongPress()
 }
 
 function cancelLongPress() {
   clearTimeout(longPressTimer)
+  longPressStart = null
+}
+
+function handleBubbleClick(event) {
+  if (Date.now() >= suppressBubbleClickUntil) return
+  event.preventDefault()
+  event.stopPropagation()
 }
 
 function canDeleteMessage(msg) {
@@ -517,13 +908,56 @@ function canRecallMessage(msg) {
     Date.now() - new Date(msg.createdAt).getTime() <= 2 * 60 * 1000
 }
 
-async function copyMessage(msg) {
+function videoPosterUrl(msg) {
+  if (msg.thumbnailUrl) return msg.thumbnailUrl
+  if (!msg.attachmentUrl) return ''
+  return msg.attachmentUrl.replace(/\.[^./?#]+(?:[?#].*)?$/, '.thumbnail.jpg')
+}
+
+function handleVideoThumbnailLoad(event) {
+  event.currentTarget.classList.add('is-loaded')
+  event.currentTarget.closest('.message-video-wrap')?.classList.add('has-thumbnail')
+  scheduleScroll(false)
+}
+
+function handleVideoThumbnailError(event) {
+  event.currentTarget.hidden = true
+  event.currentTarget.closest('.message-video-wrap')?.classList.add('has-thumbnail-error')
+}
+
+function fallbackCopyText(text) {
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.readOnly = true
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  textarea.style.top = '0'
+  document.body.appendChild(textarea)
   try {
-    await navigator.clipboard.writeText(msg.content || msg.attachmentUrl || '')
-    showToast('已复制')
-  } catch {
-    showToast('复制失败')
+    textarea.focus()
+    textarea.select()
+    textarea.setSelectionRange(0, textarea.value.length)
+    return document.execCommand('copy')
+  } finally {
+    textarea.remove()
   }
+}
+
+async function copyMessage(msg) {
+  const text = String(msg.content || '')
+  try {
+    if (!text) throw new Error('没有可复制的内容')
+    let copied = false
+    if (window.isSecureContext && navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text)
+        copied = true
+      } catch {}
+    }
+    if (!copied) copied = fallbackCopyText(text)
+    if (!copied) throw new Error('复制失败')
+    showToast('已复制')
+  } catch { showToast('复制失败') }
   contextMenu.value = null
 }
 
@@ -554,7 +988,7 @@ async function deleteMessage(msg) {
 function applyRecall(data) {
   const messageId = data.messageId || data._id
   const msg = messages.value.find(item => String(item._id) === String(messageId))
-  if (msg) Object.assign(msg, data, { recalledAt: data.recalledAt || new Date().toISOString(), content: '', attachmentUrl: '', attachmentName: '' })
+  if (msg) Object.assign(msg, data, { recalledAt: data.recalledAt || new Date().toISOString(), content: '', attachmentUrl: '', attachmentName: '', thumbnailUrl: '' })
 }
 
 function applyDelete(data) {
@@ -568,6 +1002,7 @@ async function handleAttachment(event, messageType) {
   if (!file || uploading.value || !customer.value) return
 
   uploading.value = true
+  let localMsg = null
   try {
     const formData = new FormData()
     formData.append('file', file)
@@ -577,13 +1012,14 @@ async function handleAttachment(event, messageType) {
     const effectiveType = uploadRes.data.mimetype?.startsWith('video/') ? 'video' : messageType
     const clientMessageId = 'c_' + Date.now()
     const payload = {
-      content: effectiveType === 'image' ? '[图片]' : effectiveType === 'video' ? '[视频]' : `[文件] ${uploadRes.data.name || file.name}`,
+      content: effectiveType === 'image' ? '' : effectiveType === 'video' ? '[视频]' : `[文件] ${uploadRes.data.name || file.name}`,
       clientMessageId,
       messageType: effectiveType,
       attachmentUrl: uploadRes.data.url,
       attachmentName: uploadRes.data.name || file.name,
+      thumbnailUrl: uploadRes.data.thumbnailUrl || '',
     }
-    const localMsg = {
+    localMsg = {
       _id: 'temp_' + Date.now(),
       senderType: 'customer',
       createdAt: new Date().toISOString(),
@@ -599,10 +1035,20 @@ async function handleAttachment(event, messageType) {
     mergeMessage(res.data?.botReply)
     scrollToBottom()
   } catch (error) {
-    window.alert(error?.message || '附件发送失败')
+    if (localMsg && error?.code === 4034) {
+      markMessageFailed(localMsg)
+      await nextTick()
+      scrollToBottom()
+    } else window.alert(error?.message || '附件发送失败')
   } finally {
     uploading.value = false
   }
+}
+
+function handleMessageEnter(event) {
+  if (event.isComposing) return
+  event.preventDefault()
+  sendMessage()
 }
 
 async function sendMessage() {
@@ -637,7 +1083,14 @@ async function sendMessage() {
       await scrollOwnMessageToBottom()
     }
   } catch (e) {
-    messages.value = messages.value.filter(m => m._id !== localMsg._id)
+    if (e?.code === 4034) {
+      markMessageFailed(localMsg)
+      await nextTick()
+      scrollToBottom()
+    } else {
+      messages.value = messages.value.filter(m => m._id !== localMsg._id)
+      if (e?.code === 4035) window.alert(e.message)
+    }
   } finally {
     sending.value = false
   }
@@ -650,8 +1103,41 @@ function handleNewMessage(msg) {
   scheduleScroll(false)
 }
 
+function queryAgentPresence() {
+  if (!socket?.connected) return
+  const agentIds = assignedAgentId.value
+    ? [assignedAgentId.value]
+    : (channel.value?.agentIds || []).map(String)
+  if (!agentIds.length) {
+    agentOnline.value = false
+    return
+  }
+  let pending = agentIds.length
+  let anyOnline = false
+  agentIds.forEach(userId => {
+    socket.emit('presence:query', { type: 'tenant_user', userId }, ({ online } = {}) => {
+      anyOnline = anyOnline || Boolean(online)
+      pending -= 1
+      if (!pending) agentOnline.value = anyOnline
+    })
+  })
+}
+
+function handlePresenceChanged(data) {
+  if (data.type !== 'tenant_user') return
+  const relevantIds = assignedAgentId.value
+    ? [assignedAgentId.value]
+    : (channel.value?.agentIds || []).map(String)
+  if (relevantIds.includes(String(data.userId))) queryAgentPresence()
+}
+
 function handleConversationUpdated(data) {
   if (data.status) conversationStatus.value = data.status
+  const agentId = data.agent?.id || data.assignedAgentId
+  if (agentId) {
+    assignedAgentId.value = String(agentId)
+    queryAgentPresence()
+  }
 }
 
 function handleConversationClosed(data) {
@@ -664,16 +1150,23 @@ function setupSocket() {
   if (!savedToken) return
 
   socket = getSocket(savedToken)
+  socket.off('connect', syncLatestMessages)
   socket.off('message.new', handleNewMessage)
   socket.off('message.recalled', applyRecall)
   socket.off('message.deleted', applyDelete)
   socket.off('conversation.updated', handleConversationUpdated)
   socket.off('conversation.closed', handleConversationClosed)
+  socket.off('presence:changed', handlePresenceChanged)
   socket.on('message.new', handleNewMessage)
+  socket.on('connect', () => {
+    syncLatestMessages()
+    queryAgentPresence()
+  })
   socket.on('message.recalled', applyRecall)
   socket.on('message.deleted', applyDelete)
   socket.on('conversation.updated', handleConversationUpdated)
   socket.on('conversation.closed', handleConversationClosed)
+  socket.on('presence:changed', handlePresenceChanged)
 }
 
 async function scheduleScroll(force = true) {
@@ -693,6 +1186,18 @@ async function scheduleScroll(force = true) {
 
 function scrollToBottom() {
   return scheduleScroll(true)
+}
+
+function updateViewport() {
+  const viewport = window.visualViewport
+  viewportHeight.value = `${Math.round(viewport?.height || window.innerHeight)}px`
+  viewportTop.value = `${Math.round(viewport?.offsetTop || 0)}px`
+  scheduleScroll(false)
+}
+
+function handleComposerFocus() {
+  showAttachments.value = false
+  requestAnimationFrame(() => scheduleScroll(true))
 }
 
 async function scrollInitialMessagesToBottom() {
@@ -743,6 +1248,13 @@ function formatTime(iso) {
   return `${d.getMonth()+1}/${d.getDate()} ${d.toTimeString().slice(0, 5)}`
 }
 
+function formatDate(iso) {
+  if (!iso) return '-'
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date(iso))
+}
+
 function generateFingerprint() {
   const raw = [
     navigator.userAgent,
@@ -756,18 +1268,31 @@ function generateFingerprint() {
 onMounted(() => {
   window.addEventListener('pointerdown', unlockNotificationSound, { once: true })
   window.addEventListener('keydown', unlockNotificationSound, { once: true })
+  updateViewport()
+  window.visualViewport?.addEventListener('resize', updateViewport)
+  window.visualViewport?.addEventListener('scroll', updateViewport)
+  window.addEventListener('resize', updateViewport)
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+  messageSyncTimer = setInterval(syncLatestMessages, 30000)
   loadChannel()
 })
 
 onUnmounted(() => {
   window.removeEventListener('pointerdown', unlockNotificationSound)
   window.removeEventListener('keydown', unlockNotificationSound)
+  window.visualViewport?.removeEventListener('resize', updateViewport)
+  window.visualViewport?.removeEventListener('scroll', updateViewport)
+  window.removeEventListener('resize', updateViewport)
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+  clearInterval(messageSyncTimer)
   clearTimeout(toastTimer)
   clearTimeout(longPressTimer)
   initialScrollTimers.forEach(clearTimeout)
   if (scrollFrame) cancelAnimationFrame(scrollFrame)
+  geetestInstance?.destroy?.()
   if (socket) {
     socket.off('message.new', handleNewMessage)
+    socket.off('connect', syncLatestMessages)
     socket.off('message.recalled', applyRecall)
     socket.off('message.deleted', applyDelete)
     socket.off('conversation.updated', handleConversationUpdated)

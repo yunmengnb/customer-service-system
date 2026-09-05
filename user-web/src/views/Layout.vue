@@ -1,12 +1,12 @@
 <!-- 忆梦云团队开发 - 桌面端：可折叠侧边栏布局 -->
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 
 const router = useRouter()
 const route = useRoute()
-const user = JSON.parse(sessionStorage.getItem('tenant_user') || localStorage.getItem('tenant_user') || 'null')
+const user = ref(JSON.parse(sessionStorage.getItem('tenant_user') || localStorage.getItem('tenant_user') || 'null'))
 const tenant = JSON.parse(sessionStorage.getItem('tenant_info') || localStorage.getItem('tenant_info') || 'null')
 
 // 侧边栏折叠状态（仅桌面端，且不是消息中心时才会隐藏）
@@ -18,9 +18,11 @@ watch(collapsed, (v) => localStorage.setItem('layout_sidebar_collapsed', v ? '1'
 const navItems = computed(() => [
   { path: '/desktop/messages', icon: '💬', label: '消息中心' },
   { path: '/desktop/channels', icon: '🔗', label: '授权渠道' },
-  ...(['owner', 'admin'].includes(user?.role)
+  { path: '/desktop/announcements', icon: '📢', label: '系统公告' },
+  ...(['owner', 'admin'].includes(user.value?.role)
     ? [{ path: '/desktop/employees', icon: '👥', label: '员工管理' }]
     : []),
+  { path: '/desktop/profile', icon: '♙', label: '个人资料' },
 ])
 
 function active(path) {
@@ -44,6 +46,13 @@ const isMessagesPage = computed(() =>
 function toggleSidebar() {
   collapsed.value = !collapsed.value
 }
+
+function handleProfileUpdated(event) {
+  user.value = event.detail || user.value
+}
+
+onMounted(() => window.addEventListener('tenant-profile-updated', handleProfileUpdated))
+onUnmounted(() => window.removeEventListener('tenant-profile-updated', handleProfileUpdated))
 
 </script>
 
@@ -74,9 +83,9 @@ function toggleSidebar() {
       </nav>
 
       <div class="dsk-user">
-        <div class="dsk-user-avatar">{{ (tenant?.name || '?').slice(0, 1).toUpperCase() }}</div>
+        <div class="dsk-user-avatar"><img v-if="user?.avatarUrl" :src="user.avatarUrl" alt="" /><span v-else>{{ (user?.displayName || user?.username || '?').slice(0, 1).toUpperCase() }}</span></div>
         <div class="dsk-user-who">
-          <div class="dsk-user-name">{{ tenant?.name || '未登录' }}</div>
+          <div class="dsk-user-name">{{ user?.displayName || user?.username || '未登录' }}</div>
           <div class="dsk-user-role">{{ user?.role === 'owner' ? '所有者' : (user?.displayName || user?.username || '员工') }}</div>
         </div>
         <button class="dsk-user-logout" title="退出登录" @click="showLogoutConfirm = true">↩</button>
@@ -191,6 +200,7 @@ function toggleSidebar() {
   display: flex; align-items: center; justify-content: center;
   font-weight: 700; color: #fff; font-size: 13px; flex-shrink: 0;
 }
+.dsk-user-avatar img { width:100%; height:100%; border-radius:inherit; object-fit:cover; }
 .dsk-user-who { flex: 1; min-width: 0; }
 .dsk-user-name { font-size: 13px; color: #fff; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dsk-user-role { font-size: 11px; color: #64748b; margin-top: 2px; }

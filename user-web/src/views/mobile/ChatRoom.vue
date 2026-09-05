@@ -8,5 +8,5 @@ const router = useRouter()
 const conversationId = computed(() => route.params.id)
 function back() { router.push('/m/messages') }
 </script>
-<template><main class="mobile-chat-room"><ChatPanel :conversation-id="conversationId" @back="back" /></main></template>
+<template><main class="mobile-chat-room"><ChatPanel :conversation-id="conversationId" :target-message-id="targetMessageId" @back="back" /></main></template>
 <style scoped>.mobile-chat-room{position:fixed;inset:0;overflow:hidden;background:#f8fafc}</style>

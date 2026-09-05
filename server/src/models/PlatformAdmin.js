@@ -14,6 +14,10 @@ const PlatformAdminSchema = new mongoose.Schema({
     type: String,
     required: true,
   },
+  avatarUrl: {
+    type: String,
+    default: '',
+  },
   email: {
     type: String,
     required: true,

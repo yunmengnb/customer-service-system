@@ -1,6 +1,11 @@
 // 忆梦云团队开发
 const { body } = require('express-validator');
 
+function hasReplyPayload(value, { req }) {
+  if (String(value || '').trim() || String(req.body.imageUrl || '').trim()) return true;
+  throw new Error('回复内容和图片至少填写一项');
+}
+
 const { validationResult: validate } = require('./validate');
 
 // 管理员登录校验
@@ -10,7 +15,25 @@ const adminLogin = [
   validate,
 ];
 
-// 管理员注册（系统初始化用，不对外开放）
+const createAnnouncement = [
+  body('title').trim().notEmpty().withMessage('公告标题不能为空').isLength({ max: 200 }).withMessage('公告标题不能超过200字'),
+  body('content').trim().notEmpty().withMessage('公告内容不能为空'),
+  body('status').optional().isIn(['draft', 'published']).withMessage('公告状态无效'),
+  validate,
+];
+
+const updateAnnouncement = [
+  body('title').trim().notEmpty().withMessage('公告标题不能为空').isLength({ max: 200 }).withMessage('公告标题不能超过200字'),
+  body('content').trim().notEmpty().withMessage('公告内容不能为空'),
+  validate,
+];
+
+const updateAnnouncementStatus = [
+  body('status').isIn(['draft', 'published']).withMessage('公告状态无效'),
+  validate,
+];
+
+// 租户注册
 const tenantRegister = [
   body('name').trim().notEmpty().withMessage('企业名称不能为空'),
   body('username').trim().notEmpty().withMessage('用户名不能为空').isLength({ min: 3 }).withMessage('用户名至少3位'),
@@ -49,6 +72,17 @@ const customerQQ = [
   validate,
 ];
 
+// 客户修改密码
+const customerPassword = [
+  body('currentPassword').isString().notEmpty().withMessage('请输入当前密码'),
+  body('newPassword').isString().isLength({ min: 6, max: 72 }).withMessage('新密码须为6-72位'),
+  body('confirmPassword').isString().notEmpty().withMessage('请再次输入新密码').custom((value, { req }) => {
+    if (value !== req.body.newPassword) throw new Error('两次输入的新密码不一致');
+    return true;
+  }),
+  validate,
+];
+
 // 创建渠道
 const createChannel = [
   body('name').trim().notEmpty().withMessage('渠道名称不能为空').isLength({ max: 50 }),
@@ -62,24 +96,32 @@ const createChannel = [
 const keywordReply = [
   body('keyword').trim().notEmpty().withMessage('关键词不能为空').isLength({ max: 100 }),
   body('matchType').optional().isIn(['exact', 'contains']),
-  body('replyContent').trim().notEmpty().withMessage('回复内容不能为空').isLength({ max: 500 }),
+  body('replyContent').optional({ nullable: true }).isString().isLength({ max: 500 }).custom(hasReplyPayload),
+  body('imageUrl').optional({ checkFalsy: true }).isString(),
+  body('imageName').optional({ nullable: true }).isString().isLength({ max: 255 }),
   validate,
 ];
 
 // 快捷回复
 const quickReply = [
   body('title').trim().notEmpty().withMessage('标题不能为空').isLength({ max: 50 }),
-  body('content').trim().notEmpty().withMessage('内容不能为空').isLength({ max: 500 }),
+  body('content').optional({ nullable: true }).isString().isLength({ max: 500 }).custom(hasReplyPayload),
+  body('imageUrl').optional({ checkFalsy: true }).isString(),
+  body('imageName').optional({ nullable: true }).isString().isLength({ max: 255 }),
   validate,
 ];
 
 module.exports = {
   adminLogin,
+  createAnnouncement,
+  updateAnnouncement,
+  updateAnnouncementStatus,
   tenantRegister,
   tenantLogin,
   createAgent,
   customerAuth,
   customerQQ,
+  customerPassword,
   createChannel,
   keywordReply,
   quickReply,

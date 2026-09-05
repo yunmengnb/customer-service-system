@@ -8,6 +8,12 @@ module.exports = {
   mongo: {
     uri: process.env.MONGO_URI || 'mongodb://localhost:27017/customer_service',
   },
+
+  redis: {
+    url: process.env.REDIS_URL || '',
+    connectTimeoutMs: parseInt(process.env.REDIS_CONNECT_TIMEOUT_MS, 10) || 2000,
+    cacheTtlSeconds: parseInt(process.env.REDIS_CACHE_TTL_SECONDS, 10) || 300,
+  },
   
   jwt: {
     secret: process.env.JWT_SECRET || 'dev_secret_change_me_in_production_abc123',

@@ -1,12 +1,15 @@
 <!-- 忆梦云团队开发 - 手机端聊天展示组件独立实现 -->
 <script setup>
-import { ref, watch, onUnmounted, nextTick } from 'vue'
+import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { io } from 'socket.io-client'
 import api from '../../api'
 import ConfirmDialog from '../../components/ConfirmDialog.vue'
 
-const props = defineProps({ conversationId: { type: String, default: null } })
-const emit = defineEmits(['back'])
+const props = defineProps({
+  conversationId: { type: String, default: null },
+  targetMessageId: { type: String, default: null },
+})
+const emit = defineEmits(['back', 'message-located'])
 
 const conversation = ref(null)
 const messages = ref([])
@@ -15,22 +18,33 @@ const input = ref('')
 const sending = ref(false)
 const accepted = ref(false)
 const loading = ref(false)
+const customerOnline = ref(false)
 const msgContainer = ref(null)
 const loadingHistory = ref(false)
 const hasMoreMessages = ref(true)
 let socket = null
+let messageSyncTimer = null
+let messageSyncInFlight = false
 
 const uploading = ref(false)
 const showInfo = ref(false)
 const showMore = ref(false)
+const showQuickReplies = ref(false)
+const sendingQuickReplyId = ref(null)
+const viewportHeight = ref('100dvh')
+const viewportTop = ref('0px')
 const showCloseConfirm = ref(false)
 const closing = ref(false)
+const confirmAction = ref(null)
+const actionSubmitting = ref(false)
 const preview = ref(null)
 const contextMenu = ref(null)
 const downloadProgress = ref(null)
 const toast = ref('')
 let toastTimer = null
 let longPressTimer = null
+let longPressStart = null
+let suppressBubbleClickUntil = 0
 
 const currentUserId = JSON.parse(sessionStorage.getItem('tenant_user') || localStorage.getItem('tenant_user') || 'null')?._id
 const canDeleteMessage = (msg) => msg.senderType !== 'system' && msg._id
@@ -55,13 +69,27 @@ async function loadConversation() {
 async function loadMessages() {
   if (!props.conversationId) return
   try {
-    const res = await api.get(`/tenant/conversations/${props.conversationId}/messages`, { params: { limit: 50 } })
+    const params = props.targetMessageId
+      ? { limit: 100, around: props.targetMessageId }
+      : { limit: 50 }
+    const res = await api.get(`/tenant/conversations/${props.conversationId}/messages`, { params })
     if (res.code === 0) {
       messages.value = res.data || []
-      hasMoreMessages.value = messages.value.length === 50
-      await scrollToLatest()
+      hasMoreMessages.value = props.targetMessageId ? true : messages.value.length === 50
+      if (props.targetMessageId) await locateMessage(props.targetMessageId)
+      else await scrollToLatest()
     }
   } catch {}
+}
+
+async function locateMessage(messageId) {
+  await nextTick()
+  const element = msgContainer.value?.querySelector(`[data-message-id="${messageId}"]`)
+  if (!element) return
+  element.scrollIntoView({ block: 'center' })
+  element.classList.add('cp-message-highlight')
+  setTimeout(() => element.classList.remove('cp-message-highlight'), 2200)
+  emit('message-located', messageId)
 }
 
 async function loadPreviousMessages() {
@@ -89,6 +117,7 @@ async function loadPreviousMessages() {
 }
 
 function handleMessageScroll() {
+  cancelLongPress()
   if ((msgContainer.value?.scrollTop || 0) <= 24) loadPreviousMessages()
 }
 
@@ -110,6 +139,33 @@ async function accept() {
   } catch (e) { alert(e?.message || '接入失败') }
 }
 
+function mergeMessage(message) {
+  if (!message) return
+  const index = messages.value.findIndex(item =>
+    String(item._id) === String(message._id) ||
+    (item.clientMessageId && item.clientMessageId === message.clientMessageId)
+  )
+  if (index >= 0) messages.value[index] = message
+  else messages.value.push(message)
+}
+
+async function syncLatestMessages() {
+  const conversationId = props.conversationId
+  if (!conversationId || messageSyncInFlight) return
+  messageSyncInFlight = true
+  try {
+    const res = await api.get(`/tenant/conversations/${conversationId}/messages`, { params: { limit: 50 } })
+    if (res.code === 0 && String(conversationId) === String(props.conversationId)) {
+      ;(res.data || []).forEach(mergeMessage)
+    }
+  } catch {}
+  finally { messageSyncInFlight = false }
+}
+
+function handleVisibilityChange() {
+  if (document.visibilityState === 'visible') syncLatestMessages()
+}
+
 async function sendMsg() {
   if (!input.value.trim() || sending.value) return
   if (!accepted.value) { alert('请先接入会话'); return }
@@ -119,9 +175,31 @@ async function sendMsg() {
     const res = await api.post(`/tenant/conversations/${props.conversationId}/messages`, {
       content: text, clientMessageId: 'a_' + Date.now(),
     })
-    if (res.code === 0) { messages.value.push(res.data); await scrollToLatest() }
-  } catch (e) { input.value = text; alert(e?.message || '发送失败') }
+    if (res.code === 0) { mergeMessage(res.data); await scrollToLatest() }
+  } catch (e) {
+    input.value = text; alert(e?.message || '发送失败')
+  }
   finally { sending.value = false }
+}
+
+async function runCustomerAction() {
+  if (!confirmAction.value || actionSubmitting.value) return
+  actionSubmitting.value = true
+  try {
+    const type = confirmAction.value
+    if (type === 'clear') {
+      const res = await api.delete(`/tenant/conversations/${props.conversationId}/messages`)
+      if (res.code === 0) messages.value = []
+    } else {
+      const field = type === 'block' ? 'blocked' : 'messageReceivingDisabled'
+      const current = Boolean(conversation.value.customer?.[field])
+      const res = await api.patch(`/tenant/conversations/${props.conversationId}/customer-settings`, { [field]: !current })
+      if (res.code === 0) Object.assign(conversation.value.customer, res.data)
+    }
+    showToast('操作成功')
+    confirmAction.value = null
+  } catch (e) { showToast(e?.message || '操作失败') }
+  finally { actionSubmitting.value = false }
 }
 
 async function close() {
@@ -150,12 +228,13 @@ async function handleUpload(ev) {
       const mediaType = fi.isImage ? 'image' : (fi.mimetype?.startsWith('video/') ? 'video' : 'file')
       const body = {
         messageType: mediaType,
-        content: mediaType !== 'file' ? fi.url : '',
+        content: '',
         attachmentUrl: fi.url, attachmentName: fi.name,
+        thumbnailUrl: fi.thumbnailUrl || '',
         clientMessageId: 'up_' + Date.now(),
       }
       const sr = await api.post(`/tenant/conversations/${props.conversationId}/messages`, body)
-      if (sr.code === 0) { messages.value.push(sr.data); await scrollToLatest() }
+      if (sr.code === 0) { mergeMessage(sr.data); await scrollToLatest() }
     } else alert(res.message || '上传失败')
   } catch (e) { alert(e?.message || '上传失败') }
   finally { uploading.value = false; ev.target.value = '' }
@@ -166,8 +245,16 @@ function setupSocket() {
   const token = sessionStorage.getItem('tenant_token') || localStorage.getItem('tenant_token')
   if (!token) return
   socket = io({ auth: { token, type: 'tenant_user' }, transports: ['websocket', 'polling'] })
+  socket.on('connect', () => {
+    syncLatestMessages()
+    const customerId = conversation.value?.customer?._id
+    if (customerId) socket.emit('presence:query', { type: 'customer', userId: customerId }, ({ online } = {}) => { customerOnline.value = Boolean(online) })
+  })
+  socket.on('presence:changed', (data) => {
+    if (data.type === 'customer' && String(data.userId) === String(conversation.value?.customer?._id)) customerOnline.value = Boolean(data.online)
+  })
   socket.on('message.new', (msg) => {
-    if (String(msg.conversationId) === String(props.conversationId)) { messages.value.push(msg); nextTick(scrollToBottom) }
+    if (String(msg.conversationId) === String(props.conversationId)) { mergeMessage(msg); nextTick(scrollToBottom) }
   })
   socket.on('message.recalled', applyRecall)
   socket.on('message.deleted', applyDelete)
@@ -186,20 +273,60 @@ async function init() {
   loading.value = true
   try {
     await Promise.all([loadConversation(), loadMessages()])
-    if (conversation.value) { await loadQuickReplies(); setupSocket() }
+    if (conversation.value) {
+      await loadQuickReplies(); setupSocket()
+      clearInterval(messageSyncTimer)
+      messageSyncTimer = setInterval(syncLatestMessages, 30000)
+    }
   } catch {} finally {
     loading.value = false
-    await scrollToLatest()
   }
 }
 
-watch(() => props.conversationId, (id) => {
-  socket?.disconnect(); socket = null
-  if (id) init()
-  else { conversation.value = null; messages.value = [] }
-}, { immediate: true })
+watch(
+  () => [props.conversationId, props.targetMessageId],
+  ([id, targetId], [previousId, previousTargetId] = []) => {
+    if (id === previousId) {
+      if (targetId && targetId !== previousTargetId) loadMessages()
+      return
+    }
+    socket?.disconnect(); socket = null
+    customerOnline.value = false
+    clearInterval(messageSyncTimer); messageSyncTimer = null
+    showMore.value = false
+    showQuickReplies.value = false
+    quickReplies.value = []
+    if (id) init()
+    else { conversation.value = null; messages.value = [] }
+  },
+  { immediate: true },
+)
 
-onUnmounted(() => { socket?.disconnect(); clearTimeout(toastTimer); clearTimeout(longPressTimer) })
+function updateViewport() {
+  const viewport = window.visualViewport
+  viewportHeight.value = `${Math.round(viewport?.height || window.innerHeight)}px`
+  viewportTop.value = `${Math.round(viewport?.offsetTop || 0)}px`
+  requestAnimationFrame(scrollToBottom)
+}
+
+onMounted(() => {
+  updateViewport()
+  window.visualViewport?.addEventListener('resize', updateViewport)
+  window.visualViewport?.addEventListener('scroll', updateViewport)
+  window.addEventListener('resize', updateViewport)
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+})
+
+onUnmounted(() => {
+  socket?.disconnect()
+  clearInterval(messageSyncTimer)
+  clearTimeout(toastTimer)
+  clearTimeout(longPressTimer)
+  window.visualViewport?.removeEventListener('resize', updateViewport)
+  window.visualViewport?.removeEventListener('scroll', updateViewport)
+  window.removeEventListener('resize', updateViewport)
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+})
 
 function scrollToBottom() {
   if (!msgContainer.value) return
@@ -243,25 +370,97 @@ async function downloadFile(url, name = '下载文件') {
 }
 function showContextMenu(event, msg) {
   event.preventDefault()
-  const x = Math.min(event.clientX || innerWidth / 2, innerWidth - 150)
-  const y = Math.min(event.clientY || innerHeight / 2, innerHeight - 160)
+  const x = Math.max(8, Math.min(event.clientX || innerWidth / 2, innerWidth - 150))
+  const y = Math.max(8, Math.min(event.clientY || innerHeight / 2, innerHeight - 160))
   contextMenu.value = { msg, x, y }
+}
+function closeContextMenu() {
+  contextMenu.value = null
 }
 function startLongPress(event, msg) {
   clearTimeout(longPressTimer)
   const point = event.touches?.[0]
-  const position = { preventDefault() {}, clientX: point?.clientX, clientY: point?.clientY }
-  longPressTimer = setTimeout(() => showContextMenu(position, msg), 550)
+  if (!point) return
+  longPressStart = { x: point.clientX, y: point.clientY }
+  const position = { preventDefault() {}, clientX: point.clientX, clientY: point.clientY }
+  longPressTimer = setTimeout(() => {
+    suppressBubbleClickUntil = Date.now() + 700
+    showContextMenu(position, msg)
+  }, 550)
 }
-function cancelLongPress() { clearTimeout(longPressTimer) }
+function moveLongPress(event) {
+  const point = event.touches?.[0]
+  if (!point || !longPressStart) return
+  if (Math.hypot(point.clientX - longPressStart.x, point.clientY - longPressStart.y) > 10) cancelLongPress()
+}
+function finishLongPress() {
+  cancelLongPress()
+}
+function cancelLongPress() {
+  clearTimeout(longPressTimer)
+  longPressStart = null
+}
+
+function handleBubbleClick(event) {
+  if (Date.now() >= suppressBubbleClickUntil) return
+  event.preventDefault()
+  event.stopPropagation()
+}
+function showVideoFirstFrame(event) {
+  const video = event.currentTarget
+  if (!video || !Number.isFinite(video.duration) || video.duration <= 0) return
+
+  const captureFrame = () => {
+    try {
+      const canvas = document.createElement('canvas')
+      canvas.width = video.videoWidth
+      canvas.height = video.videoHeight
+      canvas.getContext('2d')?.drawImage(video, 0, 0)
+      video.poster = canvas.toDataURL('image/jpeg', 0.82)
+    } catch {}
+  }
+
+  video.addEventListener('seeked', captureFrame, { once: true })
+  video.currentTime = Math.min(0.2, video.duration / 2)
+}
+function fallbackCopyText(text) {
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.readOnly = true
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  textarea.style.top = '0'
+  document.body.appendChild(textarea)
+  try {
+    textarea.focus()
+    textarea.select()
+    textarea.setSelectionRange(0, textarea.value.length)
+    return document.execCommand('copy')
+  } finally {
+    textarea.remove()
+  }
+}
 async function copyMessage(msg) {
-  await navigator.clipboard.writeText(msg.content || msg.attachmentUrl || '')
-  contextMenu.value = null; showToast('已复制')
+  const text = String(msg.content || '')
+  try {
+    if (!text) throw new Error('没有可复制的内容')
+    let copied = false
+    if (window.isSecureContext && navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text)
+        copied = true
+      } catch {}
+    }
+    if (!copied) copied = fallbackCopyText(text)
+    if (!copied) throw new Error('复制失败')
+    showToast('已复制')
+  } catch { showToast('复制失败') }
+  contextMenu.value = null
 }
 async function recallMessage(msg) {
   try {
     await api.post(`/tenant/conversations/${props.conversationId}/messages/${msg._id}/recall`)
-    Object.assign(msg, { recalledAt: new Date().toISOString(), content: '', attachmentUrl: '', attachmentName: '' })
+    Object.assign(msg, { recalledAt: new Date().toISOString(), content: '', attachmentUrl: '', attachmentName: '', thumbnailUrl: '' })
     showToast('消息已撤回')
   } catch (e) { showToast(e?.message || '撤回失败') }
   contextMenu.value = null
@@ -277,12 +476,48 @@ async function deleteMessage(msg) {
 function applyRecall(data) {
   if (String(data.conversationId) !== String(props.conversationId)) return
   const msg = messages.value.find(item => String(item._id) === String(data.messageId))
-  if (msg) Object.assign(msg, { recalledAt: data.recalledAt, content: '', attachmentUrl: '', attachmentName: '' })
+  if (msg) Object.assign(msg, { recalledAt: data.recalledAt, content: '', attachmentUrl: '', attachmentName: '', thumbnailUrl: '' })
 }
 function applyDelete(data) {
   if (String(data.conversationId) === String(props.conversationId)) messages.value = messages.value.filter(item => String(item._id) !== String(data.messageId))
 }
-function useQuickReply(text) { input.value = text; showMore.value = false }
+async function sendQuickReply(qr) {
+  if (!accepted.value || conversation.value?.status !== 'active' || sendingQuickReplyId.value) return
+  sendingQuickReplyId.value = qr._id
+  try {
+    const payload = {
+      content: String(qr.content || '').trim(),
+      clientMessageId: 'qr_' + Date.now(),
+    }
+    if (qr.imageUrl) Object.assign(payload, { messageType: 'image', attachmentUrl: qr.imageUrl, attachmentName: qr.imageName || '' })
+    const res = await api.post(`/tenant/conversations/${props.conversationId}/messages`, payload)
+    if (res.code !== 0) throw new Error(res.message || '发送失败')
+    mergeMessage(res.data)
+    showQuickReplies.value = false
+    await scrollToLatest()
+  } catch (e) { showToast(e?.message || '快捷回复发送失败') }
+  finally { sendingQuickReplyId.value = null }
+}
+function imageCaption(msg) {
+  const content = String(msg.content || '').trim()
+  if (!content || content === '[图片]' || content === String(msg.attachmentUrl || '').trim()) return ''
+  return content
+}
+function parseMessageContent(content = '') {
+  const urlPattern = /((?:https?:\/\/|www\.)[^\s<]+)/gi
+  const parts = []
+  let lastIndex = 0
+  for (const match of String(content).matchAll(urlPattern)) {
+    if (match.index > lastIndex) parts.push({ type: 'text', text: content.slice(lastIndex, match.index) })
+    const trailing = match[0].match(/[，。！？；：、,.!?;:]+$/)?.[0] || ''
+    const text = trailing ? match[0].slice(0, -trailing.length) : match[0]
+    parts.push({ type: 'link', text, href: text.toLowerCase().startsWith('www.') ? `https://${text}` : text })
+    if (trailing) parts.push({ type: 'text', text: trailing })
+    lastIndex = match.index + match[0].length
+  }
+  if (lastIndex < content.length) parts.push({ type: 'text', text: content.slice(lastIndex) })
+  return parts.length ? parts : [{ type: 'text', text: content }]
+}
 function formatTime(iso) { return iso ? new Date(iso).toTimeString().slice(0, 5) : '' }
 function formatDateTime(iso) {
   if (!iso) return '-'
@@ -296,7 +531,11 @@ defineExpose({ reload: init })
 </script>
 
 <template>
-  <div class="cp-panel" :class="{ loading }">
+  <div
+    class="cp-panel"
+    :class="{ loading }"
+    :style="{ top: viewportTop, height: viewportHeight }"
+  >
     <div v-if="loading" class="cp-loading">加载中...</div>
     <div v-else-if="!conversation" class="cp-empty">
       <div class="cp-empty-emoji">💬</div>
@@ -318,8 +557,8 @@ defineExpose({ reload: init })
                 {{ conversation.status === 'active' ? '处理中' : conversation.status === 'waiting' ? '待接入' : '已结束' }}
               </span>
             </div>
-            <div class="cp-sub">
-              {{ conversation.channel?.name || '—' }} · {{ conversation.customer?.email || '无邮箱' }}
+            <div class="cp-sub" :class="customerOnline ? 'is-online' : 'is-offline'">
+              <span class="cp-presence-dot"></span>{{ customerOnline ? '客户在线' : '客户离线' }}
             </div>
           </div>
         </div>
@@ -346,23 +585,34 @@ defineExpose({ reload: init })
             <span>{{ msg.senderType === 'customer' ? '客户撤回一条消息' : '客服撤回一条消息' }}</span>
           </div>
 
-          <div v-else-if="msg.senderType === 'system'" class="cp-system-msg">
+          <div v-else-if="msg.senderType === 'system'" class="cp-system-msg" :data-message-id="msg._id">
             <span>{{ msg.content }}</span>
           </div>
 
-          <div v-else class="cp-bubble-row" :class="msg.senderType === 'customer' ? 'is-left' : 'is-right'">
+          <div v-else class="cp-bubble-row" :data-message-id="msg._id" :class="msg.senderType === 'customer' ? 'is-left' : 'is-right'">
             <template v-if="msg.senderType === 'customer'">
               <img v-if="conversation.customer?.avatarUrl" class="cp-bubble-avatar" :src="conversation.customer.avatarUrl" alt="客户头像" />
               <div v-else class="cp-bubble-avatar" :style="{ background: `linear-gradient(135deg,#f59e0b,#d97706)` }">{{ avatarChar() }}</div>
               <div class="cp-bubble-wrap">
-                <div class="cp-bubble cp-bubble-customer" @contextmenu="showContextMenu($event, msg)" @touchstart="startLongPress($event, msg)" @touchend="cancelLongPress" @touchcancel="cancelLongPress" @touchmove="cancelLongPress">
+                <div class="cp-bubble cp-bubble-customer" :class="{ 'cp-media-message-bubble': ['image', 'video', 'file'].includes(msg.messageType) && msg.attachmentUrl, 'cp-menu-active': contextMenu?.msg === msg }" @contextmenu="showContextMenu($event, msg)" @touchstart="startLongPress($event, msg)" @touchend="finishLongPress" @touchcancel="cancelLongPress" @touchmove="moveLongPress" @click.capture="handleBubbleClick">
                   <template v-if="msg.recalledAt"><span class="cp-recalled">消息已撤回</span></template>
-                  <img v-else-if="msg.messageType === 'image' && msg.attachmentUrl" :src="msg.attachmentUrl" class="cp-bubble-img" @click="openPreview(msg)" />
-                  <video v-else-if="msg.messageType === 'video' && msg.attachmentUrl" :src="msg.attachmentUrl" class="cp-bubble-img" @click.prevent="openPreview(msg)"></video>
+                  <template v-else-if="msg.messageType === 'image' && msg.attachmentUrl"><img :src="msg.attachmentUrl" class="cp-bubble-img" @click="openPreview(msg)" /><div v-if="imageCaption(msg)" class="cp-image-caption">{{ imageCaption(msg) }}</div></template>
+                  <template v-else-if="msg.messageType === 'video' && msg.attachmentUrl">
+                    <div class="cp-video-wrap">
+                      <img v-if="msg.thumbnailUrl" :src="msg.thumbnailUrl" :alt="msg.attachmentName || '视频封面'" class="cp-bubble-img cp-bubble-video" loading="lazy" @load="scrollToBottom" @click.prevent="openPreview(msg)" />
+                      <video v-else :src="msg.attachmentUrl" class="cp-bubble-img cp-bubble-video" preload="metadata" playsinline muted @loadeddata="showVideoFirstFrame($event); scrollToBottom()" @click.prevent="openPreview(msg)"></video>
+                      <span class="cp-video-play-icon" @click.prevent="openPreview(msg)">▶</span>
+                    </div>
+                  </template>
                   <button v-else-if="msg.messageType === 'file' && msg.attachmentUrl" class="cp-bubble-file" @click="downloadFile(msg.attachmentUrl, msg.attachmentName)">
                     📎 {{ msg.attachmentName || '文件' }}
                   </button>
-                  <template v-else>{{ msg.content }}</template>
+                  <template v-else>
+                    <template v-for="(part, index) in parseMessageContent(msg.content)" :key="index">
+                      <a v-if="part.type === 'link'" class="cp-message-link" :href="part.href" target="_blank" rel="noopener noreferrer" @click.stop>{{ part.text }}</a>
+                      <span v-else>{{ part.text }}</span>
+                    </template>
+                  </template>
                 </div>
                 <div class="cp-bubble-time">{{ formatTime(msg.createdAt) }}</div>
               </div>
@@ -370,40 +620,46 @@ defineExpose({ reload: init })
 
             <template v-else>
               <div class="cp-bubble-wrap">
-                <div class="cp-bubble" @contextmenu="showContextMenu($event, msg)" @touchstart="startLongPress($event, msg)" @touchend="cancelLongPress" @touchcancel="cancelLongPress" @touchmove="cancelLongPress">
+                <div class="cp-bubble" :class="{ 'cp-media-message-bubble': ['image', 'video', 'file'].includes(msg.messageType) && msg.attachmentUrl, 'cp-menu-active': contextMenu?.msg === msg }" @contextmenu="showContextMenu($event, msg)" @touchstart="startLongPress($event, msg)" @touchend="finishLongPress" @touchcancel="cancelLongPress" @touchmove="moveLongPress" @click.capture="handleBubbleClick">
                   <template v-if="msg.recalledAt"><span class="cp-recalled">消息已撤回</span></template>
-                  <img v-else-if="msg.messageType === 'image' && msg.attachmentUrl" :src="msg.attachmentUrl" class="cp-bubble-img" @click="openPreview(msg)" />
-                  <video v-else-if="msg.messageType === 'video' && msg.attachmentUrl" :src="msg.attachmentUrl" class="cp-bubble-img" @click.prevent="openPreview(msg)"></video>
+                  <template v-else-if="msg.messageType === 'image' && msg.attachmentUrl"><img :src="msg.attachmentUrl" class="cp-bubble-img" @click="openPreview(msg)" /><div v-if="imageCaption(msg)" class="cp-image-caption">{{ imageCaption(msg) }}</div></template>
+                  <template v-else-if="msg.messageType === 'video' && msg.attachmentUrl">
+                    <div class="cp-video-wrap">
+                      <img v-if="msg.thumbnailUrl" :src="msg.thumbnailUrl" :alt="msg.attachmentName || '视频封面'" class="cp-bubble-img cp-bubble-video" loading="lazy" @load="scrollToBottom" @click.prevent="openPreview(msg)" />
+                      <video v-else :src="msg.attachmentUrl" class="cp-bubble-img cp-bubble-video" preload="metadata" playsinline muted @loadeddata="showVideoFirstFrame($event); scrollToBottom()" @click.prevent="openPreview(msg)"></video>
+                      <span class="cp-video-play-icon" @click.prevent="openPreview(msg)">▶</span>
+                    </div>
+                  </template>
                   <button v-else-if="msg.messageType === 'file' && msg.attachmentUrl" class="cp-bubble-file" @click="downloadFile(msg.attachmentUrl, msg.attachmentName)">
                     📎 {{ msg.attachmentName || '文件' }}
                   </button>
-                  <template v-else>{{ msg.content }}</template>
+                  <template v-else>
+                    <template v-for="(part, index) in parseMessageContent(msg.content)" :key="index">
+                      <a v-if="part.type === 'link'" class="cp-message-link" :href="part.href" target="_blank" rel="noopener noreferrer" @click.stop>{{ part.text }}</a>
+                      <span v-else>{{ part.text }}</span>
+                    </template>
+                  </template>
                 </div>
                 <div v-if="msg.autoReplyType === 'keyword'" class="cp-keyword-reply-notice">关键词自动回复内容可作为参考</div>
                 <div class="cp-bubble-time">{{ formatTime(msg.createdAt) }}</div>
               </div>
-              <img v-if="msg.senderType === 'agent' && msg.sender?.avatarUrl" class="cp-bubble-avatar" :src="msg.sender.avatarUrl" alt="客服头像" />
+              <img v-if="msg.senderType === 'agent' && (msg.sender?.avatarUrl || conversation.channel?.avatarUrl)" class="cp-bubble-avatar" :src="msg.sender?.avatarUrl || conversation.channel.avatarUrl" alt="客服头像" />
               <div v-else class="cp-bubble-avatar" :style="{ background: `linear-gradient(135deg,#2563eb,#1d4ed8)` }">{{ msg.senderType === 'bot' ? 'AI' : (msg.sender?.displayName?.[0] || '我') }}</div>
             </template>
           </div>
         </template>
       </div>
 
-      <!-- 快捷回复 -->
-      <div v-if="quickReplies.length > 0 && accepted && conversation.status === 'active'" class="cp-quick">
-        <button v-for="qr in quickReplies" :key="qr._id" class="cp-quick-btn" @click="useQuickReply(qr.content)">{{ qr.title }}</button>
-      </div>
-
       <!-- 输入区 -->
       <div class="cp-input-area">
         <div class="cp-input-row">
-          <button class="cp-more-btn" @click="showMore = !showMore">+</button>
+          <button class="cp-more-btn" @click="showMore = !showMore; showQuickReplies = false">+</button>
           <textarea
             v-model="input"
             class="cp-input"
-            placeholder="输入消息，Enter 发送，Shift+Enter 换行"
+            placeholder="输入消息"
             rows="2"
-            @keydown.enter.exact.prevent="sendMsg"
+            @focus="showQuickReplies = false; showMore = false; scrollToLatest()"
             :disabled="!accepted || conversation.status === 'closed'"
           ></textarea>
           <button class="cp-send-btn" @click="sendMsg" :disabled="sending || !input.trim() || !accepted">发送</button>
@@ -412,15 +668,40 @@ defineExpose({ reload: init })
         <div v-if="showMore" class="cp-more-panel">
           <div class="cp-more-grid">
             <label class="cp-more-item" :class="{ disabled: !accepted || uploading }">
-              <input type="file" accept="image/*,video/*,.pdf,.zip,.doc,.docx" @change="handleUpload" style="display:none" />
-              <span class="cp-more-icon">📎</span><span>发送文件</span>
+              <input type="file" accept="image/*" @change="handleUpload" style="display:none" />
+              <span class="cp-more-icon">▧</span><span>发送图片</span>
             </label>
-            <button class="cp-more-item" @click="showInfo = true">
+            <label class="cp-more-item" :class="{ disabled: !accepted || uploading }">
+              <input type="file" accept="video/*" @change="handleUpload" style="display:none" />
+              <span class="cp-more-icon">▷</span><span>发送视频</span>
+            </label>
+            <label class="cp-more-item" :class="{ disabled: !accepted || uploading }">
+              <input type="file" accept=".pdf,.zip,.txt,.doc,.docx" @change="handleUpload" style="display:none" />
+              <span class="cp-more-icon">▤</span><span>发送文件</span>
+            </label>
+            <button class="cp-more-item" :disabled="!accepted || conversation.status !== 'active'" @click="showMore = false; showQuickReplies = true">
+              <span class="cp-more-icon">💬</span><span>快捷回复</span>
+            </button>
+            <button class="cp-more-item" @click="showMore = false; showInfo = true">
               <span class="cp-more-icon">👤</span><span>客户资料</span>
             </button>
           </div>
         </div>
       </div>
+
+      <section v-if="showQuickReplies" class="cp-quick-screen" aria-label="快捷回复列表">
+        <header class="cp-quick-screen-header">
+          <button type="button" aria-label="返回聊天" @click="showQuickReplies = false">←</button>
+          <div><strong>快捷回复</strong><small>点击条目直接发送</small></div>
+        </header>
+        <div class="cp-quick-screen-list">
+          <div v-if="!quickReplies.length" class="cp-quick-empty">暂无快捷回复</div>
+          <button v-for="qr in quickReplies" :key="qr._id" class="cp-quick-item" :disabled="Boolean(sendingQuickReplyId)" @click="sendQuickReply(qr)">
+            <span><strong>{{ qr.title }}</strong><small>{{ qr.content || '图片回复' }}</small></span>
+            <img v-if="qr.imageUrl" :src="qr.imageUrl" alt="快捷回复图片" />
+          </button>
+        </div>
+      </section>
     </template>
 
     <div v-if="preview" class="cp-preview" @click.self="closePreview">
@@ -432,9 +713,9 @@ defineExpose({ reload: init })
       <video v-else :src="preview.url" controls autoplay></video>
     </div>
 
-    <div v-if="contextMenu" class="cp-menu-mask" @pointerdown="contextMenu = null">
+    <div v-if="contextMenu" class="cp-menu-mask" @pointerdown="closeContextMenu">
       <div class="cp-menu" :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }" @pointerdown.stop>
-        <button v-if="contextMenu.msg.messageType !== 'image'" type="button" @click="copyMessage(contextMenu.msg)">复制</button>
+        <button v-if="contextMenu.msg.messageType !== 'image' && String(contextMenu.msg.content || '')" type="button" @click="copyMessage(contextMenu.msg)">复制</button>
         <button v-if="canRecallMessage(contextMenu.msg)" type="button" @click="recallMessage(contextMenu.msg)">撤回</button>
         <button v-if="canDeleteMessage(contextMenu.msg)" type="button" class="danger" @click="deleteMessage(contextMenu.msg)">删除</button>
       </div>
@@ -451,20 +732,28 @@ defineExpose({ reload: init })
       <div class="cp-info-content">
         <div class="cp-info-title">客户资料<button class="cp-info-close" @click="showInfo = false">×</button></div>
         <div class="cp-info-body">
-          <div class="cp-info-row"><span>手机号</span><span>{{ conversation.customer?.phone || '-' }}</span></div>
-          <div class="cp-info-row"><span>QQ号</span><span>{{ conversation.customer?.qq || '未填写' }}</span></div>
-          <div class="cp-info-row"><span>邮箱</span><span>{{ conversation.customer?.email || '未填写' }}</span></div>
-          <div class="cp-info-row"><span>昵称</span><span>{{ conversation.customer?.nickname || '访客' }}</span></div>
-          <div class="cp-info-row"><span>所属渠道</span><span>{{ conversation.channel?.name || '-' }}</span></div>
-          <div class="cp-info-row"><span>注册 IP</span><span>{{ conversation.customer?.registerIp || '-' }}</span></div>
-          <div class="cp-info-row"><span>浏览器</span><span class="cp-info-ua">{{ conversation.customer?.registerUserAgent || '-' }}</span></div>
-          <div class="cp-info-row"><span>注册时间</span><span>{{ formatDateTime(conversation.customer?.createdAt) }}</span></div>
           <div class="cp-info-row"><span>会话 ID</span><span class="cp-info-id">{{ conversation._id }}</span></div>
           <div class="cp-info-row"><span>接入时间</span><span>{{ formatDateTime(conversation.acceptedAt) }}</span></div>
           <div class="cp-info-row"><span>结束时间</span><span>{{ formatDateTime(conversation.closedAt) }}</span></div>
         </div>
+        <div class="cp-info-actions">
+          <button @click="confirmAction = 'receive'">{{ conversation.customer?.messageReceivingDisabled ? '恢复接收客户消息' : '不接收该客户信息' }}</button>
+          <button class="danger" @click="confirmAction = 'block'">{{ conversation.customer?.blocked ? '解除拉黑客户' : '拉黑该客户' }}</button>
+          <button class="danger" @click="confirmAction = 'clear'">清理对话内容</button>
+        </div>
       </div>
     </div>
+
+    <ConfirmDialog
+      :open="Boolean(confirmAction)"
+      :title="confirmAction === 'clear' ? '清理对话内容' : (confirmAction === 'block' ? (conversation?.customer?.blocked ? '解除拉黑客户' : '拉黑该客户') : (conversation?.customer?.messageReceivingDisabled ? '恢复接收客户消息' : '不接收该客户信息'))"
+      :message="confirmAction === 'clear' ? '只会清理当前客服界面中的全部消息，客户界面的消息不会删除。' : (confirmAction === 'block' ? '拉黑后客服不会收到该客户消息，客户发送时会显示失败感叹号。' : '关闭接收后，该客户将无法向客服发送消息。')"
+      confirm-text="确认"
+      :danger="confirmAction === 'clear' || confirmAction === 'block'"
+      :loading="actionSubmitting"
+      @confirm="runCustomerAction"
+      @cancel="confirmAction = null"
+    />
 
     <ConfirmDialog
       :open="showCloseConfirm"
@@ -483,8 +772,9 @@ defineExpose({ reload: init })
 .cp-preview{position:fixed;inset:0;z-index:300;background:rgba(0,0,0,.92);display:flex;align-items:center;justify-content:center}.cp-preview>img,.cp-preview>video{max-width:96vw;max-height:92vh;object-fit:contain}.cp-preview-actions{position:absolute;right:18px;top:18px;display:flex;gap:10px;z-index:1}.cp-preview-actions button{border:0;border-radius:8px;background:rgba(255,255,255,.18);color:#fff;padding:9px 14px;cursor:pointer}.cp-preview-actions .cp-preview-close{font-size:24px;line-height:20px}.cp-menu-mask{position:fixed;inset:0;z-index:250}.cp-menu{position:fixed;width:140px;padding:6px;background:#fff;border-radius:10px;box-shadow:0 8px 30px rgba(15,23,42,.25);display:flex;flex-direction:column}.cp-menu button{border:0;background:transparent;text-align:left;padding:10px 12px;border-radius:6px;cursor:pointer}.cp-menu button:hover{background:#f1f5f9}.cp-menu button.danger{color:#dc2626}.cp-download,.cp-toast{position:fixed;z-index:320;left:50%;bottom:24px;transform:translateX(-50%);background:#0f172a;color:#fff;border-radius:10px;padding:10px 16px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.2)}.cp-download span{display:block;width:180px;height:3px;background:#475569;margin-top:7px}.cp-download i{display:block;height:100%;background:#60a5fa}.cp-recalled{font-style:italic;opacity:.75}.cp-bubble-file{border:0;cursor:pointer;font-family:inherit}
 .cp-avatar-image { object-fit: cover; }
 .cp-panel {
+  position: fixed; left: 0; right: 0;
   display: flex; flex: 1 1 auto; flex-direction: column;
-  width: 100%; height: 100%; min-width: 0; min-height: 0;
+  width: 100%; min-width: 0; min-height: 0;
   overflow: hidden; background: #f8fafc;
 }
 .cp-loading, .cp-empty { flex: 1; display: flex; align-items: center; justify-content: center; flex-direction: column; color: #94a3b8; }
@@ -514,7 +804,10 @@ defineExpose({ reload: init })
 .cp-status-tag.active { background: #dcfce7; color: #16a34a; }
 .cp-status-tag.waiting { background: #dbeafe; color: #2563eb; }
 .cp-status-tag.closed { background: #f1f5f9; color: #94a3b8; }
-.cp-sub { font-size: 12px; color: #94a3b8; margin-top: 2px; }
+.cp-sub { display: flex; align-items: center; gap: 5px; font-size: 12px; margin-top: 2px; }
+.cp-sub.is-online { color: #16a34a; }
+.cp-sub.is-offline { color: #94a3b8; }
+.cp-presence-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .cp-header-actions { display: flex; gap: 8px; flex-shrink: 0; }
 .cp-btn { padding: 7px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; border: none; cursor: pointer; transition: all .15s; }
 .cp-btn-primary { background: #2563eb; color: #fff; }
@@ -550,9 +843,11 @@ defineExpose({ reload: init })
   display: flex; flex-direction: column; gap: 2px; max-width: 72%;
 }
 .cp-keyword-reply-notice { color: #94a3b8; font-size: 11px; line-height: 1.4; padding: 1px 2px 0; }
-.cp-bubble-time { font-size: 11px; color: #94a3b8; line-height: 1; padding: 0 2px; }
+.cp-bubble-time { font-size: 11px; color: #94a3b8; line-height: 1; padding: 0 2px; -webkit-user-select: none; user-select: none; }
 
 /* 客户气泡：左 */
+.cp-message-highlight { animation: cp-message-highlight 2.2s ease; border-radius: 12px; }
+@keyframes cp-message-highlight { 0%, 45% { background: rgba(250,204,21,.3); box-shadow: 0 0 0 6px rgba(250,204,21,.12); } 100% { background: transparent; box-shadow: none; } }
 .cp-bubble-row.is-left { flex-direction: row; justify-content: flex-start; }
 .cp-bubble-row.is-left .cp-bubble-wrap { align-items: flex-start; }
 .cp-bubble-row.is-left .cp-bubble {
@@ -570,28 +865,47 @@ defineExpose({ reload: init })
 .cp-bubble-row.is-right { flex-direction: row; justify-content: flex-end; }
 .cp-bubble-row.is-right .cp-bubble-wrap { align-items: flex-end; }
 .cp-bubble-row.is-right .cp-bubble {
-  background: #2563eb; color: #fff;
+  background: #cfe8ff; color: #1a1a1a;
   border-radius: 16px 4px 16px 16px;
-  box-shadow: 0 1px 2px rgba(37,99,235,.25);
+  box-shadow: 0 1px 2px rgba(37,99,235,.14);
 }
 .cp-bubble-row.is-right .cp-bubble::before {
   content: ''; position: absolute; right: -6px; top: 12px;
   width: 0; height: 0; border-top: 6px solid transparent;
-  border-bottom: 6px solid transparent; border-left: 6px solid #2563eb;
+  border-bottom: 6px solid transparent; border-left: 6px solid #cfe8ff;
 }
 
 .cp-bubble {
   position: relative; max-width: 100%; padding: 11px 15px;
-  font-size: 15px; line-height: 1.55; word-break: break-word;
+  font-size: 15px; line-height: 1.55; word-break: break-word; white-space: pre-wrap;
+  -webkit-touch-callout: none; -webkit-user-select: none; user-select: none;
 }
+.cp-bubble.cp-menu-active { filter: brightness(.9); outline: 3px solid rgba(15,23,42,.18); box-shadow: inset 0 0 0 999px rgba(15,23,42,.08); }
+.cp-bubble.cp-media-message-bubble { -webkit-user-select: none; user-select: none; }
+.cp-message-link { color: #2563eb; text-decoration: none; overflow-wrap: anywhere; }
+.cp-bubble-row.is-right .cp-message-link { color: #2563eb; }
+.cp-message-link:hover { opacity: .82; }
 .cp-bubble-avatar {
   width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
   color: #fff; font-weight: 700; font-size: 13px; object-fit: cover;
 }
-.cp-bubble.cp-image-message-bubble { padding: 0; background: transparent; border: 0; box-shadow: none; }
-.cp-bubble.cp-image-message-bubble::before { display: none; }
-.cp-bubble-img { max-width: 200px; border-radius: 8px; display: block; cursor: pointer; }
+.cp-bubble.cp-media-message-bubble { padding: 0; background: transparent; border: 0; box-shadow: none; }
+.cp-bubble.cp-media-message-bubble::before { display: none; }
+.cp-bubble-img { max-width: min(150px, 42vw); max-height: 200px; border-radius: 8px; display: block; object-fit: contain; cursor: pointer; }
+.cp-video-wrap { position: relative; display: inline-block; max-width: min(150px, 42vw); }
+.cp-video-play-icon {
+  position: absolute; top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 44px; height: 44px;
+  background: rgba(0,0,0,.55);
+  border-radius: 50%;
+  color: #fff; font-size: 18px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; pointer-events: auto;
+}
+.cp-image-caption { margin-top: 6px; padding: 8px 10px; border-radius: 8px; background: #fff; color: #0f172a; white-space: pre-wrap; }
+.cp-bubble-row.is-right .cp-image-caption { background: #cfe8ff; color: #1a1a1a; }
 .cp-bubble-file {
   display: inline-flex; align-items: center; gap: 6px;
   background: #eff6ff; color: #2563eb; text-decoration: none;
@@ -610,9 +924,18 @@ defineExpose({ reload: init })
   font-size: 12px; cursor: pointer; white-space: nowrap;
 }
 .cp-quick-btn:hover { background: #dbeafe; }
+.cp-quick-screen { position: absolute; inset: 0; z-index: 80; display: flex; flex-direction: column; background: #f8fafc; }
+.cp-quick-screen-header { min-height: 64px; padding: 10px 12px; display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,.95); border-bottom: 1px solid #e2e8f0; }
+.cp-quick-screen-header button { width: 40px; height: 40px; flex: 0 0 40px; border: 0; border-radius: 10px; background: transparent; color: #475569; font-size: 20px; }
+.cp-quick-screen-header div { display: flex; flex-direction: column; gap: 2px; }
+.cp-quick-screen-header strong { color: #0f172a; font-size: 16px; }
+.cp-quick-screen-header small { color: #94a3b8; font-size: 12px; }
+.cp-quick-screen-list { flex: 1; min-height: 0; overflow-y: auto; padding: 10px; overscroll-behavior: contain; }
+.cp-quick-empty { padding: 36px 12px; color: #94a3b8; font-size: 14px; text-align: center; }
+.cp-quick-item { width: 100%; min-height: 64px; display: flex; align-items: center; gap: 12px; padding: 11px 12px; border: 0; border-bottom: 1px solid #e2e8f0; background: #fff; text-align: left; }.cp-quick-item:disabled { opacity: .6; }.cp-quick-item img { width: 48px; height: 48px; flex: 0 0 48px; object-fit: cover; border-radius: 9px; }.cp-quick-item span { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 4px; }.cp-quick-item strong { color: #0f172a; font-size: 14px; }.cp-quick-item small { color: #64748b; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.45; }
 
 /* 输入区 */
-.cp-input-area { padding: 10px 16px; background: #fff; border-top: 1px solid #e2e8f0; flex-shrink: 0; }
+.cp-input-area { position: relative; padding: 10px 10px; background: #fff; border-top: 1px solid #e2e8f0; flex-shrink: 0; }
 .cp-input-row { display: flex; gap: 8px; align-items: flex-end; }
 .cp-more-btn {
   width: 36px; height: 36px; border: 1px solid #e2e8f0; background: #fff;
@@ -669,6 +992,9 @@ defineExpose({ reload: init })
 .cp-info-row span:last-child { color: #0f172a; max-width: 55%; text-align: right; word-break: break-all; }
 .cp-info-ua { font-size: 10px; color: #94a3b8 !important; max-width: 55%; }
 .cp-info-id { font-family: monospace; font-size: 11px; }
+.cp-info-actions { padding: 12px 16px calc(20px + env(safe-area-inset-bottom)); display: grid; gap: 10px; border-top: 1px solid #e2e8f0; }
+.cp-info-actions button { width: 100%; padding: 12px; border: 1px solid #cbd5e1; border-radius: 9px; background: #fff; color: #334155; font-size: 14px; }
+.cp-info-actions button.danger { color: #dc2626; border-color: #fecaca; background: #fff7f7; }
 
 /* 移动端 */
 @media (max-width: 768px) {

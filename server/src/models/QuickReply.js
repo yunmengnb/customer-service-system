@@ -22,8 +22,17 @@ const QuickReplySchema = new mongoose.Schema({
   },
   content: {
     type: String,
-    required: true,
+    default: '',
     maxlength: 500,
+  },
+  imageUrl: {
+    type: String,
+    default: '',
+  },
+  imageName: {
+    type: String,
+    default: '',
+    maxlength: 255,
   },
   sortOrder: {
     type: Number,

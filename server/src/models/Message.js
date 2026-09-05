@@ -62,6 +62,10 @@ const MessageSchema = new mongoose.Schema({
     type: String,
     default: '',
   },
+  thumbnailUrl: {
+    type: String,
+    default: '',
+  },
   // 客户端幂等 ID，防止重复发送
   clientMessageId: {
     type: String,

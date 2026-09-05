@@ -22,14 +22,15 @@ const deleteTarget = ref(null)
 
 // 基础信息表单
 const form = reactive({
-  brandName: '', brandColor: '#2563eb', avatarUrl: '', welcomeMessage: '', offlineMessage: '', status: 'online',
+  brandName: '', brandColor: '#2563eb', avatarUrl: '', welcomeMessage: '', welcomeImageUrl: '', welcomeImageName: '', offlineMessage: '', status: 'online',
 })
 const uploadingAvatar = ref(false)
+const uploadingReplyImage = ref(false)
 
 // 关键词弹窗
-const krModal = reactive({ show: false, editing: null, form: { keyword: '', matchType: 'contains', replyContent: '', priority: 0 } })
+const krModal = reactive({ show: false, editing: null, form: { keyword: '', matchType: 'contains', replyContent: '', imageUrl: '', imageName: '', priority: 0 } })
 // 快捷回复弹窗
-const qrModal = reactive({ show: false, editing: null, form: { title: '', content: '', sortOrder: 0 } })
+const qrModal = reactive({ show: false, editing: null, form: { title: '', content: '', imageUrl: '', imageName: '', sortOrder: 0 } })
 
 async function load() {
   const channelId = currentChannelId.value
@@ -41,6 +42,8 @@ async function load() {
       brandColor: res.data.brandColor,
       avatarUrl: res.data.avatarUrl || '',
       welcomeMessage: res.data.welcomeMessage,
+      welcomeImageUrl: res.data.welcomeImageUrl || '',
+      welcomeImageName: res.data.welcomeImageName || '',
       offlineMessage: res.data.offlineMessage,
       status: res.data.status,
     })
@@ -121,10 +124,29 @@ async function uploadAvatar(event) {
   }
 }
 
+async function uploadReplyImage(event, target) {
+  const isWelcome = target === 'welcome'
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  if (!file) return
+  if (!file.type.startsWith('image/')) { alert('请选择图片文件'); return }
+  uploadingReplyImage.value = true
+  try {
+    const data = new FormData()
+    data.append('file', file)
+    const res = await api.upload('/upload/tenant', data)
+    if (res.code !== 0) throw new Error(res.message || '上传失败')
+    if (target === 'welcome') return
+    target.imageUrl = res.data.url
+    target.imageName = res.data.name || file.name
+  } catch (e) { alert(e?.message || '图片上传失败') }
+  finally { uploadingReplyImage.value = false }
+}
+
 function openKr(kr = null) {
   krModal.show = true
   krModal.editing = kr
-  krModal.form = kr ? { keyword: kr.keyword, matchType: kr.matchType, replyContent: kr.replyContent, priority: kr.priority, status: kr.status } : { keyword: '', matchType: 'contains', replyContent: '', priority: 0, status: 'active' }
+  krModal.form = kr ? { keyword: kr.keyword, matchType: kr.matchType, replyContent: kr.replyContent || '', imageUrl: kr.imageUrl || '', imageName: kr.imageName || '', priority: kr.priority, status: kr.status } : { keyword: '', matchType: 'contains', replyContent: '', imageUrl: '', imageName: '', priority: 0, status: 'active' }
 }
 
 async function saveKr() {
@@ -144,12 +166,12 @@ async function delKr(kr) {
 function openQr(qr = null) {
   qrModal.show = true
   qrModal.editing = qr
-  qrModal.form = qr ? { title: qr.title, content: qr.content, sortOrder: qr.sortOrder } : { title: '', content: '', sortOrder: 0 }
+  qrModal.form = qr ? { title: qr.title, content: qr.content || '', imageUrl: qr.imageUrl || '', imageName: qr.imageName || '', sortOrder: qr.sortOrder } : { title: '', content: '', imageUrl: '', imageName: '', sortOrder: 0 }
 }
 
 async function saveQr() {
   const f = qrModal.form
-  if (!f.title || !f.content) { alert('标题和内容不能为空'); return }
+  if (!f.title || (!f.content?.trim() && !f.imageUrl)) { alert('标题不能为空，内容和图片至少填写一项'); return }
   const res = qrModal.editing
     ? await api.patch(`/tenant/channels/${currentChannelId.value}/quick-replies/${qrModal.editing._id}`, f)
     : await api.post(`/tenant/channels/${currentChannelId.value}/quick-replies`, f)
@@ -197,8 +219,9 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="detail-page" v-if="channel">
-    <router-link class="back-link" :to="`${routePrefix}/channels`">← 返回渠道列表</router-link>
+  <div v-if="channel" :class="['detail-page', { embedded }]">
+    <button v-if="embedded" type="button" class="inline-close" @click="emit('close')">← 返回渠道列表</button>
+    <router-link v-else class="back-link" :to="`${routePrefix}/channels`">← 返回渠道列表</router-link>
     
     <div class="detail-section">
       <h3>基础配置</h3>
@@ -235,11 +258,19 @@ onMounted(load)
             {{ uploadingAvatar ? '上传中...' : '上传图片' }}
             <input type="file" accept="image/*" :disabled="uploadingAvatar" @change="uploadAvatar" />
           </label>
-          <button v-if="form.avatarUrl" class="action-btn" @click="form.avatarUrl = ''">移除</button>
+          <button v-if="form.avatarUrl" class="action-btn" @click="removeAvatar">移除</button>
         </div>
       </div>
       <div class="form-group"><label>品牌色</label><input type="color" v-model="form.brandColor" style="width:80px;height:36px;padding:2px;" /></div>
-      <div class="form-group"><label>欢迎词（客户首次进入自动发送）</label><textarea v-model="form.welcomeMessage"></textarea></div>
+      <div class="form-group"><label>欢迎词（客户首次进入自动发送）</label><textarea v-model="form.welcomeMessage" placeholder="文字和图片至少填写一项"></textarea></div>
+      <div class="form-group">
+        <label>欢迎语图片</label>
+        <div class="reply-image-editor">
+          <img v-if="form.welcomeImageUrl" :src="form.welcomeImageUrl" alt="欢迎语图片预览" />
+          <label class="action-btn upload-button">{{ uploadingReplyImage ? '上传中...' : '上传图片' }}<input type="file" accept="image/*" :disabled="uploadingReplyImage" @change="uploadReplyImage($event, 'welcome')" /></label>
+          <button v-if="form.welcomeImageUrl" class="action-btn" @click="form.welcomeImageUrl = ''; form.welcomeImageName = ''">移除</button>
+        </div>
+      </div>
       <div class="form-group"><label>离线提示</label><textarea v-model="form.offlineMessage"></textarea></div>
       <button class="btn-primary" style="padding:8px 20px;border:none;border-radius:6px;cursor:pointer;" @click="saveBasic">保存</button>
     </div>
@@ -255,7 +286,7 @@ onMounted(load)
           <tr v-for="kr in keywords" :key="kr._id">
             <td>{{ kr.keyword }}</td>
             <td>{{ kr.matchType === 'exact' ? '精确匹配' : '包含匹配' }}</td>
-            <td style="max-width:300px;">{{ kr.replyContent }}</td>
+            <td style="max-width:300px;"><div class="reply-cell"><img v-if="kr.imageUrl" :src="kr.imageUrl" alt="附图" /><span>{{ kr.replyContent || '仅图片' }}</span></div></td>
             <td>{{ kr.priority }}</td>
             <td>
               <button class="action-btn" @click="openKr(kr)">编辑</button>
@@ -277,7 +308,7 @@ onMounted(load)
         <tbody>
           <tr v-for="qr in quickReplies" :key="qr._id">
             <td>{{ qr.title }}</td>
-            <td style="max-width:350px;">{{ qr.content }}</td>
+            <td style="max-width:350px;"><div class="reply-cell"><img v-if="qr.imageUrl" :src="qr.imageUrl" alt="附图" /><span>{{ qr.content || '仅图片' }}</span></div></td>
             <td>{{ qr.sortOrder }}</td>
             <td>
               <button class="action-btn" @click="openQr(qr)">编辑</button>
@@ -301,7 +332,8 @@ onMounted(load)
             <option value="exact">精确匹配</option>
           </select>
         </div>
-        <div class="form-group"><label>回复内容</label><textarea v-model="krModal.form.replyContent"></textarea></div>
+        <div class="form-group"><label>回复内容</label><textarea v-model="krModal.form.replyContent" placeholder="文字和图片至少填写一项"></textarea></div>
+        <div class="form-group"><label>回复图片</label><div class="reply-image-editor"><img v-if="krModal.form.imageUrl" :src="krModal.form.imageUrl" alt="回复图片预览" /><label class="action-btn upload-button">{{ uploadingReplyImage ? '上传中...' : '上传图片' }}<input type="file" accept="image/*" :disabled="uploadingReplyImage" @change="uploadReplyImage($event, krModal.form)" /></label><button v-if="krModal.form.imageUrl" class="action-btn" @click="krModal.form.imageUrl = ''; krModal.form.imageName = ''">移除</button></div></div>
         <div class="form-group"><label>优先级（数值越大越优先）</label><input type="number" v-model.number="krModal.form.priority" /></div>
         <div class="form-group"><label>状态</label><select v-model="krModal.form.status"><option value="active">启用</option><option value="disabled">停用</option></select></div>
         <div class="modal-footer">
@@ -316,7 +348,8 @@ onMounted(load)
       <div class="modal-box">
         <h3>{{ qrModal.editing ? '编辑' : '新增' }}快捷回复</h3>
         <div class="form-group"><label>标题</label><input v-model="qrModal.form.title" /></div>
-        <div class="form-group"><label>内容</label><textarea v-model="qrModal.form.content"></textarea></div>
+        <div class="form-group"><label>内容</label><textarea v-model="qrModal.form.content" placeholder="文字和图片至少填写一项"></textarea></div>
+        <div class="form-group"><label>回复图片</label><div class="reply-image-editor"><img v-if="qrModal.form.imageUrl" :src="qrModal.form.imageUrl" alt="回复图片预览" /><label class="action-btn upload-button">{{ uploadingReplyImage ? '上传中...' : '上传图片' }}<input type="file" accept="image/*" :disabled="uploadingReplyImage" @change="uploadReplyImage($event, qrModal.form)" /></label><button v-if="qrModal.form.imageUrl" class="action-btn" @click="qrModal.form.imageUrl = ''; qrModal.form.imageName = ''">移除</button></div></div>
         <div class="form-group"><label>排序</label><input type="number" v-model.number="qrModal.form.sortOrder" /></div>
         <div class="modal-footer">
           <button class="btn-ghost" @click="qrModal.show = false">取消</button>
@@ -338,12 +371,20 @@ onMounted(load)
 </template>
 
 <style scoped>
+.detail-page { min-width: 0; min-height: 100dvh; padding: max(16px, env(safe-area-inset-top)) 16px max(28px, env(safe-area-inset-bottom)); overflow-x: hidden; }
 .detail-page.embedded { padding: 14px; border: 1px solid #dbeafe; border-radius: 12px; background: #f8fbff; }
-.inline-close { border: 0; background: transparent; padding: 0; cursor: pointer; }
+.back-link { position: sticky; top: 0; z-index: 5; width: 100%; padding: 12px 0; background: rgba(255,255,255,.95); backdrop-filter: blur(12px); }
+.inline-close { border: 0; background: transparent; cursor: pointer; text-align: left; }
+.detail-section { min-width: 0; }
+.kv-row .value, .kv-row code { min-width: 0; overflow-wrap: anywhere; }
 .avatar-upload { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .avatar-upload img, .avatar-upload > span { width: 52px; height: 52px; border-radius: 50%; object-fit: cover; display: flex; align-items: center; justify-content: center; background: #2563eb; color: #fff; font-weight: 600; }
 .upload-button { cursor: pointer; }
 .upload-button input { display: none; }
 .employee-options { display: grid; gap: 10px; margin-bottom: 14px; }
 .employee-options label { padding: 10px; border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; }
+.reply-image-editor { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+.reply-image-editor img { width: 96px; height: 72px; object-fit: cover; border: 1px solid #e2e8f0; border-radius: 8px; }
+.reply-cell { display: flex; align-items: center; gap: 8px; min-width: 140px; }
+.reply-cell img { width: 44px; height: 44px; flex: 0 0 44px; object-fit: cover; border-radius: 6px; }
 </style>

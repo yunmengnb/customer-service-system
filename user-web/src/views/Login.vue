@@ -1,16 +1,20 @@
 <!-- 忆梦云团队开发 -->
 <script setup>
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import api from '../api'
+import AuthCaptcha from '../components/AuthCaptcha.vue'
 
 const router = useRouter()
 const route = useRoute()
 const form = ref({ username: '', password: '' })
+const captcha = ref(null)
 const err = ref('')
 const loading = ref(false)
+const notice = computed(() => route.query.registered === '1' ? '注册成功，请登录' : '')
 
 async function doLogin() {
+  if (loading.value) return
   err.value = ''
   if (!form.value.username || !form.value.password) {
     err.value = '请填写完整'
@@ -18,7 +22,8 @@ async function doLogin() {
   }
   loading.value = true
   try {
-    const res = await api.post('/tenant/auth/login', form.value)
+    const captchaPayload = await captcha.value.verify()
+    const res = await api.post('/tenant/auth/login', { ...form.value, ...captchaPayload })
     if (res.code === 0) {
       localStorage.setItem('tenant_token', res.data.token)
       localStorage.setItem('tenant_user', JSON.stringify(res.data.user))
@@ -30,6 +35,7 @@ async function doLogin() {
     }
   } catch (e) {
     err.value = e?.message || '网络错误'
+    await captcha.value?.reset()
   } finally {
     loading.value = false
   }
@@ -41,10 +47,12 @@ async function doLogin() {
     <div class="simple-box">
       <h1>租户后台</h1>
       <div class="sub">管理员与员工使用同一账号入口登录</div>
-      <input v-model="form.username" placeholder="用户名" @keyup.enter="doLogin" />
-      <input v-model="form.password" type="password" placeholder="密码" @keyup.enter="doLogin" />
+      <input v-model="form.username" autocomplete="username" placeholder="用户名" @keyup.enter="doLogin" />
+      <input v-model="form.password" type="password" autocomplete="current-password" placeholder="密码" @keyup.enter="doLogin" />
+      <AuthCaptcha ref="captcha" @submit="doLogin" />
+      <div v-if="notice && !err" class="success">{{ notice }}</div>
       <div v-if="err" class="err">{{ err }}</div>
-      <button @click="doLogin" :disabled="loading">
+      <button type="button" @click="doLogin" :disabled="loading">
         {{ loading ? '登录中...' : '登录' }}
       </button>
       <div class="link-row">
