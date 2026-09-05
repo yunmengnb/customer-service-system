@@ -14,6 +14,7 @@ const routes = [
       { path: 'conversations', component: () => import('./views/Conversations.vue') },
       { path: 'announcements', component: () => import('./views/Announcements.vue') },
       { path: 'settings', component: () => import('./views/Settings.vue') },
+      { path: 'version', component: () => import('./views/Version.vue') },
       { path: 'profile', component: () => import('./views/Profile.vue') },
     ],
   },

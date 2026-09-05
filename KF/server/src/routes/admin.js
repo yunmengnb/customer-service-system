@@ -10,6 +10,7 @@ const AdminConversationController = require('../controllers/AdminConversationCon
 const AnnouncementController = require('../controllers/AnnouncementController');
 const TenantAdminController = require('../controllers/TenantAdminController');
 const SystemSettingController = require('../controllers/SystemSettingController');
+const VersionController = require('../controllers/VersionController');
 const CaptchaController = require('../controllers/CaptchaController');
 const { verifyCaptcha } = require('../middleware/captcha');
 
@@ -29,6 +30,7 @@ router.get('/conversations', authAdmin, AdminConversationController.list);
 router.get('/conversations/:id/messages/search', authAdmin, AdminConversationController.searchMessages);
 router.get('/conversations/:id/messages', authAdmin, AdminConversationController.messages);
 router.get('/announcements', authAdmin, AnnouncementController.adminList);
+router.get('/version', authAdmin, VersionController.get);
 
 // ===== 敏感写操作（需要超级管理员）=====
 router.post('/announcements', authAdmin, requireSuperAdmin, validators.createAnnouncement, AnnouncementController.create);

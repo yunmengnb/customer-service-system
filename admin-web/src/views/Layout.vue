@@ -1,20 +1,34 @@
 <!-- 忆梦云团队开发 - 管理员布局 -->
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 
 const router = useRouter()
 const route = useRoute()
 const sidebarOpen = ref(false)
 
-const adminInfo = computed(() => {
-  try { return JSON.parse(localStorage.getItem('admin_info') || '{}') } catch { return {} }
-})
+const adminInfo = ref(readAdminInfo())
 
-const navItems = [
-  { path: '/dashboard', icon: '📊', label: '仪表盘' },
-  { path: '/tenants', icon: '🏢', label: '租户管理' },
-]
+function readAdminInfo() {
+  try { return JSON.parse(localStorage.getItem('admin_info') || '{}') } catch { return {} }
+}
+
+function handleProfileUpdated(event) {
+  adminInfo.value = event.detail || readAdminInfo()
+}
+
+onMounted(() => window.addEventListener('admin-profile-updated', handleProfileUpdated))
+onUnmounted(() => window.removeEventListener('admin-profile-updated', handleProfileUpdated))
+
+const navItems = computed(() => [
+  { path: '/dashboard', icon: '▦', label: '仪表盘' },
+  { path: '/tenants', icon: '▣', label: '租户管理' },
+  { path: '/customers', icon: '♙', label: '客户管理' },
+  { path: '/conversations', icon: '▤', label: '系统会话' },
+  { path: '/announcements', icon: '◈', label: '公告管理' },
+  { path: '/settings', icon: '⚙', label: '系统设置' },
+  { path: '/profile', icon: '♙', label: '个人资料' },
+])
 
 function navClick(path) {
   router.push(path)
@@ -68,13 +82,13 @@ function initials(name) {
         </div>
       </nav>
 
-      <div class="admin-sidebar-footer">
-        <div class="avatar">{{ initials(adminInfo.username || 'A') }}</div>
+      <button type="button" class="admin-sidebar-footer" @click="navClick('/profile')">
+        <div class="avatar"><img v-if="adminInfo.avatarUrl" :src="adminInfo.avatarUrl" alt="" /><span v-else>{{ initials(adminInfo.username || 'A') }}</span></div>
         <div class="who">
           <div class="name">{{ adminInfo.username || 'admin' }}</div>
           <div class="role">{{ adminInfo.role === 'super' ? '超级管理员' : '运营管理员' }}</div>
         </div>
-      </div>
+      </button>
     </aside>
 
     <!-- 主内容 -->
@@ -88,6 +102,12 @@ function initials(name) {
         <div class="page-title">
           <span v-if="route.path.startsWith('/dashboard')">仪表盘</span>
           <span v-else-if="route.path.startsWith('/tenants')">租户管理</span>
+          <span v-else-if="route.path.startsWith('/customers')">客户管理</span>
+          <span v-else-if="route.path.startsWith('/conversations')">系统会话</span>
+          <span v-else-if="route.path.startsWith('/announcements')">公告管理</span>
+          <span v-else-if="route.path.startsWith('/settings')">系统设置</span>
+          <span v-else-if="route.path.startsWith('/version')">版本信息</span>
+          <span v-else-if="route.path.startsWith('/profile')">个人资料</span>
         </div>
 
         <div class="header-right">
@@ -95,10 +115,11 @@ function initials(name) {
             🔔
             <span class="badge"></span>
           </div>
-          <div class="user-badge" @click="logout" title="点击退出">
-            <div class="avatar">{{ initials(adminInfo.username || 'A') }}</div>
+          <button type="button" class="user-badge" @click="navClick('/profile')" title="修改个人资料">
+            <div class="avatar"><img v-if="adminInfo.avatarUrl" :src="adminInfo.avatarUrl" alt="" /><span v-else>{{ initials(adminInfo.username || 'A') }}</span></div>
             <span class="name">{{ adminInfo.username || 'admin' }}</span>
-          </div>
+          </button>
+          <button type="button" class="header-logout" @click="logout">退出</button>
         </div>
       </header>
 
