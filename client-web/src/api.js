@@ -39,7 +39,7 @@ function getSocket(token) {
   socketToken = token
   socket = io({
     auth: { token, type: 'customer' },
-    transports: ['websocket', 'polling'],
+    transports: ['polling', 'websocket'],
   })
   return socket
 }

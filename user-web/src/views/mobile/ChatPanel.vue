@@ -244,7 +244,7 @@ function setupSocket() {
   socket?.disconnect()
   const token = sessionStorage.getItem('tenant_token') || localStorage.getItem('tenant_token')
   if (!token) return
-  socket = io({ auth: { token, type: 'tenant_user' }, transports: ['websocket', 'polling'] })
+  socket = io({ auth: { token, type: 'tenant_user' }, transports: ['polling', 'websocket'] })
   socket.on('connect', () => {
     syncLatestMessages()
     const customerId = conversation.value?.customer?._id

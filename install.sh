@@ -178,6 +178,15 @@ server_id=$(dc ps -q server)
 info "初始化管理员、示例租户及默认渠道"
 dc run --rm server node seed.js
 
+if [ -f "$SCRIPT_DIR/ymkf.sh" ]; then
+  info "安装 ymkf 管理命令"
+  $SUDO install -m 755 "$SCRIPT_DIR/ymkf.sh" /usr/local/bin/ymkf
+  printf '%s\n' "$SCRIPT_DIR" | $SUDO tee /etc/yimeng-kf.path >/dev/null
+  $SUDO chmod 644 /etc/yimeng-kf.path
+else
+  warn "安装包缺少 ymkf.sh，未安装 ymkf 管理命令"
+fi
+
 echo ""
 echo "安装完成"
 echo "API 健康检查: http://$HOST_IP:$API_PORT/api/health"
@@ -186,4 +195,5 @@ echo "租户客服端:   http://$HOST_IP:$USER_PORT"
 echo "客户聊天端:   http://$HOST_IP:$CLIENT_PORT"
 echo "管理员账号:   $ADMIN_USERNAME"
 echo "管理员密码已按输入配置，不会输出到日志。"
+echo "管理菜单: ymkf"
 echo "常用命令: cd $SCRIPT_DIR && sudo docker compose ps"

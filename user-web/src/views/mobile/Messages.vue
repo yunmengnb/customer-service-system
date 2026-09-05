@@ -88,7 +88,7 @@ watch(search, () => {
 function setupSocket() {
   const token = sessionStorage.getItem('tenant_token') || localStorage.getItem('tenant_token')
   if (!token) return
-  socket = io({ auth: { token, type: 'tenant_user' }, transports: ['websocket', 'polling'] })
+  socket = io({ auth: { token, type: 'tenant_user' }, transports: ['polling', 'websocket'] })
   ;['conversation.created', 'conversation.accepted', 'conversation.updated']
     .forEach((event) => socket.on(event, loadConversations))
   socket.on('message.new', handleNewMessage)

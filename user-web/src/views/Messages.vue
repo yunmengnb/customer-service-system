@@ -49,7 +49,7 @@ async function loadConversations() {
 function setupSocket() {
   const token = localStorage.getItem('tenant_token')
   if (!token) return
-  socket = io({ auth: { token, type: 'tenant_user' }, transports: ['websocket', 'polling'] })
+  socket = io({ auth: { token, type: 'tenant_user' }, transports: ['polling', 'websocket'] })
   socket.on('conversation.created', loadConversations)
   socket.on('conversation.accepted', loadConversations)
   socket.on('conversation.updated', loadConversations)
