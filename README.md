@@ -30,7 +30,7 @@
 在 Linux 服务器执行：
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/yunmengnb/customer-service-system/initial-version/KF/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/yunmengnb/customer-service-system/initial-version/install.sh)
 ```
 
 脚本会依次完成：
@@ -76,7 +76,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/yunmengnb/customer-service-sys
 
 ```bash
 git clone -b initial-version https://github.com/yunmengnb/customer-service-system.git
-cd customer-service-system/KF
+cd customer-service-system
 chmod +x install.sh
 sudo ./install.sh
 ```
