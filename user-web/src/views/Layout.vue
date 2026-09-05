@@ -3,6 +3,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import { unbindNativePushDevice } from '../native-push'
 
 const router = useRouter()
 const route = useRoute()
@@ -29,8 +30,9 @@ function active(path) {
   return route.path === path || route.path.startsWith(path + '/')
 }
 
-function logout() {
+async function logout() {
   showLogoutConfirm.value = false
+  await unbindNativePushDevice().catch(() => {})
   const storage = sessionStorage.getItem('tenant_token') ? sessionStorage : localStorage
   storage.removeItem('tenant_token')
   storage.removeItem('tenant_user')

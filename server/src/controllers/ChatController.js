@@ -9,6 +9,7 @@ const mongoose = require('mongoose');
 const config = require('../config');
 const cache = require('../utils/cache');
 const { getSystemSettings } = require('../utils/systemSettings');
+const { pushCustomerMessage } = require('../utils/getui');
 const { ok, error, generateToken } = require('../utils');
 
 // 关联 socket.io（在 app.js 中注入）
@@ -909,6 +910,11 @@ class ChatController {
         });
       }
     }
+
+    // 消息已经持久化并完成实时广播；推送失败不能影响客户发送结果。
+    pushCustomerMessage({ conversation: conv, message: msg }).catch(err => {
+      console.warn(`[Getui] 消息 ${msg._id} 推送异常: ${err.message}`);
+    });
     
     return ok(res, {
       message: msg.toJSON(),

@@ -28,6 +28,7 @@ async function doLogin() {
       localStorage.setItem('tenant_token', res.data.token)
       localStorage.setItem('tenant_user', JSON.stringify(res.data.user))
       localStorage.setItem('tenant_info', JSON.stringify(res.data.tenant))
+      await bindNativePushDevice().catch(() => {})
       const target = typeof route.query.redirect === 'string' ? route.query.redirect : '/messages'
       router.replace(target)
     } else {

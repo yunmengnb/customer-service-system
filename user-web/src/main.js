@@ -23,3 +23,4 @@ api.get('/client/public-settings').then(res => {
 }).catch(() => {})
 
 createApp(App).use(router).mount('#app')
+installNativePushBridge(router).catch(() => {})

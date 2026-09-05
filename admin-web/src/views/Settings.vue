@@ -69,6 +69,7 @@ function applySettings(data) {
   }
   if (source.captcha) Object.assign(form.captcha, source.captcha, { geetestKey: '' })
   if (source.smtp) Object.assign(form.smtp, source.smtp, { password: '' })
+  if (source.getui) Object.assign(form.getui, source.getui, { appKey: '', masterSecret: '' })
 }
 
 function showNotice(type, message) {
@@ -141,7 +142,7 @@ onMounted(loadSettings)
   <div class="page-header settings-heading">
     <div>
       <h1>系统设置</h1>
-      <p class="desc">配置平台上传、验证码、发信邮箱、注册登录、网站信息以及违禁词规则</p>
+      <p class="desc">配置平台上传、验证码、发信邮箱、个推、注册登录、网站信息以及违禁词规则</p>
     </div>
     <button class="btn btn-primary" :disabled="loading || saving" @click="saveSettings">
       {{ saving ? '保存中...' : '保存设置' }}
@@ -177,6 +178,7 @@ onMounted(loadSettings)
           <p v-if="activeTab === 'upload'">限制平台附件上传方式、大小和文件类型。</p>
           <p v-else-if="activeTab === 'captcha'">配置人机验证服务及验证码有效期。</p>
           <p v-else-if="activeTab === 'smtp'">配置用于通知和验证邮件的 SMTP 服务。</p>
+          <p v-else-if="activeTab === 'getui'">动态配置客服 Android 应用的个推通知，数据库配置优先于环境变量。</p>
           <p v-else-if="activeTab === 'auth'">控制账号注册和登录功能。</p>
           <p v-else-if="activeTab === 'forbiddenWords'">配置消息内容中不允许出现的词语。</p>
           <p v-else>配置客服访问域名与网站搜索展示信息。</p>
@@ -269,6 +271,44 @@ onMounted(loadSettings)
             <button class="btn" type="button" :disabled="saving || testingEmail" @click="testEmail">
               {{ testingEmail ? '发送中...' : '发送测试邮件' }}
             </button>
+          </div>
+        </div>
+
+        <div v-else-if="activeTab === 'getui'" class="settings-grid">
+          <div class="setting-switch full-width">
+            <div><strong>启用个推通知</strong><span>关闭后停止向客服 Android 应用发送通知。</span></div>
+            <label class="switch"><input v-model="form.getui.enabled" type="checkbox" /><span class="slider"></span></label>
+          </div>
+          <div class="input-group">
+            <label for="getui-app-id">AppId</label>
+            <input id="getui-app-id" v-model.trim="form.getui.appId" class="input" autocomplete="off" @input="form.getui.appIdFromEnvironment = false" />
+            <span v-if="form.getui.appIdFromEnvironment" class="hint">当前值回退自环境变量；保存非空值后改用数据库配置。</span>
+          </div>
+          <div class="input-group">
+            <label for="getui-base-url">API 地址</label>
+            <input id="getui-base-url" v-model.trim="form.getui.baseUrl" class="input" placeholder="https://restapi.getui.com/v2" />
+          </div>
+          <div class="input-group">
+            <label for="getui-app-key">AppKey</label>
+            <input id="getui-app-key" v-model="form.getui.appKey" class="input" type="password" autocomplete="new-password" placeholder="留空则不修改" />
+            <span v-if="form.getui.appKeyConfigured" class="hint">AppKey 已配置<span v-if="form.getui.appKeyFromEnvironment">（环境变量回退）</span>。</span>
+          </div>
+          <div class="input-group">
+            <label for="getui-master-secret">MasterSecret</label>
+            <input id="getui-master-secret" v-model="form.getui.masterSecret" class="input" type="password" autocomplete="new-password" placeholder="留空则不修改" />
+            <span v-if="form.getui.masterSecretConfigured" class="hint">MasterSecret 已配置<span v-if="form.getui.masterSecretFromEnvironment">（环境变量回退）</span>。</span>
+          </div>
+          <div class="input-group">
+            <label for="getui-timeout">请求超时（毫秒）</label>
+            <input id="getui-timeout" v-model.number="form.getui.timeoutMs" class="input" type="number" min="1000" max="60000" />
+          </div>
+          <div class="input-group">
+            <label for="getui-ttl">通知有效期（毫秒）</label>
+            <input id="getui-ttl" v-model.number="form.getui.ttlMs" class="input" type="number" min="60000" max="604800000" />
+          </div>
+          <div class="setting-switch full-width">
+            <div><strong>隐藏消息内容</strong><span>通知栏仅显示“您有一条新的客户消息”，避免暴露客户消息正文。</span></div>
+            <label class="switch"><input v-model="form.getui.hideMessageContent" type="checkbox" /><span class="slider"></span></label>
           </div>
         </div>
 

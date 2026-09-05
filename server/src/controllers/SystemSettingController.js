@@ -26,6 +26,18 @@ function normalizeDomain(value) {
   }
 }
 
+function normalizeApiBaseUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  try {
+    const url = new URL(raw);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) return null;
+    return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+  } catch (_) {
+    return null;
+  }
+}
+
 class SystemSettingController {
   async get(req, res) {
     const setting = await SystemSetting.getSingleton();
@@ -86,6 +98,19 @@ class SystemSettingController {
         if (body.smtp[key] !== undefined) setting.smtp[key] = body.smtp[key];
       }
       if (body.smtp.password) setting.smtp.password = body.smtp.password;
+    }
+
+    if (body.getui) {
+      for (const key of ['enabled', 'appId', 'timeoutMs', 'ttlMs', 'hideMessageContent']) {
+        if (body.getui[key] !== undefined) setting.getui[key] = body.getui[key];
+      }
+      if (body.getui.baseUrl !== undefined) {
+        const baseUrl = normalizeApiBaseUrl(body.getui.baseUrl);
+        if (baseUrl === null) return error(res, '个推 API 地址格式不正确');
+        setting.getui.baseUrl = baseUrl;
+      }
+      if (body.getui.appKey) setting.getui.appKey = String(body.getui.appKey).trim();
+      if (body.getui.masterSecret) setting.getui.masterSecret = String(body.getui.masterSecret);
     }
 
     try {

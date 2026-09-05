@@ -14,6 +14,16 @@ module.exports = {
     connectTimeoutMs: parseInt(process.env.REDIS_CONNECT_TIMEOUT_MS, 10) || 2000,
     cacheTtlSeconds: parseInt(process.env.REDIS_CACHE_TTL_SECONDS, 10) || 300,
   },
+
+  getui: {
+    appId: process.env.GETUI_APP_ID || '',
+    appKey: process.env.GETUI_APP_KEY || '',
+    masterSecret: process.env.GETUI_MASTER_SECRET || '',
+    baseUrl: (process.env.GETUI_BASE_URL || 'https://restapi.getui.com/v2').replace(/\/$/, ''),
+    timeoutMs: parseInt(process.env.GETUI_TIMEOUT_MS, 10) || 8000,
+    ttlMs: parseInt(process.env.GETUI_TTL_MS, 10) || 2 * 60 * 60 * 1000,
+    hideMessageContent: process.env.GETUI_HIDE_MESSAGE_CONTENT === 'true',
+  },
   
   jwt: {
     secret: process.env.JWT_SECRET || 'dev_secret_change_me_in_production_abc123',
