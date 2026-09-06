@@ -1,20 +1,9 @@
 // 忆梦云团队开发 - 应用版本与更新日志配置
 module.exports = {
-  version: '1.1.0',
+  version: '1.0.0',
   edition: 'Node.js',
   releasedAt: '2026-09-05',
   changelog: [
-    {
-      version: '1.1.0',
-      releasedAt: '2026-09-05',
-      title: '部署与移动推送增强',
-      changes: [
-        '新增 ymkf 终端管理工具，支持安装升级、密码重置、卸载和端口重置',
-        '增强反向代理兼容性，完善 API、上传资源和 Socket.IO 转发支持',
-        '新增 Android 个推消息通知、设备绑定和通知点击跳转支持',
-        '新增后台个推参数配置，支持安全管理推送凭证与通知策略',
-      ],
-    },
     {
       version: '1.0.0',
       releasedAt: '2026-09-05',

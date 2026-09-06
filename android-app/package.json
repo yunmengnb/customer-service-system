@@ -1,0 +1,21 @@
+{
+  "name": "yimeng-customer-service-android",
+  "version": "1.0.0",
+  "private": true,
+  "description": "忆梦云客服 Capacitor Android 壳工程",
+  "scripts": {
+    "sync": "cap sync android",
+    "open:android": "cap open android",
+    "build:android": "npm run sync && cd android && gradlew.bat assembleDebug"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.4.3",
+    "@capacitor/app": "^7.1.0",
+    "@capacitor/browser": "^7.0.2",
+    "@capacitor/core": "^7.4.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.4.3",
+    "typescript": "^5.9.2"
+  }
+}

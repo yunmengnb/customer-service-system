@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!-- 忆梦云团队开发 -->
+<resources>
+    <string name="app_name">忆梦云客服</string>
+    <string name="title_activity_main">忆梦云客服</string>
+    <string name="package_name">com.yimeng.customer.service</string>
+    <string name="custom_url_scheme">com.yimeng.customer.service</string>
+</resources>

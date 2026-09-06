@@ -20,10 +20,6 @@ router.get('/auth/me', authTenantUser, TenantAuthController.me);
 router.post('/auth/logout', authTenantUser, TenantAuthController.logout);
 router.patch('/auth/profile', authTenantUser, TenantAuthController.updateProfile);
 
-// ===== APP 推送设备 =====
-router.post('/push-devices', authTenantUser, PushDeviceController.bind);
-router.delete('/push-devices/current', authTenantUser, PushDeviceController.unbindCurrent);
-
 // ===== 公告（只读）=====
 router.get('/announcements', authTenantUser, AnnouncementController.list);
 router.get('/announcements/:id', authTenantUser, AnnouncementController.detail);

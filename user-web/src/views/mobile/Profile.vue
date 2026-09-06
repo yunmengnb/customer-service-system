@@ -3,7 +3,6 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../../api'
-import { unbindNativePushDevice } from '../../native-push'
 
 const router = useRouter()
 const user = ref(JSON.parse(sessionStorage.getItem('tenant_user') || localStorage.getItem('tenant_user') || 'null'))
@@ -37,9 +36,8 @@ function goAnnouncements() {
   router.push('/m/announcements')
 }
 
-async function doLogout() {
+function doLogout() {
   showLogoutConfirm.value = false
-  await unbindNativePushDevice().catch(() => {})
   const storage = sessionStorage.getItem('tenant_token') ? sessionStorage : localStorage
   storage.removeItem('tenant_token')
   storage.removeItem('tenant_user')

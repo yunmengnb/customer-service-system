@@ -38,16 +38,6 @@ const SystemSettingSchema = new mongoose.Schema({
     fromName: { type: String, default: '', trim: true },
     fromEmail: { type: String, default: '', trim: true, lowercase: true },
   },
-  getui: {
-    enabled: { type: Boolean, default: true },
-    appId: { type: String, default: '', trim: true },
-    appKey: { type: String, default: '', trim: true },
-    masterSecret: { type: String, default: '' },
-    baseUrl: { type: String, default: '', trim: true },
-    timeoutMs: { type: Number, default: null, min: 1000, max: 60000 },
-    ttlMs: { type: Number, default: null, min: 60000, max: 604800000 },
-    hideMessageContent: { type: Boolean, default: null },
-  },
 }, { timestamps: true, versionKey: false });
 
 SystemSettingSchema.statics.getSingleton = function() {
