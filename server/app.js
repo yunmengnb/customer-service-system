@@ -20,6 +20,7 @@ const fs = require('fs');
 const adminRoutes = require('./src/routes/admin');
 const tenantRoutes = require('./src/routes/tenant');
 const clientRoutes = require('./src/routes/client');
+const appRoutes = require('./src/routes/app');
 const uploadRoutes = require('./src/routes/upload');
 
 // Socket
@@ -102,6 +103,7 @@ async function start() {
   app.use('/api/admin', adminRoutes);
   app.use('/api/tenant', tenantRoutes);
   app.use('/api/client', clientRoutes);
+  app.use('/api/app', appRoutes);
   app.use('/api/upload', uploadRoutes);
   
   // 404

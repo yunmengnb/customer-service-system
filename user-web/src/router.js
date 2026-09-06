@@ -69,6 +69,7 @@ const routes = [
       { path: 'announcements', component: () => import('./views/mobile/Announcements.vue') },
       { path: 'announcements/:id', component: () => import('./views/AnnouncementDetail.vue') },
       { path: 'profile', component: () => import('./views/mobile/Profile.vue') },
+      { path: 'profile/about', component: () => import('./views/mobile/About.vue') },
       { path: 'employees', component: () => import('./views/mobile/Agents.vue'), meta: { adminOnly: true } },
     ],
   },

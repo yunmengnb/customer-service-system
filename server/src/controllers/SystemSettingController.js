@@ -106,6 +106,7 @@ class SystemSettingController {
           $set: {
             title: '客服违禁词公告',
             content,
+            audience: 'tenant',
             status: 'published',
             publishedAt: now,
           },

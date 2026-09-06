@@ -105,6 +105,7 @@ function initials(name) {
           <span v-else-if="route.path.startsWith('/customers')">客户管理</span>
           <span v-else-if="route.path.startsWith('/conversations')">系统会话</span>
           <span v-else-if="route.path.startsWith('/announcements')">公告管理</span>
+          <span v-else-if="route.path.startsWith('/apps')">APP 管理</span>
           <span v-else-if="route.path.startsWith('/settings')">系统设置</span>
           <span v-else-if="route.path.startsWith('/version')">版本信息</span>
           <span v-else-if="route.path.startsWith('/profile')">个人资料</span>

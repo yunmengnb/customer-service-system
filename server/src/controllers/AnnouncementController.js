@@ -18,7 +18,7 @@ class AnnouncementController {
   async adminList(req, res) {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 10, 1), 100);
-    const where = {};
+    const where = { audience: { $in: ['tenant', null] } };
 
     if (['draft', 'published'].includes(req.query.status)) where.status = req.query.status;
     const keyword = String(req.query.keyword || '').trim();
@@ -48,6 +48,7 @@ class AnnouncementController {
     const announcement = await Announcement.create({
       title: String(req.body.title).trim(),
       content: String(req.body.content).trim(),
+      audience: 'tenant',
       status,
       publishedAt: status === 'published' ? new Date() : null,
     });
@@ -60,7 +61,7 @@ class AnnouncementController {
   async update(req, res) {
     if (!validAnnouncementId(req, res)) return undefined;
 
-    const announcement = await Announcement.findById(req.params.id);
+    const announcement = await Announcement.findOne({ _id: req.params.id, audience: { $in: ['tenant', null] } });
     if (!announcement) return error(res, '公告不存在', 404, 404);
 
     announcement.title = String(req.body.title).trim();
@@ -74,7 +75,7 @@ class AnnouncementController {
   async updateStatus(req, res) {
     if (!validAnnouncementId(req, res)) return undefined;
 
-    const announcement = await Announcement.findById(req.params.id);
+    const announcement = await Announcement.findOne({ _id: req.params.id, audience: { $in: ['tenant', null] } });
     if (!announcement) return error(res, '公告不存在', 404, 404);
 
     const status = req.body.status;
@@ -89,7 +90,7 @@ class AnnouncementController {
   async remove(req, res) {
     if (!validAnnouncementId(req, res)) return undefined;
 
-    const announcement = await Announcement.findById(req.params.id);
+    const announcement = await Announcement.findOne({ _id: req.params.id, audience: { $in: ['tenant', null] } });
     if (!announcement) return error(res, '公告不存在', 404, 404);
     if (announcement.key) return error(res, '系统内置公告受保护，不能删除', 403, 403);
 
@@ -101,7 +102,11 @@ class AnnouncementController {
   async list(req, res) {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
-    const where = { status: 'published', publishedAt: { $lte: new Date() } };
+    const where = {
+      audience: { $in: ['tenant', null] },
+      status: 'published',
+      publishedAt: { $lte: new Date() },
+    };
 
     const [items, total] = await Promise.all([
       Announcement.find(where)
@@ -121,6 +126,7 @@ class AnnouncementController {
 
     const announcement = await Announcement.findOne({
       _id: req.params.id,
+      audience: { $in: ['tenant', null] },
       status: 'published',
       publishedAt: { $lte: new Date() },
     }).lean();

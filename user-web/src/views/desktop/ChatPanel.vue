@@ -75,8 +75,10 @@ async function loadMessages() {
       messages.value = res.data || []
       hasMoreMessages.value = props.targetMessageId ? true : messages.value.length >= 50
       emit('conversation-read', props.conversationId)
-      if (props.targetMessageId) await locateMessage(props.targetMessageId)
-      else await scrollToLatest()
+      if (!loading.value) {
+        if (props.targetMessageId) await locateMessage(props.targetMessageId)
+        else await scrollToLatest()
+      }
     }
   } catch {}
 }
@@ -282,6 +284,10 @@ async function init() {
     }
   } catch {} finally {
     loading.value = false
+    if (conversation.value) {
+      if (props.targetMessageId) await locateMessage(props.targetMessageId)
+      else await scrollToLatest()
+    }
   }
 }
 

@@ -76,8 +76,10 @@ async function loadMessages() {
     if (res.code === 0) {
       messages.value = res.data || []
       hasMoreMessages.value = props.targetMessageId ? true : messages.value.length === 50
-      if (props.targetMessageId) await locateMessage(props.targetMessageId)
-      else await scrollToLatest()
+      if (!loading.value) {
+        if (props.targetMessageId) await locateMessage(props.targetMessageId)
+        else await scrollToLatest()
+      }
     }
   } catch {}
 }
@@ -254,7 +256,9 @@ function setupSocket() {
     if (data.type === 'customer' && String(data.userId) === String(conversation.value?.customer?._id)) customerOnline.value = Boolean(data.online)
   })
   socket.on('message.new', (msg) => {
-    if (String(msg.conversationId) === String(props.conversationId)) { mergeMessage(msg); nextTick(scrollToBottom) }
+    if (String(msg.conversationId) !== String(props.conversationId)) return
+    mergeMessage(msg)
+    nextTick(scrollToBottom)
   })
   socket.on('message.recalled', applyRecall)
   socket.on('message.deleted', applyDelete)
@@ -280,6 +284,10 @@ async function init() {
     }
   } catch {} finally {
     loading.value = false
+    if (conversation.value) {
+      if (props.targetMessageId) await locateMessage(props.targetMessageId)
+      else await scrollToLatest()
+    }
   }
 }
 

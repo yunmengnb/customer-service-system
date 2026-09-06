@@ -100,8 +100,13 @@ async function save() {
 </script>
 
 <template>
-  <section class="edit-page">
-    <div v-if="notice.text" :class="['edit-notice', 'is-' + notice.type]">{{ notice.text }}</div>
+  <section class="edit-shell">
+    <header class="edit-header">
+      <button type="button" aria-label="返回我的" @click="router.back()">←</button>
+      <strong>资料管理</strong>
+    </header>
+    <div class="edit-page">
+      <div v-if="notice.text" :class="['edit-notice', 'is-' + notice.type]">{{ notice.text }}</div>
 
     <div v-if="loading" class="edit-state">正在加载...</div>
     <template v-else>
@@ -147,11 +152,22 @@ async function save() {
         </button>
       </div>
     </template>
+    </div>
   </section>
 </template>
 
 <style scoped>
-.edit-page { min-height: 100%; padding: 14px; background: #f5f6f8; }
+.edit-shell { min-height: 100vh; background: #f5f6f8; }
+.edit-header {
+  height: 52px; display: flex; align-items: center; justify-content: center;
+  border-bottom: 1px solid #eceff1; background: #fff; position: relative;
+}
+.edit-header button {
+  position: absolute; left: 10px; padding: 8px; border: none; background: transparent;
+  color: #2563eb; font-size: 21px; line-height: 1;
+}
+.edit-header strong { font-size: 17px; color: #0f172a; }
+.edit-page { min-height: calc(100vh - 52px); padding: 14px; box-sizing: border-box; background: #f5f6f8; }
 
 .edit-notice {
   position: fixed; top: 60px; left: 50%; transform: translateX(-50%);

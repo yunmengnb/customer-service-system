@@ -17,43 +17,6 @@ const searchResultsLoading = ref(false)
 let searchTimer = null
 let requestSequence = 0
 let socket = null
-let notificationAudioContext = null
-
-function getNotificationAudioContext() {
-  if (!notificationAudioContext) {
-    const AudioContext = window.AudioContext || window.webkitAudioContext
-    if (AudioContext) notificationAudioContext = new AudioContext()
-  }
-  return notificationAudioContext
-}
-
-async function unlockNotificationSound() {
-  const context = getNotificationAudioContext()
-  if (context?.state === 'suspended') await context.resume().catch(() => {})
-}
-
-function playNotificationSound() {
-  const context = getNotificationAudioContext()
-  if (!context || context.state !== 'running') return
-  const start = context.currentTime
-  ;[
-    { delay: 0, frequency: 1320 },
-    { delay: 0.14, frequency: 1760 },
-    { delay: 0.3, frequency: 1480 },
-  ].forEach(({ delay, frequency }) => {
-    const oscillator = context.createOscillator()
-    const gain = context.createGain()
-    oscillator.type = 'square'
-    oscillator.frequency.setValueAtTime(frequency, start + delay)
-    gain.gain.setValueAtTime(0.0001, start + delay)
-    gain.gain.exponentialRampToValueAtTime(0.7, start + delay + 0.012)
-    gain.gain.exponentialRampToValueAtTime(0.0001, start + delay + 0.13)
-    oscillator.connect(gain)
-    gain.connect(context.destination)
-    oscillator.start(start + delay)
-    oscillator.stop(start + delay + 0.14)
-  })
-}
 
 const filteredConversations = computed(() => {
   let list = conversations.value
@@ -95,7 +58,6 @@ function setupSocket() {
 }
 
 function handleNewMessage(message) {
-  if (message.senderType === 'customer') playNotificationSound()
   const conversationId = String(message.conversationId?._id || message.conversationId || '')
   const index = conversations.value.findIndex((conversation) => String(conversation._id) === conversationId)
   if (index !== -1) {
@@ -180,17 +142,12 @@ function avatarColor(id) {
 }
 
 onMounted(() => {
-  window.addEventListener('pointerdown', unlockNotificationSound, { once: true })
-  window.addEventListener('keydown', unlockNotificationSound, { once: true })
   loadConversations()
   setupSocket()
 })
 onUnmounted(() => {
-  window.removeEventListener('pointerdown', unlockNotificationSound)
-  window.removeEventListener('keydown', unlockNotificationSound)
   clearTimeout(searchTimer)
   socket?.disconnect()
-  notificationAudioContext?.close().catch(() => {})
 })
 </script>
 

@@ -6,6 +6,7 @@ import ChatPanel from './ChatPanel.vue'
 const route = useRoute()
 const router = useRouter()
 const conversationId = computed(() => route.params.id)
+const targetMessageId = computed(() => String(route.query.message || '') || null)
 function back() { router.push('/m/messages') }
 </script>
 <template><main class="mobile-chat-room"><ChatPanel :conversation-id="conversationId" :target-message-id="targetMessageId" @back="back" /></main></template>

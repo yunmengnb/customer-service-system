@@ -36,6 +36,10 @@ function goAnnouncements() {
   router.push('/m/announcements')
 }
 
+function goAbout() {
+  router.push('/m/profile/about')
+}
+
 function doLogout() {
   showLogoutConfirm.value = false
   const storage = sessionStorage.getItem('tenant_token') ? sessionStorage : localStorage
@@ -73,6 +77,11 @@ function doLogout() {
       <button class="me-menu-item" @click="goAnnouncements">
         <span class="me-menu-icon">📢</span>
         <span class="me-menu-label">系统公告</span>
+        <span class="me-menu-arrow">›</span>
+      </button>
+      <button class="me-menu-item" @click="goAbout">
+        <span class="me-menu-icon">ⓘ</span>
+        <span class="me-menu-label">关于软件</span>
         <span class="me-menu-arrow">›</span>
       </button>
     </div>

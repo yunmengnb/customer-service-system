@@ -7,7 +7,6 @@ import ConfirmDialog from '../components/ConfirmDialog.vue'
 const route = useRoute()
 const router = useRouter()
 const user = JSON.parse(sessionStorage.getItem('tenant_user') || localStorage.getItem('tenant_user') || 'null')
-const tenant = JSON.parse(sessionStorage.getItem('tenant_info') || localStorage.getItem('tenant_info') || 'null')
 const showLogoutConfirm = ref(false)
 
 const tabs = computed(() => [
@@ -19,7 +18,13 @@ const tabs = computed(() => [
   { path: '/m/profile', icon: '👤', label: '我的', badge: 0 },
 ])
 
-const current = computed(() => tabs.value.find(t => route.path === t.path || route.path.startsWith(`${t.path}/`)) || tabs.value[0])
+const tabPaths = computed(() => new Set(tabs.value.map(tab => tab.path)))
+const showPrimaryNavigation = computed(() => tabPaths.value.has(route.path))
+const current = computed(() => tabs.value.find(tab => route.path === tab.path) || null)
+const pageTitle = computed(() => current.value?.label || ({
+  '/m/announcements': '系统公告',
+  '/m/profile/about': '关于软件',
+}[route.path] || (route.path.startsWith('/m/announcements/') ? '公告详情' : '详情')))
 
 function go(tab) {
   if (route.path !== tab.path) {
@@ -40,15 +45,21 @@ function activeIcon(tab) {
   // 消息 Tab 可以区分图标
   return tab.icon
 }
+
+function goBack() {
+  if (window.history.length > 1) router.back()
+  else router.replace('/m/profile')
+}
 </script>
 
 <template>
-  <div class="mob-app" :class="{ 'message-list-page': route.path === '/m/messages' }">
+  <div class="mob-app" :class="{ 'message-list-page': route.path === '/m/messages', 'without-tabbar': !showPrimaryNavigation }">
     <!-- 顶部状态栏 -->
     <header class="mob-header">
-      <div class="mob-header-title">{{ current.label }}</div>
+      <button v-if="!showPrimaryNavigation" class="mob-header-back" type="button" aria-label="返回" @click="goBack">←</button>
+      <div class="mob-header-title">{{ pageTitle }}</div>
       <div class="mob-header-right">
-        <span class="mob-header-brand">{{ tenant?.name }}</span>
+        <button v-if="showPrimaryNavigation" class="mob-announcement-link" type="button" aria-label="系统公告" @click="router.push('/m/announcements')">公告</button>
       </div>
     </header>
 
@@ -57,13 +68,13 @@ function activeIcon(tab) {
       <router-view />
     </main>
 
-    <!-- 底部 Tab 栏：安全区适配 -->
-    <nav class="mob-tabbar">
+    <!-- 底部 Tab 栏：仅一级页面显示 -->
+    <nav v-if="showPrimaryNavigation" class="mob-tabbar">
       <div
         v-for="tab in tabs"
         :key="tab.path"
         class="mob-tab"
-        :class="{ 'is-active': current.path === tab.path }"
+        :class="{ 'is-active': current?.path === tab.path }"
         @click="go(tab)"
       >
         <div class="mob-tab-icon">{{ activeIcon(tab) }}</div>
@@ -103,16 +114,23 @@ function activeIcon(tab) {
 .mob-header-title {
   font-size: 17px; font-weight: 600; color: #0f172a; flex: 1; text-align: center;
 }
-.mob-header-right {
-  position: absolute; right: 16px; top: calc(env(safe-area-inset-top, 0) + 16px);
+.mob-header-back, .mob-announcement-link {
+  position: absolute; border: none; background: transparent; color: #2563eb; cursor: pointer;
 }
-.mob-header-brand { font-size: 12px; color: #64748b; }
+.mob-header-back {
+  left: 10px; padding: 8px; font-size: 21px; line-height: 1;
+}
+.mob-header-right {
+  position: absolute; right: 12px;
+}
+.mob-announcement-link { position: static; padding: 8px 4px; font-size: 14px; font-weight: 600; }
 
 /* 内容 */
 .mob-content {
   flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
   padding-bottom: calc(60px + env(safe-area-inset-bottom, 0));
 }
+.without-tabbar .mob-content { padding-bottom: env(safe-area-inset-bottom, 0); }
 .message-list-page {
   display: block;
   height: 100vh;

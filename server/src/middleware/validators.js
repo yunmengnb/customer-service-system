@@ -33,6 +33,16 @@ const updateAnnouncementStatus = [
   validate,
 ];
 
+const appVersion = [
+  body('versionCode').isInt({ min: 1 }).withMessage('版本号必须为正整数').toInt(),
+  body('versionName').trim().notEmpty().withMessage('版本名称不能为空').isLength({ max: 50 }).withMessage('版本名称不能超过50字'),
+  body('downloadUrl').trim().notEmpty().withMessage('下载地址不能为空').isURL({ protocols: ['http', 'https'], require_protocol: true }).withMessage('下载地址格式无效'),
+  body('releaseNotes').optional({ nullable: true }).isString().withMessage('更新说明格式无效'),
+  body('forceUpdate').optional().isBoolean().withMessage('强制更新标记无效').toBoolean(),
+  body('status').optional().isIn(['draft', 'published']).withMessage('版本状态无效'),
+  validate,
+];
+
 // 租户注册
 const tenantRegister = [
   body('name').trim().notEmpty().withMessage('企业名称不能为空'),
@@ -116,6 +126,7 @@ module.exports = {
   createAnnouncement,
   updateAnnouncement,
   updateAnnouncementStatus,
+  appVersion,
   tenantRegister,
   tenantLogin,
   createAgent,
