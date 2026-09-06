@@ -42,6 +42,11 @@ public class MainActivity extends AppCompatActivity {
     private ProgressBar loading;
     private String pendingUrl = AppConfig.MESSAGES_URL;
     private ValueCallback<Uri[]> fileChooserCallback;
+    private AlertDialog activeStartupDialog;
+    private AlertDialog activeUpdateDialog;
+    private boolean initialResumeCompleted;
+    private boolean startupChecksCompleted;
+    private boolean updateCheckInProgress;
     private final ActivityResultLauncher<String> notificationPermission =
             registerForActivityResult(new ActivityResultContracts.RequestPermission(), granted -> {});
     private final ActivityResultLauncher<Intent> fileChooser =
@@ -62,7 +67,7 @@ public class MainActivity extends AppCompatActivity {
         handleIntent(getIntent());
         requestNotificationPermission();
         startMessageService(null);
-        checkForUpdates(true);
+        runStartupChecks();
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
             @Override public void handleOnBackPressed() {
                 if (webView.canGoBack()) webView.goBack(); else finish();
@@ -81,6 +86,13 @@ public class MainActivity extends AppCompatActivity {
     protected void onStart() {
         super.onStart();
         AppVisibility.setForeground(true);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (initialResumeCompleted && startupChecksCompleted) checkForUpdates(true);
+        initialResumeCompleted = true;
     }
 
     @Override
@@ -231,30 +243,73 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private JSONObject loadLatestAnnouncement() throws Exception {
+        JSONObject data = getJson(AppConfig.ANNOUNCEMENTS_API_URL + "?page=1&limit=1")
+                .optJSONObject("data");
+        JSONArray items = data == null ? null : data.optJSONArray("items");
+        return items == null ? null : items.optJSONObject(0);
+    }
+
+    private String announcementTitle(JSONObject announcement) {
+        String title = announcement.optString("title").trim();
+        return title.isEmpty() ? getString(R.string.cloud_announcements) : title;
+    }
+
+    private String announcementContent(JSONObject announcement) {
+        return announcement.optString("content").trim();
+    }
+
+    private void runStartupChecks() {
+        new Thread(() -> {
+            JSONObject announcement = null;
+            try {
+                announcement = loadLatestAnnouncement();
+            } catch (Exception ignored) {}
+            JSONObject latestAnnouncement = announcement;
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                if (latestAnnouncement == null) {
+                    startupChecksCompleted = true;
+                    checkForUpdates(true);
+                    return;
+                }
+                activeStartupDialog = new AlertDialog.Builder(this)
+                        .setTitle(announcementTitle(latestAnnouncement))
+                        .setMessage(announcementContent(latestAnnouncement))
+                        .setPositiveButton(android.R.string.ok, (dialog, which) -> {
+                            activeStartupDialog = null;
+                            startupChecksCompleted = true;
+                            checkForUpdates(true);
+                        })
+                        .create();
+                activeStartupDialog.setCancelable(false);
+                activeStartupDialog.setCanceledOnTouchOutside(false);
+                activeStartupDialog.show();
+            });
+        }).start();
+    }
+
     private void showCloudAnnouncements() {
         new Thread(() -> {
             try {
-                JSONObject data = getJson(AppConfig.ANNOUNCEMENTS_API_URL + "?page=1&limit=10")
-                        .optJSONObject("data");
-                JSONArray items = data == null ? null : data.optJSONArray("items");
-                StringBuilder message = new StringBuilder();
-                if (items != null) {
-                    for (int index = 0; index < items.length(); index++) {
-                        JSONObject item = items.optJSONObject(index);
-                        if (item == null) continue;
-                        if (message.length() > 0) message.append("\n\n");
-                        message.append(item.optString("title", "未命名公告"));
-                        String content = item.optString("content").trim();
-                        if (!content.isEmpty()) message.append("\n").append(content);
+                JSONObject announcement = loadLatestAnnouncement();
+                runOnUiThread(() -> {
+                    AlertDialog.Builder builder = new AlertDialog.Builder(this);
+                    if (announcement == null) {
+                        builder.setTitle(R.string.cloud_announcements)
+                                .setMessage(R.string.no_cloud_announcements);
+                    } else {
+                        builder.setTitle(announcementTitle(announcement))
+                                .setMessage(announcementContent(announcement));
                     }
-                }
-                runOnUiThread(() -> new AlertDialog.Builder(this)
-                        .setTitle(R.string.cloud_announcements)
-                        .setMessage(message.length() == 0 ? getString(R.string.no_cloud_announcements) : message)
-                        .setPositiveButton(android.R.string.ok, null)
-                        .setNeutralButton(R.string.view_announcement_page,
-                                (dialog, which) -> webView.loadUrl(AppConfig.ANNOUNCEMENTS_URL))
-                        .show());
+                    AlertDialog dialog = builder
+                            .setPositiveButton(android.R.string.ok, null)
+                            .setNeutralButton(R.string.view_announcement_page,
+                                    (currentDialog, which) -> webView.loadUrl(AppConfig.ANNOUNCEMENTS_URL))
+                            .create();
+                    dialog.setCanceledOnTouchOutside(false);
+                    dialog.show();
+                });
             } catch (Exception ignored) {
                 runOnUiThread(() -> Toast.makeText(
                         this, R.string.announcement_load_failed, Toast.LENGTH_SHORT).show());
@@ -263,6 +318,8 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void checkForUpdates(boolean silent) {
+        if (updateCheckInProgress || activeStartupDialog != null) return;
+        updateCheckInProgress = true;
         new Thread(() -> {
             try {
                 JSONObject root = getJson(AppConfig.VERSION_CHECK_URL + "?versionCode=" + getVersionCode());
@@ -278,6 +335,8 @@ public class MainActivity extends AppCompatActivity {
                 String downloadUrl = details.optString("downloadUrl", details.optString("url", ""));
                 boolean forceUpdate = details.optBoolean("forceUpdate", false);
                 runOnUiThread(() -> {
+                    updateCheckInProgress = false;
+                    if (isFinishing() || isDestroyed()) return;
                     if (hasUpdate && isHttpsUrl(downloadUrl)) {
                         showUpdateDialog(latestVersion, changelog, downloadUrl, forceUpdate);
                     } else if (!silent) {
@@ -286,8 +345,11 @@ public class MainActivity extends AppCompatActivity {
                     }
                 });
             } catch (Exception ignored) {
-                if (!silent) runOnUiThread(() -> Toast.makeText(
-                        this, R.string.update_check_failed, Toast.LENGTH_SHORT).show());
+                runOnUiThread(() -> {
+                    updateCheckInProgress = false;
+                    if (!silent) Toast.makeText(
+                            this, R.string.update_check_failed, Toast.LENGTH_SHORT).show();
+                });
             }
         }).start();
     }
@@ -298,6 +360,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void showUpdateDialog(String version, String changelog, String downloadUrl, boolean forceUpdate) {
+        if (activeUpdateDialog != null && activeUpdateDialog.isShowing()) activeUpdateDialog.dismiss();
         String title = version.isEmpty() ? "发现新版本" : "发现新版本 " + version;
         String message = changelog.isEmpty() ? "新版本已发布，是否前往下载？" : changelog;
         AlertDialog.Builder builder = new AlertDialog.Builder(this)
@@ -305,11 +368,16 @@ public class MainActivity extends AppCompatActivity {
                 .setMessage(message)
                 .setPositiveButton(R.string.download_update,
                         (dialog, which) -> startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(downloadUrl))));
-        if (!forceUpdate) builder.setNegativeButton(android.R.string.cancel, null);
-        AlertDialog dialog = builder.create();
-        dialog.setCancelable(!forceUpdate);
-        dialog.setCanceledOnTouchOutside(!forceUpdate);
-        dialog.show();
+        if (!forceUpdate) builder.setNegativeButton(R.string.update_later, null);
+        activeUpdateDialog = builder.create();
+        activeUpdateDialog.setCancelable(false);
+        activeUpdateDialog.setCanceledOnTouchOutside(false);
+        activeUpdateDialog.setOnDismissListener(dialog -> activeUpdateDialog = null);
+        activeUpdateDialog.show();
+        if (forceUpdate) {
+            activeUpdateDialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view ->
+                    startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(downloadUrl))));
+        }
     }
 
     private final class NativeBridge {

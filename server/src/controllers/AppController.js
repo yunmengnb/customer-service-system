@@ -47,6 +47,10 @@ class AppController {
 
     announcement.title = String(req.body.title).trim();
     announcement.content = String(req.body.content).trim();
+    if (req.body.status && req.body.status !== announcement.status) {
+      announcement.status = req.body.status;
+      announcement.publishedAt = req.body.status === 'published' ? new Date() : null;
+    }
     await announcement.save();
     return ok(res, announcement.toJSON(), 'APP 公告更新成功');
   }

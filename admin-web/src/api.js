@@ -8,7 +8,7 @@ api.interceptors.request.use(config => {
   return config
 })
 api.upload = function(url, formData) {
-  return api.post(url, formData, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 30000 })
+  return api.post(url, formData, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 5 * 60 * 1000 })
 }
 
 api.interceptors.response.use(

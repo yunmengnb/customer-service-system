@@ -26,7 +26,9 @@ const navItems = computed(() => [
   { path: '/customers', icon: '♙', label: '客户管理' },
   { path: '/conversations', icon: '▤', label: '系统会话' },
   { path: '/announcements', icon: '◈', label: '公告管理' },
+  { path: '/apps', icon: '▣', label: 'APP 管理' },
   { path: '/settings', icon: '⚙', label: '系统设置' },
+  { path: '/version', icon: '▤', label: '版本信息' },
   { path: '/profile', icon: '♙', label: '个人资料' },
 ])
 
