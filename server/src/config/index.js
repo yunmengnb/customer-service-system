@@ -18,6 +18,7 @@ module.exports = {
   jwt: {
     secret: process.env.JWT_SECRET || 'dev_secret_change_me_in_production_abc123',
     expiresIn: process.env.JWT_EXPIRES_IN || '7d',
+    customerExpiresIn: process.env.CUSTOMER_JWT_EXPIRES_IN || '3650d',
   },
   
   cors: {

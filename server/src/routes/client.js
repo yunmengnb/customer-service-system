@@ -12,6 +12,12 @@ const SystemSettingController = require('../controllers/SystemSettingController'
 
 router.get('/public-settings', SystemSettingController.getPublic);
 
+// 全局客户中心认证（无需渠道 Token）
+router.get('/auth/captcha', CaptchaController.create);
+router.post('/auth/login', verifyCaptcha, validators.customerLogin, CustomerAuthController.accountLogin);
+router.post('/auth/register-code', validators.customerRegisterCode, CustomerAuthController.sendAccountRegisterCode);
+router.post('/auth/register', verifyCaptcha, validators.customerRegister, CustomerAuthController.accountRegister);
+
 // 已登录客户访问过的渠道（必须置于动态 token 路由之前）
 router.get('/channels/history', authCustomer, CustomerAuthController.channelHistory);
 router.post('/channels/:token/switch', authCustomer, CustomerAuthController.switchChannel);
@@ -20,8 +26,10 @@ router.post('/channels/:token/switch', authCustomer, CustomerAuthController.swit
 router.get('/channels/:token/captcha', CaptchaController.create);
 router.get('/channels/:token', CustomerAuthController.getChannelInfo);
 
-// 客户登录 / 自动注册
-router.post('/channels/:token/auth', verifyCaptcha, validators.customerAuth, CustomerAuthController.auth);
+// 客户登录与注册
+router.post('/channels/:token/auth/login', verifyCaptcha, validators.customerLogin, CustomerAuthController.login);
+router.post('/channels/:token/auth/register-code', validators.customerRegisterCode, CustomerAuthController.sendRegisterCode);
+router.post('/channels/:token/auth/register', verifyCaptcha, validators.customerRegister, CustomerAuthController.register);
 
 // 客户资料
 router.get('/me', authCustomer, CustomerAuthController.me);

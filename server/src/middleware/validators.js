@@ -69,10 +69,34 @@ const createAgent = [
   validate,
 ];
 
-// 客户登录/自动注册
-const customerAuth = [
-  body('phone').trim().notEmpty().withMessage('手机号不能为空').isLength({ min: 6 }).withMessage('手机号格式不正确'),
-  body('password').notEmpty().withMessage('密码不能为空').isLength({ min: 4 }).withMessage('密码至少4位'),
+// 客户登录
+const customerLogin = [
+  body('identifier').trim().notEmpty().withMessage('请输入手机号或邮箱').custom(value => {
+    if (/^\S+@\S+\.\S+$/.test(value) || /^[\d\s+-]{6,20}$/.test(value)) return true;
+    throw new Error('手机号或邮箱格式不正确');
+  }),
+  body('password').notEmpty().withMessage('密码不能为空'),
+  body('fingerprint').optional().isString(),
+  validate,
+];
+
+// 客户注册验证码
+const customerRegisterCode = [
+  body('email').trim().normalizeEmail().isEmail().withMessage('邮箱格式不正确'),
+  validate,
+];
+
+// 客户注册
+const customerRegister = [
+  body('phone').trim().matches(/^[\d\s+-]{6,20}$/).withMessage('手机号格式不正确'),
+  body('qq').trim().matches(/^[1-9]\d{4,11}$/).withMessage('QQ号格式不正确'),
+  body('email').trim().normalizeEmail().isEmail().withMessage('邮箱格式不正确'),
+  body('password').isString().isLength({ min: 6, max: 72 }).withMessage('密码须为6-72位'),
+  body('confirmPassword').isString().custom((value, { req }) => {
+    if (value !== req.body.password) throw new Error('两次输入的密码不一致');
+    return true;
+  }),
+  body('emailCode').trim().matches(/^\d{6}$/).withMessage('请输入6位邮箱验证码'),
   body('fingerprint').optional().isString(),
   validate,
 ];
@@ -131,7 +155,9 @@ module.exports = {
   tenantRegister,
   tenantLogin,
   createAgent,
-  customerAuth,
+  customerLogin,
+  customerRegisterCode,
+  customerRegister,
   customerQQ,
   customerPassword,
   createChannel,

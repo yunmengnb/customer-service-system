@@ -4,8 +4,10 @@ const Customer = require('../models/Customer');
 const Channel = require('../models/Channel');
 const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
+const crypto = require('crypto');
 const config = require('../config');
 const cache = require('../utils/cache');
+const { sendMail } = require('../utils/mailer');
 const presence = require('../utils/presence');
 const { getSystemSettings } = require('../utils/systemSettings');
 const { ok, error, hashPassword, comparePassword, signToken, normalizePhone, hashFingerprint, getClientIp } = require('../utils');
@@ -19,16 +21,23 @@ async function getChannelByToken(publicToken) {
   return channel;
 }
 
-function accountJson(account, binding) {
+function accountJson(account, binding = null) {
   const data = account.toJSON();
   data.accountId = data._id;
-  data._id = binding._id;
-  data.bindingId = binding._id;
-  data.tenantId = binding.tenantId;
-  data.channelId = binding.channelId;
-  data.messageReceivingDisabled = binding.messageReceivingDisabled;
-  data.blocked = binding.blocked;
+  if (binding) {
+    data._id = binding._id;
+    data.bindingId = binding._id;
+    data.tenantId = binding.tenantId;
+    data.channelId = binding.channelId;
+    data.messageReceivingDisabled = binding.messageReceivingDisabled;
+    data.blocked = binding.blocked;
+  }
   return data;
+}
+
+function createAccountSession(res, account, isNew = false) {
+  const token = signToken({ type: 'customer', accountId: account._id.toString() }, config.jwt.customerExpiresIn);
+  return ok(res, { token, isNew, profileRequired: !account.qq, customer: accountJson(account) });
 }
 
 async function resolveAccount(payload) {
@@ -69,72 +78,190 @@ async function resolveAccount(payload) {
 }
 
 class CustomerAuthController {
-  // POST /api/client/channels/:token/auth
-  async auth(req, res) {
-    const { token: publicToken } = req.params;
-    const { phone, password, fingerprint } = req.body;
-    const channel = await getChannelByToken(publicToken);
+  // POST /api/client/auth/login
+  async accountLogin(req, res) {
+    const settings = await getSystemSettings();
+    if (!settings.loginEnabled) return error(res, '系统暂时关闭登录', 4034, 403);
+
+    const identifier = String(req.body.identifier).trim().toLowerCase();
+    const isEmail = identifier.includes('@');
+    const normalized = isEmail ? identifier : normalizePhone(identifier);
+    const account = await CustomerAccount.findOne(isEmail ? { email: normalized } : { phone: normalized });
+    if (!account || !comparePassword(req.body.password, account.password)) return error(res, '账号或密码错误', 401, 401);
+    if (account.status !== 'active') return error(res, '账号已被禁用', 403, 403);
+    account.lastLoginIp = getClientIp(req);
+    account.lastLoginAt = new Date();
+    await account.save();
+    return createAccountSession(res, account);
+  }
+
+  // POST /api/client/auth/register-code
+  async sendAccountRegisterCode(req, res) {
+    const settings = await getSystemSettings();
+    if (!settings.registerEnabled) return error(res, '系统暂未开放注册', 4034, 403);
+    const email = String(req.body.email).trim().toLowerCase();
+    if (await CustomerAccount.exists({ email })) return error(res, '邮箱已被注册');
+    const key = `customer:register-code:${crypto.createHash('sha256').update(email).digest('hex')}`;
+    const existing = await cache.getJson(key);
+    if (existing?.sentAt && Date.now() - existing.sentAt < 60000) return error(res, '验证码发送过于频繁，请稍后再试', 4290, 429);
+    const code = String(crypto.randomInt(100000, 1000000));
+    const codeHash = crypto.createHmac('sha256', config.jwt.secret).update(`${email}:${code}`).digest('hex');
+    try {
+      const sent = await sendMail({ to: email, subject: '客户注册邮箱验证码', text: `您的注册验证码是 ${code}，10分钟内有效。如非本人操作，请忽略本邮件。` });
+      if (!sent) return error(res, '邮箱服务暂不可用', 5031, 503);
+      await cache.setJson(key, { codeHash, sentAt: Date.now() }, 600);
+      return ok(res, null, '验证码已发送');
+    } catch (_) {
+      return error(res, '验证码发送失败，请稍后重试', 5001, 500);
+    }
+  }
+
+  // POST /api/client/auth/register
+  async accountRegister(req, res) {
+    const settings = await getSystemSettings();
+    if (!settings.registerEnabled) return error(res, '系统暂未开放注册', 4034, 403);
+    const phone = normalizePhone(req.body.phone);
+    const email = String(req.body.email).trim().toLowerCase();
+    if (await CustomerAccount.exists({ phone })) return error(res, '手机号已被注册');
+    if (await CustomerAccount.exists({ email })) return error(res, '邮箱已被注册');
+    const codeKey = `customer:register-code:${crypto.createHash('sha256').update(email).digest('hex')}`;
+    const verification = await cache.getJson(codeKey);
+    const submittedHash = crypto.createHmac('sha256', config.jwt.secret).update(`${email}:${req.body.emailCode}`).digest('hex');
+    if (!verification?.codeHash || verification.codeHash.length !== submittedHash.length || !crypto.timingSafeEqual(Buffer.from(verification.codeHash), Buffer.from(submittedHash))) return error(res, '邮箱验证码错误或已过期', 4004, 400);
+    const ip = getClientIp(req);
+    let account;
+    try {
+      account = await CustomerAccount.create({ phone, qq: req.body.qq, email, password: hashPassword(req.body.password), avatarUrl: `https://q1.qlogo.cn/g?b=qq&nk=${req.body.qq}&s=100`, registerIp: ip, registerUserAgent: req.headers['user-agent'] || '', registerFingerprintHash: hashFingerprint(req.body.fingerprint), lastLoginIp: ip, lastLoginAt: new Date() });
+    } catch (err) {
+      if (err?.code === 11000) return error(res, '手机号或邮箱已被注册');
+      throw err;
+    }
+    await cache.remove(codeKey);
+    return createAccountSession(res, account, true);
+  }
+
+  // POST /api/client/channels/:token/auth/login
+  async login(req, res) {
+    const channel = await getChannelByToken(req.params.token);
     if (!channel) return error(res, '客服链接无效或已过期', 404);
     if (channel.status !== 'online') return error(res, '当前客服暂不在线', 503);
     const settings = await getSystemSettings();
     if (!settings.loginEnabled) return error(res, '系统暂时关闭登录', 4034, 403);
 
-    const tenantId = channel.tenantId;
-    const normalized = normalizePhone(phone);
-    const ip = getClientIp(req);
-    const fpHash = hashFingerprint(fingerprint);
-    let account = await CustomerAccount.findOne({ phone: normalized });
-    let binding = await Customer.findOne({ channelId: channel._id, phone: normalized });
-    let isNew = false;
+    const identifier = String(req.body.identifier).trim().toLowerCase();
+    const isEmail = identifier.includes('@');
+    const normalized = isEmail ? identifier : normalizePhone(identifier);
+    const query = isEmail ? { email: normalized } : { phone: normalized };
+    let account = await CustomerAccount.findOne(query);
 
-    // 兼容尚未执行迁移的旧数据：首次登录时就地建立全局账户。
-    if (!account && binding) {
-      if (!comparePassword(password, binding.password)) return error(res, '密码错误', 401);
-      account = await CustomerAccount.create({
-        phone: normalized,
-        password: binding.password,
-        qq: binding.qq,
-        email: binding.email,
-        nickname: binding.nickname,
-        avatarUrl: binding.avatarUrl,
-        registerIp: binding.registerIp,
-        registerUserAgent: binding.registerUserAgent,
-        registerFingerprintHash: binding.registerFingerprintHash,
-        lastLoginIp: ip,
-        lastLoginAt: new Date(),
-        status: binding.status,
-      });
-    } else if (account) {
-      if (!comparePassword(password, account.password)) return error(res, '密码错误', 401);
-      if (account.status !== 'active') return error(res, '账号已被禁用', 403);
-      account.lastLoginIp = ip;
-      account.lastLoginAt = new Date();
-      await account.save();
-    } else {
-      if (!settings.registerEnabled) return error(res, '系统暂未开放注册', 4034, 403);
-      isNew = true;
-      try {
+    // 兼容尚未执行迁移的旧手机号数据。
+    if (!account && !isEmail) {
+      const legacyBinding = await Customer.findOne({ channelId: channel._id, phone: normalized });
+      if (legacyBinding && comparePassword(req.body.password, legacyBinding.password)) {
         account = await CustomerAccount.create({
           phone: normalized,
-          password: hashPassword(password),
-          registerIp: ip,
-          registerUserAgent: req.headers['user-agent'] || '',
-          registerFingerprintHash: fpHash,
-          lastLoginIp: ip,
-          lastLoginAt: new Date(),
+          password: legacyBinding.password,
+          qq: legacyBinding.qq,
+          email: legacyBinding.email,
+          nickname: legacyBinding.nickname,
+          avatarUrl: legacyBinding.avatarUrl,
+          registerIp: legacyBinding.registerIp,
+          registerUserAgent: legacyBinding.registerUserAgent,
+          registerFingerprintHash: legacyBinding.registerFingerprintHash,
+          status: legacyBinding.status,
         });
-      } catch (err) {
-        if (err?.code !== 11000) throw err;
-        account = await CustomerAccount.findOne({ phone: normalized });
-        isNew = false;
-        if (!account || !comparePassword(password, account.password)) return error(res, '密码错误', 401);
+        legacyBinding.accountId = account._id;
+        await legacyBinding.save();
       }
     }
+    if (!account || !comparePassword(req.body.password, account.password)) return error(res, '账号或密码错误', 401, 401);
+    if (account.status !== 'active') return error(res, '账号已被禁用', 403, 403);
 
+    account.lastLoginIp = getClientIp(req);
+    account.lastLoginAt = new Date();
+    await account.save();
+    return this.createSession(req, res, channel, account, false);
+  }
+
+  // POST /api/client/channels/:token/auth/register-code
+  async sendRegisterCode(req, res) {
+    const channel = await getChannelByToken(req.params.token);
+    if (!channel) return error(res, '客服链接无效或已过期', 404);
+    const settings = await getSystemSettings();
+    if (!settings.registerEnabled) return error(res, '系统暂未开放注册', 4034, 403);
+
+    const email = String(req.body.email).trim().toLowerCase();
+    if (await CustomerAccount.exists({ email })) return error(res, '邮箱已被注册');
+    const key = `customer:register-code:${crypto.createHash('sha256').update(email).digest('hex')}`;
+    const existing = await cache.getJson(key);
+    if (existing?.sentAt && Date.now() - existing.sentAt < 60000) return error(res, '验证码发送过于频繁，请稍后再试', 4290, 429);
+
+    const code = String(crypto.randomInt(100000, 1000000));
+    const codeHash = crypto.createHmac('sha256', config.jwt.secret).update(`${email}:${code}`).digest('hex');
+    try {
+      const sent = await sendMail({
+        to: email,
+        subject: '客户注册邮箱验证码',
+        text: `您的注册验证码是 ${code}，10分钟内有效。如非本人操作，请忽略本邮件。`,
+      });
+      if (!sent) return error(res, '邮箱服务暂不可用', 5031, 503);
+      await cache.setJson(key, { codeHash, sentAt: Date.now() }, 600);
+      return ok(res, null, '验证码已发送');
+    } catch (_) {
+      return error(res, '验证码发送失败，请稍后重试', 5001, 500);
+    }
+  }
+
+  // POST /api/client/channels/:token/auth/register
+  async register(req, res) {
+    const channel = await getChannelByToken(req.params.token);
+    if (!channel) return error(res, '客服链接无效或已过期', 404);
+    if (channel.status !== 'online') return error(res, '当前客服暂不在线', 503);
+    const settings = await getSystemSettings();
+    if (!settings.registerEnabled) return error(res, '系统暂未开放注册', 4034, 403);
+
+    const phone = normalizePhone(req.body.phone);
+    const email = String(req.body.email).trim().toLowerCase();
+    if (await CustomerAccount.exists({ phone })) return error(res, '手机号已被注册');
+    if (await CustomerAccount.exists({ email })) return error(res, '邮箱已被注册');
+
+    const codeKey = `customer:register-code:${crypto.createHash('sha256').update(email).digest('hex')}`;
+    const verification = await cache.getJson(codeKey);
+    const submittedHash = crypto.createHmac('sha256', config.jwt.secret).update(`${email}:${req.body.emailCode}`).digest('hex');
+    if (!verification?.codeHash || !crypto.timingSafeEqual(Buffer.from(verification.codeHash), Buffer.from(submittedHash))) {
+      return error(res, '邮箱验证码错误或已过期', 4004, 400);
+    }
+
+    const ip = getClientIp(req);
+    let account;
+    try {
+      account = await CustomerAccount.create({
+        phone,
+        qq: req.body.qq,
+        email,
+        password: hashPassword(req.body.password),
+        avatarUrl: `https://q1.qlogo.cn/g?b=qq&nk=${req.body.qq}&s=100`,
+        registerIp: ip,
+        registerUserAgent: req.headers['user-agent'] || '',
+        registerFingerprintHash: hashFingerprint(req.body.fingerprint),
+        lastLoginIp: ip,
+        lastLoginAt: new Date(),
+      });
+    } catch (err) {
+      if (err?.code === 11000) return error(res, '手机号或邮箱已被注册');
+      throw err;
+    }
+    await cache.remove(codeKey);
+    return CustomerAuthController.prototype.createSession(req, res, channel, account, true);
+  }
+
+  async createSession(req, res, channel, account, isNew) {
+    const ip = getClientIp(req);
+    let binding = await Customer.findOne({ accountId: account._id, channelId: channel._id });
     if (!binding) {
       binding = await Customer.create({
         accountId: account._id,
-        tenantId,
+        tenantId: channel.tenantId,
         channelId: channel._id,
         phone: account.phone,
         password: account.password,
@@ -144,32 +271,30 @@ class CustomerAuthController {
         avatarUrl: account.avatarUrl,
         registerIp: ip,
         registerUserAgent: req.headers['user-agent'] || '',
-        registerFingerprintHash: fpHash,
+        registerFingerprintHash: account.registerFingerprintHash,
         lastLoginIp: ip,
         lastLoginAt: new Date(),
       });
     } else {
-      binding.accountId = account._id;
+      if (binding.blocked) return error(res, '当前账号已被限制访问', 4035, 403);
       binding.lastLoginIp = ip;
       binding.lastLoginAt = new Date();
       await binding.save();
     }
 
-    const profileRequired = !account.qq;
     let conversation = await Conversation.findOne({
-      tenantId,
+      tenantId: channel.tenantId,
       channelId: channel._id,
       customerId: binding._id,
       status: { $in: ['waiting', 'active'] },
     }).sort({ lastMessageAt: -1 });
-
     if (!conversation) {
-      conversation = await Conversation.create({ tenantId, channelId: channel._id, customerId: binding._id, status: 'waiting' });
+      conversation = await Conversation.create({ tenantId: channel.tenantId, channelId: channel._id, customerId: binding._id, status: 'waiting' });
       const welcomeContent = String(channel.welcomeMessage || '').trim();
       const welcomeImageUrl = String(channel.welcomeImageUrl || '').trim();
       if (welcomeContent || welcomeImageUrl) {
         const welcomeMsg = await Message.create({
-          tenantId,
+          tenantId: channel.tenantId,
           conversationId: conversation._id,
           senderType: 'bot',
           messageType: welcomeImageUrl ? 'image' : 'text',
@@ -187,15 +312,14 @@ class CustomerAuthController {
       type: 'customer',
       id: binding._id.toString(),
       accountId: account._id.toString(),
-      tenantId: tenantId.toString(),
+      tenantId: channel.tenantId.toString(),
       channelId: channel._id.toString(),
       conversationId: conversation._id.toString(),
-    });
-
+    }, config.jwt.customerExpiresIn);
     return ok(res, {
       token: jwt,
       isNew,
-      profileRequired,
+      profileRequired: !account.qq,
       customer: accountJson(account, binding),
       channel: {
         id: channel._id,
@@ -283,7 +407,7 @@ class CustomerAuthController {
       tenantId: channel.tenantId.toString(),
       channelId: channel._id.toString(),
       conversationId: conversation._id.toString(),
-    });
+    }, config.jwt.customerExpiresIn);
     return ok(res, { token: jwt });
   }
 
@@ -315,12 +439,11 @@ class CustomerAuthController {
     if (!account || !binding) return error(res, '账号不存在', 404);
     const { qq } = req.body;
     account.qq = qq;
-    account.email = `${qq}@qq.com`;
     account.avatarUrl = `https://q1.qlogo.cn/g?b=qq&nk=${qq}&s=100`;
     await account.save();
     await Customer.updateMany(
       { accountId: account._id },
-      { $set: { qq: account.qq, email: account.email, avatarUrl: account.avatarUrl } },
+      { $set: { qq: account.qq, avatarUrl: account.avatarUrl } },
     );
     return ok(res, accountJson(account, binding));
   }
@@ -328,8 +451,8 @@ class CustomerAuthController {
   // GET /api/client/me
   async me(req, res) {
     const account = await resolveAccount(req.customer);
-    const binding = await Customer.findById(req.customer.id);
-    if (!account || !binding) return error(res, '账号不存在', 404);
+    if (!account) return error(res, '账号不存在', 404);
+    const binding = req.customer.id ? await Customer.findById(req.customer.id) : null;
     return ok(res, accountJson(account, binding));
   }
 

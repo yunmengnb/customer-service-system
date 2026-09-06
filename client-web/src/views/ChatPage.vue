@@ -239,29 +239,42 @@
       </section>
     </div>
 
-    <!-- 登录弹窗 -->
-    <div v-if="showLogin" class="modal-overlay">
-      <div class="modal-content">
+    <!-- 登录注册弹窗 -->
+    <div v-if="showLogin" class="modal-overlay auth-overlay">
+      <div class="modal-content auth-modal">
         <div class="modal-title">{{ channel.brandName || '在线客服' }}</div>
-        <div class="modal-desc">输入手机号开始咨询，未注册将自动创建账号</div>
-        <div class="form-item">
-          <label>手机号</label>
-          <input v-model="loginForm.phone" placeholder="请输入手机号" @keyup.enter="doLogin" />
+        <div class="auth-tabs">
+          <button type="button" :class="{ active: authTab === 'register' }" @click="switchAuthTab('register')">注册</button>
+          <button type="button" :class="{ active: authTab === 'login' }" @click="switchAuthTab('login')">登录</button>
         </div>
-        <div class="form-item">
-          <label>密码</label>
-          <input v-model="loginForm.password" type="password" placeholder="请输入密码" @keyup.enter="doLogin" />
-        </div>
+        <template v-if="authTab === 'register'">
+          <div class="modal-desc">注册账号后即可开始咨询</div>
+          <div class="auth-form-grid">
+            <div class="form-item"><label>手机号</label><input v-model.trim="registerForm.phone" inputmode="tel" placeholder="请输入手机号" /></div>
+            <div class="form-item"><label>QQ号</label><input v-model.trim="registerForm.qq" inputmode="numeric" maxlength="12" placeholder="请输入5-12位QQ号" /></div>
+          </div>
+          <div class="form-item"><label>邮箱</label><input v-model.trim="registerForm.email" type="email" autocomplete="email" placeholder="请输入邮箱" /></div>
+          <div class="form-item">
+            <label>邮箱验证码</label>
+            <div class="email-code-row">
+              <input v-model.trim="registerForm.emailCode" inputmode="numeric" maxlength="6" placeholder="请输入6位验证码" />
+              <button type="button" :disabled="codeLoading || codeCountdown > 0" @click="sendRegisterCode">{{ codeCountdown > 0 ? `${codeCountdown}秒后重发` : (codeLoading ? '发送中...' : '发送验证码') }}</button>
+            </div>
+          </div>
+          <div class="auth-form-grid">
+            <div class="form-item"><label>密码</label><input v-model="registerForm.password" type="password" autocomplete="new-password" placeholder="请输入6-72位密码" /></div>
+            <div class="form-item"><label>确认密码</label><input v-model="registerForm.confirmPassword" type="password" autocomplete="new-password" placeholder="请再次输入密码" @keyup.enter="doRegister" /></div>
+          </div>
+        </template>
+        <template v-else>
+          <div class="modal-desc">使用手机号或邮箱登录</div>
+          <div class="form-item"><label>手机号或邮箱</label><input v-model.trim="loginForm.identifier" autocomplete="username" placeholder="请输入手机号或邮箱" /></div>
+          <div class="form-item"><label>密码</label><input v-model="loginForm.password" type="password" autocomplete="current-password" placeholder="请输入密码" @keyup.enter="doLogin" /></div>
+        </template>
         <div v-if="captcha.enabled && captcha.provider === 'image'" class="form-item">
           <label>图形验证码</label>
           <div class="captcha-row">
-            <input
-              v-model.trim="captchaCode"
-              autocomplete="off"
-              maxlength="8"
-              placeholder="请输入验证码"
-              @keyup.enter="doLogin"
-            />
+            <input v-model.trim="captchaCode" autocomplete="off" maxlength="8" placeholder="请输入验证码" :aria-label="'图形验证码'" />
             <button type="button" class="captcha-image-button" :disabled="captchaLoading" @click="loadCaptcha">
               <img v-if="captcha.image" :src="captcha.image" alt="图形验证码" />
               <span v-else>{{ captchaLoading ? '加载中...' : '点击刷新' }}</span>
@@ -269,12 +282,12 @@
           </div>
         </div>
         <div v-else-if="captcha.enabled && captcha.provider === 'geetest'" class="captcha-tip">
-          {{ geetestReady ? '点击进入聊天后完成安全验证' : (captchaLoading ? '正在加载安全验证...' : '安全验证加载失败，请重试') }}
+          {{ geetestReady ? '提交后完成安全验证' : (captchaLoading ? '正在加载安全验证...' : '安全验证加载失败，请重试') }}
         </div>
         <div class="err" v-if="loginErr">{{ loginErr }}</div>
         <div class="modal-actions">
-          <button class="btn btn-primary" @click="doLogin" :disabled="loginLoading || captchaLoading">
-            {{ loginLoading ? '处理中...' : '进入聊天' }}
+          <button class="btn btn-primary" @click="authTab === 'register' ? doRegister() : doLogin()" :disabled="loginLoading || captchaLoading">
+            {{ loginLoading ? '处理中...' : (authTab === 'register' ? '注册并进入聊天' : '登录并进入聊天') }}
           </button>
         </div>
       </div>
@@ -284,7 +297,7 @@
     <div v-if="showQQModal" class="modal-overlay">
       <div class="modal-content">
         <div class="modal-title">{{ customer?.qq ? '修改QQ号' : '完善信息' }}</div>
-        <div class="modal-desc">填写QQ号后，将自动生成QQ邮箱和头像</div>
+        <div class="modal-desc">填写QQ号后，将自动更新QQ头像</div>
         <div class="form-item">
           <label>QQ号</label>
           <input v-model.trim="qqForm.qq" inputmode="numeric" maxlength="12" placeholder="请输入5-12位QQ号" @keyup.enter="submitQQ" />
@@ -335,9 +348,13 @@ const viewportHeight = ref('100dvh')
 const viewportTop = ref('0px')
 
 const showLogin = ref(false)
-const loginForm = ref({ phone: '', password: '' })
+const authTab = ref('register')
+const loginForm = ref({ identifier: '', password: '' })
+const registerForm = ref({ phone: '', qq: '', email: '', emailCode: '', password: '', confirmPassword: '' })
 const loginLoading = ref(false)
 const loginErr = ref('')
+const codeLoading = ref(false)
+const codeCountdown = ref(0)
 const captcha = ref({ enabled: false, provider: '', captchaId: '', image: '' })
 const captchaCode = ref('')
 const captchaLoading = ref(false)
@@ -366,6 +383,7 @@ let suppressBubbleClickUntil = 0
 let initialScrollTimers = []
 let scrollFrame = null
 let pendingScrollForce = false
+let codeCountdownTimer = null
 let geetestInstance = null
 let geetestScriptPromise = null
 
@@ -500,6 +518,7 @@ async function loadChannel() {
       return
     }
     channel.value = channelRes.data
+    localStorage.setItem('client_channel_token', token.value)
     document.title = channelRes.data.brandName || '在线客服'
     if (!assignedAgentId.value) agentOnline.value = Boolean(channelRes.data.agentOnline)
 
@@ -546,51 +565,104 @@ async function loadMe() {
   }
 }
 
+function switchAuthTab(tab) {
+  authTab.value = tab
+  loginErr.value = ''
+  captchaCode.value = ''
+  geetestInstance?.reset?.()
+}
+
+async function getCaptchaPayload() {
+  if (captcha.value.enabled && captcha.value.provider === 'image') {
+    if (!captchaCode.value) throw new Error('请输入图形验证码')
+    return { captchaId: captcha.value.captchaId, captchaCode: captchaCode.value }
+  }
+  if (captcha.value.enabled && captcha.value.provider === 'geetest') return getGeetestValidation()
+  if (captcha.value.enabled) throw new Error('安全验证加载失败，请刷新页面重试')
+  return {}
+}
+
+async function completeAuth(res) {
+  if (res.code !== 0) throw new Error(res.message || '认证失败')
+  localStorage.setItem('client_token', res.data.token)
+  customer.value = res.data.customer
+  conversationStatus.value = res.data.conversation.status
+  showLogin.value = false
+  await loadMessages()
+  setupSocket()
+  if (res.data.profileRequired) showQQModal.value = true
+}
+
+async function sendRegisterCode() {
+  loginErr.value = ''
+  if (!/^\S+@\S+\.\S+$/.test(registerForm.value.email)) {
+    loginErr.value = '请输入正确的邮箱地址'
+    return
+  }
+  codeLoading.value = true
+  try {
+    const res = await api.post(`/client/channels/${token.value}/auth/register-code`, { email: registerForm.value.email })
+    if (res.code !== 0) throw new Error(res.message || '验证码发送失败')
+    codeCountdown.value = 60
+    clearInterval(codeCountdownTimer)
+    codeCountdownTimer = setInterval(() => {
+      codeCountdown.value -= 1
+      if (codeCountdown.value <= 0) clearInterval(codeCountdownTimer)
+    }, 1000)
+  } catch (error) {
+    loginErr.value = error?.message || '验证码发送失败'
+  } finally {
+    codeLoading.value = false
+  }
+}
+
 async function doLogin() {
   loginErr.value = ''
-  if (!loginForm.value.phone || !loginForm.value.password) {
+  if (!loginForm.value.identifier || !loginForm.value.password) {
     loginErr.value = '请填写完整信息'
-    return
-  }
-  if (captcha.value.enabled && captcha.value.provider === 'image' && !captchaCode.value) {
-    loginErr.value = '请输入图形验证码'
-    return
-  }
-  if (captcha.value.enabled && !['image', 'geetest'].includes(captcha.value.provider)) {
-    loginErr.value = '安全验证加载失败，请刷新页面重试'
     return
   }
   loginLoading.value = true
   try {
-    let captchaPayload = {}
-    if (captcha.value.enabled && captcha.value.provider === 'image') {
-      captchaPayload = { captchaId: captcha.value.captchaId, captchaCode: captchaCode.value }
-    } else if (captcha.value.enabled && captcha.value.provider === 'geetest') {
-      captchaPayload = await getGeetestValidation()
-    }
-    const res = await api.post(`/client/channels/${token.value}/auth`, {
-      phone: loginForm.value.phone,
+    const captchaPayload = await getCaptchaPayload()
+    const res = await api.post(`/client/channels/${token.value}/auth/login`, {
+      identifier: loginForm.value.identifier,
       password: loginForm.value.password,
       fingerprint: generateFingerprint(),
       ...captchaPayload,
     })
-    if (res.code === 0) {
-      localStorage.setItem('client_token', res.data.token)
-      customer.value = res.data.customer
-      conversationStatus.value = res.data.conversation.status
-      showLogin.value = false
-      
-      await loadMessages()
-      setupSocket()
-      
-      if (res.data.profileRequired) {
-        showQQModal.value = true
-      }
-    } else {
-      loginErr.value = res.message || '登录失败'
-    }
+    await completeAuth(res)
   } catch (e) {
-    loginErr.value = e?.message || '网络错误'
+    loginErr.value = e?.message || '登录失败'
+    if (captcha.value.enabled && captcha.value.provider === 'image') await loadCaptcha()
+    geetestInstance?.reset?.()
+  } finally {
+    loginLoading.value = false
+  }
+}
+
+async function doRegister() {
+  loginErr.value = ''
+  const form = registerForm.value
+  if (!form.phone || !form.qq || !form.email || !form.emailCode || !form.password || !form.confirmPassword) {
+    loginErr.value = '请填写完整注册信息'
+    return
+  }
+  if (form.password !== form.confirmPassword) {
+    loginErr.value = '两次输入的密码不一致'
+    return
+  }
+  loginLoading.value = true
+  try {
+    const captchaPayload = await getCaptchaPayload()
+    const res = await api.post(`/client/channels/${token.value}/auth/register`, {
+      ...form,
+      fingerprint: generateFingerprint(),
+      ...captchaPayload,
+    })
+    await completeAuth(res)
+  } catch (e) {
+    loginErr.value = e?.message || '注册失败'
     if (captcha.value.enabled && captcha.value.provider === 'image') await loadCaptcha()
     geetestInstance?.reset?.()
   } finally {
@@ -1285,6 +1357,7 @@ onUnmounted(() => {
   window.removeEventListener('resize', updateViewport)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
   clearInterval(messageSyncTimer)
+  clearInterval(codeCountdownTimer)
   clearTimeout(toastTimer)
   clearTimeout(longPressTimer)
   initialScrollTimers.forEach(clearTimeout)

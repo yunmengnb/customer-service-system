@@ -9,13 +9,24 @@ const router = useRouter()
 const user = JSON.parse(sessionStorage.getItem('tenant_user') || localStorage.getItem('tenant_user') || 'null')
 const isAdmin = computed(() => ['owner', 'admin'].includes(user?.role))
 const channels = ref([])
+const loading = ref(true)
+const loadError = ref('')
 const showCreate = ref(false)
 const createForm = ref({ name: '', brandName: '', welcomeMessage: '' })
 const confirmAction = ref(null)
 
 async function load() {
-  const res = await api.get('/tenant/channels')
-  if (res.code === 0) channels.value = res.data
+  loading.value = true
+  loadError.value = ''
+  try {
+    const res = await api.get('/tenant/channels')
+    if (res.code !== 0) throw new Error(res.message || '渠道加载失败')
+    channels.value = res.data || []
+  } catch (error) {
+    loadError.value = error?.message || '渠道加载失败，请稍后重试'
+  } finally {
+    loading.value = false
+  }
 }
 
 async function createChannel() {
@@ -100,34 +111,42 @@ onMounted(load)
       <button v-if="isAdmin" @click="showCreate = true">+ 新建渠道</button>
     </div>
     
-    <table class="data-table">
-      <thead>
-        <tr><th>名称</th><th>品牌</th><th>状态</th><th>客服链接</th><th>创建时间</th><th>操作</th></tr>
-      </thead>
-      <tbody>
-        <tr v-for="ch in channels" :key="ch._id">
-          <td>{{ ch.name }}</td>
-          <td>{{ ch.brandName || '-' }}</td>
-          <td>
-            <span :class="['tag', ch.status === 'online' ? 'tag-green' : 'tag-gray']">
-              {{ ch.status === 'online' ? '在线' : '离线' }}
-            </span>
-          </td>
-          <td style="max-width:320px;">
-            <code style="font-size:12px;background:#f3f4f6;padding:2px 6px;border-radius:4px;overflow-wrap:anywhere;">{{ ch.link }}</code>
-          </td>
-          <td>{{ new Date(ch.createdAt).toLocaleDateString() }}</td>
-          <td>
-            <button class="action-btn" @click="openChannelConfig(ch._id)">配置</button>
-            <button class="action-btn" @click="copyLink(ch.link)">复制链接</button>
-            <button v-if="isAdmin" class="action-btn" @click="toggleStatus(ch)">切{{ ch.status === 'online' ? '离线' : '在线' }}</button>
-            <button v-if="isAdmin" class="action-btn" @click="confirmAction = { type: 'rotate', channel: ch }">重置</button>
-            <button v-if="isAdmin" class="action-btn danger" @click="confirmAction = { type: 'remove', channel: ch }">删除</button>
-          </td>
-        </tr>
-        <tr v-if="channels.length === 0"><td colspan="6" style="text-align:center;color:#9ca3af;padding:40px;">暂无渠道</td></tr>
-      </tbody>
-    </table>
+    <div v-if="loading" class="state-card">正在加载渠道...</div>
+    <div v-else-if="loadError" class="state-card error-state">
+      <strong>渠道加载失败</strong>
+      <span>{{ loadError }}</span>
+      <button class="action-btn" @click="load">重新加载</button>
+    </div>
+    <div v-else-if="channels.length" class="channel-list">
+      <article v-for="ch in channels" :key="ch._id" class="channel-card">
+        <div class="card-header">
+          <div class="channel-avatar" :style="{ background: ch.brandColor || '#2563eb' }">
+            <img v-if="ch.avatarUrl" :src="ch.avatarUrl" alt="" />
+            <span v-else>{{ (ch.brandName || ch.name || '渠').slice(0, 1) }}</span>
+          </div>
+          <div class="channel-heading">
+            <strong>{{ ch.name }}</strong>
+            <span>{{ ch.brandName || '未设置品牌名' }}</span>
+          </div>
+          <span :class="['status-pill', ch.status === 'online' ? 'online' : 'offline']">
+            {{ ch.status === 'online' ? '在线' : '离线' }}
+          </span>
+        </div>
+        <div class="link-block">
+          <span>客服链接</span>
+          <code>{{ ch.link }}</code>
+          <button class="copy-button" @click="copyLink(ch.link)">复制</button>
+        </div>
+        <div class="card-meta">创建于 {{ new Date(ch.createdAt).toLocaleDateString() }}</div>
+        <div class="card-actions">
+          <button class="primary-action" @click="openChannelConfig(ch._id)">进入配置</button>
+          <button v-if="isAdmin" class="action-btn" @click="toggleStatus(ch)">{{ ch.status === 'online' ? '设为离线' : '设为在线' }}</button>
+          <button v-if="isAdmin" class="action-btn" @click="confirmAction = { type: 'rotate', channel: ch }">重置链接</button>
+          <button v-if="isAdmin" class="action-btn danger" @click="confirmAction = { type: 'remove', channel: ch }">删除</button>
+        </div>
+      </article>
+    </div>
+    <div v-else class="state-card">暂无渠道</div>
 
     <!-- 新建弹窗 -->
     <div v-if="showCreate" class="modal-overlay" @click.self="showCreate = false">
@@ -167,36 +186,32 @@ onMounted(load)
 </template>
 
 <style scoped>
-@media (max-width: 768px) {
-  .page-content { padding: 12px; }
-  .page-title { margin-bottom: 14px; font-size: 16px; }
-  .page-title button { padding: 9px 16px; font-size: 13px; }
-
-  .data-table { display: block; }
-  .data-table thead { display: none; }
-  .data-table tbody { display: flex; flex-direction: column; gap: 12px; }
-  .data-table tbody tr {
-    display: flex; flex-direction: column;
-    background: #fff; border-radius: 14px; padding: 16px;
-    border: 1px solid #e2e8f0;
-  }
-  .data-table tbody tr:hover td { background: transparent; }
-  .data-table td {
-    display: flex; justify-content: space-between; align-items: center;
-    padding: 6px 0; border-bottom: 1px dashed #f1f5f9;
-  }
-  .data-table td:last-child { border-bottom: none; padding-top: 12px; gap: 8px; flex-wrap: wrap; }
-  .data-table td::before {
-    content: attr(data-label); font-size: 12px; color: #94a3b8; font-weight: 500;
-    text-transform: uppercase; letter-spacing: .5px;
-  }
-  .data-table td:last-child::before { display: none; }
-  .action-btn { font-size: 13px; padding: 4px 10px; }
-
-  /* 空状态 */
-  .data-table tbody tr td[colspan] {
-    justify-content: center; padding: 40px 16px;
-  }
-  .data-table tbody tr td[colspan]::before { display: none; }
-}
+.page-content { padding: 16px; background: #f5f7fb; }
+.page-title { margin-bottom: 16px; font-size: 19px; }
+.page-title button { padding: 9px 14px; font-size: 13px; border-radius: 10px; }
+.channel-list { display: grid; gap: 14px; }
+.channel-card { padding: 16px; border: 1px solid #e6ebf2; border-radius: 16px; background: #fff; box-shadow: 0 8px 24px rgba(15, 23, 42, .05); }
+.card-header { display: flex; align-items: center; gap: 12px; }
+.channel-avatar { width: 44px; height: 44px; flex: 0 0 44px; display: grid; place-items: center; overflow: hidden; border-radius: 13px; color: #fff; font-weight: 700; }
+.channel-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.channel-heading { min-width: 0; flex: 1; display: grid; gap: 4px; }
+.channel-heading strong { overflow: hidden; color: #172033; font-size: 16px; text-overflow: ellipsis; white-space: nowrap; }
+.channel-heading span, .card-meta { color: #8490a5; font-size: 12px; }
+.status-pill { flex: 0 0 auto; padding: 5px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+.status-pill.online { color: #15803d; background: #dcfce7; }
+.status-pill.offline { color: #64748b; background: #eef2f6; }
+.link-block { margin-top: 14px; display: grid; grid-template-columns: 1fr auto; gap: 7px 10px; padding: 11px 12px; border-radius: 12px; background: #f7f9fc; }
+.link-block > span { grid-column: 1 / -1; color: #8490a5; font-size: 11px; }
+.link-block code { min-width: 0; overflow: hidden; color: #334155; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.copy-button { padding: 0; border: 0; color: #2563eb; background: transparent; font-size: 13px; font-weight: 600; }
+.card-meta { margin-top: 10px; }
+.card-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
+.card-actions button { min-height: 38px; border-radius: 9px; }
+.primary-action { border: 1px solid #2563eb; color: #fff; background: #2563eb; }
+.action-btn { border: 1px solid #dbe3ee; color: #475569; background: #fff; }
+.action-btn.danger { color: #dc2626; }
+.state-card { display: grid; justify-items: center; gap: 8px; padding: 42px 20px; border: 1px solid #e6ebf2; border-radius: 16px; color: #8490a5; background: #fff; text-align: center; }
+.error-state strong { color: #b91c1c; }
+.error-state .action-btn { margin-top: 6px; padding: 8px 16px; }
+.modal-box { width: calc(100vw - 32px); max-height: calc(100dvh - 32px); overflow-y: auto; }
 </style>

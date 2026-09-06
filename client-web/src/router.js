@@ -11,7 +11,6 @@ const routes = [
     path: '/account',
     name: 'account',
     component: () => import('./views/AccountPage.vue'),
-    meta: { requiresAuth: true },
   },
   {
     path: '/',
@@ -22,10 +21,6 @@ const routes = [
 const router = createRouter({
   history: createWebHistory(),
   routes,
-})
-
-router.beforeEach(to => {
-  if (to.meta.requiresAuth && !localStorage.getItem('client_token')) return '/'
 })
 
 export default router

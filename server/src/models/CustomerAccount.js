@@ -48,6 +48,11 @@ const CustomerAccountSchema = new mongoose.Schema({
   versionKey: false,
 });
 
+CustomerAccountSchema.index(
+  { email: 1 },
+  { unique: true, partialFilterExpression: { email: { $type: 'string', $gt: '' } } },
+);
+
 CustomerAccountSchema.methods.toJSON = function() {
   const obj = this.toObject();
   delete obj.password;

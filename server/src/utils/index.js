@@ -21,10 +21,8 @@ function comparePassword(password, hash) {
 /**
  * 生成 JWT Token
  */
-function signToken(payload) {
-  return jwt.sign(payload, config.jwt.secret, {
-    expiresIn: config.jwt.expiresIn,
-  });
+function signToken(payload, expiresIn = config.jwt.expiresIn) {
+  return jwt.sign(payload, config.jwt.secret, { expiresIn });
 }
 
 /**

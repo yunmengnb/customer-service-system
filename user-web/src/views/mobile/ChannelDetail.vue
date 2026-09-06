@@ -14,6 +14,8 @@ const currentChannelId = computed(() => props.channelId || route.params.id)
 const user = JSON.parse(sessionStorage.getItem('tenant_user') || localStorage.getItem('tenant_user') || 'null')
 const isAdmin = computed(() => ['owner', 'admin'].includes(user?.role))
 const channel = ref(null)
+const loading = ref(true)
+const loadError = ref('')
 const employees = ref([])
 const selectedEmployeeIds = ref([])
 const keywords = ref([])
@@ -34,8 +36,17 @@ const qrModal = reactive({ show: false, editing: null, form: { title: '', conten
 
 async function load() {
   const channelId = currentChannelId.value
-  const res = await api.get(`/tenant/channels/${channelId}`)
-  if (res.code === 0) {
+  loading.value = true
+  loadError.value = ''
+  try {
+    const requests = [
+      api.get(`/tenant/channels/${channelId}`),
+      api.get(`/tenant/channels/${channelId}/keywords`),
+      api.get(`/tenant/channels/${channelId}/quick-replies`),
+    ]
+    if (isAdmin.value) requests.push(api.get('/tenant/employees'))
+    const [res, kr, qr, employeeRes] = await Promise.all(requests)
+    if (res.code !== 0) throw new Error(res.message || '渠道配置加载失败')
     channel.value = res.data
     Object.assign(form, {
       brandName: res.data.brandName,
@@ -48,18 +59,20 @@ async function load() {
       status: res.data.status,
     })
     selectedEmployeeIds.value = (res.data.employees || []).map(employee => employee.id)
-  }
-  if (isAdmin.value) {
-    const employeeRes = await api.get('/tenant/employees')
-    if (employeeRes.code === 0) {
-      employees.value = employeeRes.data.filter(employee => employee.status === 'active')
+    if (kr.code !== 0) throw new Error(kr.message || '关键词回复加载失败')
+    if (qr.code !== 0) throw new Error(qr.message || '快捷回复加载失败')
+    keywords.value = kr.data || []
+    quickReplies.value = qr.data || []
+    if (employeeRes) {
+      if (employeeRes.code !== 0) throw new Error(employeeRes.message || '接待人加载失败')
+      employees.value = (employeeRes.data || []).filter(employee => employee.status === 'active')
     }
+  } catch (error) {
+    channel.value = null
+    loadError.value = error?.message || '渠道配置加载失败，请稍后重试'
+  } finally {
+    loading.value = false
   }
-  const kr = await api.get(`/tenant/channels/${channelId}/keywords`)
-  if (kr.code === 0) keywords.value = kr.data
-  
-  const qr = await api.get(`/tenant/channels/${channelId}/quick-replies`)
-  if (qr.code === 0) quickReplies.value = qr.data.filter(q => q.status === 'active')
 }
 
 async function saveEmployees() {
@@ -151,7 +164,7 @@ function openKr(kr = null) {
 
 async function saveKr() {
   const f = krModal.form
-  if (!f.keyword || !f.replyContent) { alert('关键词和回复内容不能为空'); return }
+  if (!f.keyword || (!f.replyContent?.trim() && !f.imageUrl)) { alert('关键词不能为空，回复内容和图片至少填写一项'); return }
   const res = krModal.editing
     ? await api.patch(`/tenant/channels/${currentChannelId.value}/keywords/${krModal.editing._id}`, f)
     : await api.post(`/tenant/channels/${currentChannelId.value}/keywords`, f)
@@ -219,7 +232,14 @@ onMounted(load)
 </script>
 
 <template>
-  <div v-if="channel" :class="['detail-page', { embedded }]">
+  <div v-if="loading" class="detail-state">正在加载渠道配置...</div>
+  <div v-else-if="loadError" class="detail-state error-state">
+    <strong>配置加载失败</strong>
+    <span>{{ loadError }}</span>
+    <button class="action-btn" @click="load">重新加载</button>
+    <router-link :to="`${routePrefix}/channels`">返回渠道列表</router-link>
+  </div>
+  <div v-else-if="channel" :class="['detail-page', { embedded }]">
     <button v-if="embedded" type="button" class="inline-close" @click="emit('close')">← 返回渠道列表</button>
     <router-link v-else class="back-link" :to="`${routePrefix}/channels`">← 返回渠道列表</router-link>
     
@@ -280,22 +300,18 @@ onMounted(load)
         <span>关键词回复</span>
         <button class="btn-primary" style="padding:6px 14px;border:none;border-radius:6px;cursor:pointer;font-size:13px;" @click="openKr()">+ 新增</button>
       </h3>
-      <table class="data-table">
-        <thead><tr><th>关键词</th><th>匹配方式</th><th>回复内容</th><th>优先级</th><th>状态</th><th>操作</th></tr></thead>
-        <tbody>
-          <tr v-for="kr in keywords" :key="kr._id">
-            <td>{{ kr.keyword }}</td>
-            <td>{{ kr.matchType === 'exact' ? '精确匹配' : '包含匹配' }}</td>
-            <td style="max-width:300px;"><div class="reply-cell"><img v-if="kr.imageUrl" :src="kr.imageUrl" alt="附图" /><span>{{ kr.replyContent || '仅图片' }}</span></div></td>
-            <td>{{ kr.priority }}</td>
-            <td>
-              <button class="action-btn" @click="openKr(kr)">编辑</button>
-              <button class="action-btn danger" @click="delKr(kr)">删除</button>
-            </td>
-          </tr>
-          <tr v-if="keywords.length === 0"><td colspan="6" style="text-align:center;color:#9ca3af;padding:24px;">暂无关键词</td></tr>
-        </tbody>
-      </table>
+      <div v-if="keywords.length" class="reply-list">
+        <article v-for="kr in keywords" :key="kr._id" class="reply-card">
+          <div class="reply-card-title">
+            <strong>{{ kr.keyword }}</strong>
+            <span class="scope-label">{{ kr.matchType === 'exact' ? '精确匹配' : '包含匹配' }}</span>
+            <span :class="['status-label', kr.status === 'active' ? 'active' : 'disabled']">{{ kr.status === 'active' ? '启用' : '停用' }}</span>
+          </div>
+          <div class="reply-cell"><img v-if="kr.imageUrl" :src="kr.imageUrl" alt="附图" /><span>{{ kr.replyContent || '仅图片' }}</span></div>
+          <div class="reply-card-footer"><span>优先级 {{ kr.priority }}</span><div><button class="action-btn" @click="openKr(kr)">编辑</button><button class="action-btn danger" @click="delKr(kr)">删除</button></div></div>
+        </article>
+      </div>
+      <div v-else class="empty-state">暂无关键词</div>
     </div>
     
     <div class="detail-section">
@@ -303,21 +319,22 @@ onMounted(load)
         <span>快捷回复（员工聊天时可快速插入）</span>
         <button class="btn-primary" style="padding:6px 14px;border:none;border-radius:6px;cursor:pointer;font-size:13px;" @click="openQr()">+ 新增</button>
       </h3>
-      <table class="data-table">
-        <thead><tr><th>标题</th><th>内容</th><th>排序</th><th>操作</th></tr></thead>
-        <tbody>
-          <tr v-for="qr in quickReplies" :key="qr._id">
-            <td>{{ qr.title }}</td>
-            <td style="max-width:350px;"><div class="reply-cell"><img v-if="qr.imageUrl" :src="qr.imageUrl" alt="附图" /><span>{{ qr.content || '仅图片' }}</span></div></td>
-            <td>{{ qr.sortOrder }}</td>
-            <td>
-              <button class="action-btn" @click="openQr(qr)">编辑</button>
-              <button class="action-btn danger" @click="delQr(qr)">删除</button>
-            </td>
-          </tr>
-          <tr v-if="quickReplies.length === 0"><td colspan="4" style="text-align:center;color:#9ca3af;padding:24px;">暂无快捷回复</td></tr>
-        </tbody>
-      </table>
+      <div v-if="quickReplies.length" class="reply-list">
+        <article v-for="qr in quickReplies" :key="qr._id" class="reply-card">
+          <div class="reply-card-title">
+            <strong>{{ qr.title }}</strong>
+            <span class="scope-label">{{ qr.channelId ? '本渠道' : '通用' }}</span>
+            <span :class="['status-label', qr.status === 'active' ? 'active' : 'disabled']">{{ qr.status === 'active' ? '启用' : '停用' }}</span>
+          </div>
+          <div class="reply-cell"><img v-if="qr.imageUrl" :src="qr.imageUrl" alt="附图" /><span>{{ qr.content || '仅图片' }}</span></div>
+          <div class="reply-card-footer">
+            <span>排序 {{ qr.sortOrder }}</span>
+            <div v-if="qr.channelId"><button class="action-btn" @click="openQr(qr)">编辑</button><button class="action-btn danger" @click="delQr(qr)">删除</button></div>
+            <small v-else>通用回复在所有渠道中可用</small>
+          </div>
+        </article>
+      </div>
+      <div v-else class="empty-state">暂无快捷回复</div>
     </div>
 
     <!-- 关键词弹窗 -->
@@ -371,20 +388,40 @@ onMounted(load)
 </template>
 
 <style scoped>
-.detail-page { min-width: 0; min-height: 100dvh; padding: max(16px, env(safe-area-inset-top)) 16px max(28px, env(safe-area-inset-bottom)); overflow-x: hidden; }
-.detail-page.embedded { padding: 14px; border: 1px solid #dbeafe; border-radius: 12px; background: #f8fbff; }
-.back-link { position: sticky; top: 0; z-index: 5; width: 100%; padding: 12px 0; background: rgba(255,255,255,.95); backdrop-filter: blur(12px); }
+.detail-page { min-width: 0; min-height: 100dvh; padding: max(12px, env(safe-area-inset-top)) 14px max(28px, env(safe-area-inset-bottom)); overflow-x: hidden; background: #f5f7fb; }
+.detail-page.embedded { padding: 14px; border: 1px solid #dbeafe; border-radius: 12px; }
+.back-link { position: sticky; top: 0; z-index: 5; display: block; width: 100%; padding: 12px 2px; color: #475569; background: rgba(245,247,251,.94); backdrop-filter: blur(12px); }
 .inline-close { border: 0; background: transparent; cursor: pointer; text-align: left; }
-.detail-section { min-width: 0; }
+.detail-section { min-width: 0; margin-bottom: 14px; padding: 16px; border: 1px solid #e6ebf2; border-radius: 16px; background: #fff; box-shadow: 0 7px 22px rgba(15, 23, 42, .04); }
+.detail-section h3 { margin-bottom: 16px; }
+.kv-row { align-items: flex-start; gap: 12px; }
 .kv-row .value, .kv-row code { min-width: 0; overflow-wrap: anywhere; }
+.kv-row .value { flex: 1; text-align: right; }
+.customer-link { display: block; padding: 7px; border-radius: 7px; background: #f3f4f6; font-size: 11px; }
 .avatar-upload { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .avatar-upload img, .avatar-upload > span { width: 52px; height: 52px; border-radius: 50%; object-fit: cover; display: flex; align-items: center; justify-content: center; background: #2563eb; color: #fff; font-weight: 600; }
 .upload-button { cursor: pointer; }
 .upload-button input { display: none; }
 .employee-options { display: grid; gap: 10px; margin-bottom: 14px; }
-.employee-options label { padding: 10px; border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; }
+.employee-options label { padding: 10px; border: 1px solid #e2e8f0; border-radius: 9px; background: #fff; }
 .reply-image-editor { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
 .reply-image-editor img { width: 96px; height: 72px; object-fit: cover; border: 1px solid #e2e8f0; border-radius: 8px; }
-.reply-cell { display: flex; align-items: center; gap: 8px; min-width: 140px; }
-.reply-cell img { width: 44px; height: 44px; flex: 0 0 44px; object-fit: cover; border-radius: 6px; }
+.reply-list { display: grid; gap: 10px; }
+.reply-card { padding: 13px; border: 1px solid #e7ebf2; border-radius: 12px; background: #fbfcfe; }
+.reply-card-title { display: flex; align-items: center; gap: 7px; }
+.reply-card-title strong { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scope-label, .status-label { padding: 3px 7px; border-radius: 999px; font-size: 11px; }
+.scope-label { color: #2563eb; background: #eaf2ff; }
+.status-label.active { color: #15803d; background: #dcfce7; }
+.status-label.disabled { color: #64748b; background: #eef2f6; }
+.reply-cell { display: flex; align-items: center; gap: 9px; min-width: 0; margin-top: 10px; color: #475569; font-size: 13px; line-height: 1.5; }
+.reply-cell img { width: 48px; height: 48px; flex: 0 0 48px; object-fit: cover; border-radius: 7px; }
+.reply-card-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 11px; color: #94a3b8; font-size: 11px; }
+.reply-card-footer > div { display: flex; gap: 6px; }
+.reply-card-footer .action-btn { padding: 5px 9px; }
+.empty-state { padding: 22px; color: #94a3b8; text-align: center; }
+.detail-state { min-height: 100dvh; display: grid; place-content: center; justify-items: center; gap: 10px; padding: 24px; color: #64748b; background: #f5f7fb; text-align: center; }
+.error-state strong { color: #b91c1c; }
+.error-state .action-btn { padding: 8px 16px; }
+.modal-box { width: calc(100vw - 28px); max-height: calc(100dvh - 28px); overflow-y: auto; }
 </style>

@@ -97,7 +97,12 @@ async function start() {
   app.use('/api/admin/auth/login', loginLimiter);
   app.use('/api/tenant/auth/login', loginLimiter);
   app.use('/api/tenant/auth/register', loginLimiter);
-  app.use('/api/client/channels/:token/auth', loginLimiter);
+  app.use('/api/client/auth/login', loginLimiter);
+  app.use('/api/client/auth/register-code', loginLimiter);
+  app.use('/api/client/auth/register', loginLimiter);
+  app.use('/api/client/channels/:token/auth/login', loginLimiter);
+  app.use('/api/client/channels/:token/auth/register-code', loginLimiter);
+  app.use('/api/client/channels/:token/auth/register', loginLimiter);
 
   // 路由
   app.use('/api/admin', adminRoutes);
