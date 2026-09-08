@@ -15,6 +15,7 @@ const tabs = [
 
 const defaults = {
   registerEnabled: true,
+  tenantRegisterEmailVerificationEnabled: false,
   loginEnabled: true,
   customerServiceDomain: '',
   siteTitle: '忆梦云客服',
@@ -65,6 +66,9 @@ const currentTab = computed(() => tabs.find(tab => tab.key === activeTab.value))
 function applySettings(data) {
   const source = data?.settings || data || {}
   if (typeof source.registerEnabled === 'boolean') form.registerEnabled = source.registerEnabled
+  if (typeof source.tenantRegisterEmailVerificationEnabled === 'boolean') {
+    form.tenantRegisterEmailVerificationEnabled = source.tenantRegisterEmailVerificationEnabled
+  }
   if (typeof source.loginEnabled === 'boolean') form.loginEnabled = source.loginEnabled
   if (Array.isArray(source.forbiddenWords)) form.forbiddenWords = source.forbiddenWords.join('\n')
   for (const key of ['customerServiceDomain', 'siteTitle', 'siteKeywords', 'siteDescription']) {
@@ -410,6 +414,10 @@ onMounted(loadSettings)
           <div class="setting-switch full-width">
             <div><strong>开放用户注册</strong><span>关闭后新用户无法创建账号，已有账号不受影响。</span></div>
             <label class="switch"><input v-model="form.registerEnabled" type="checkbox" /><span class="slider"></span></label>
+          </div>
+          <div class="setting-switch full-width">
+            <div><strong>租户注册邮箱验证</strong><span>开启后租户注册时必须先获取并填写邮箱验证码。</span></div>
+            <label class="switch"><input v-model="form.tenantRegisterEmailVerificationEnabled" type="checkbox" /><span class="slider"></span></label>
           </div>
           <div class="setting-switch full-width">
             <div><strong>允许用户登录</strong><span>关闭后用户将无法登录平台。</span></div>

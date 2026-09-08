@@ -11,7 +11,11 @@ const form = ref({ username: '', password: '' })
 const captcha = ref(null)
 const err = ref('')
 const loading = ref(false)
-const notice = computed(() => route.query.registered === '1' ? '注册成功，请登录' : '')
+const notice = computed(() => {
+  if (route.query.registered === '1') return '注册成功，请登录'
+  if (route.query.reset === '1') return '密码已重置，请使用新密码登录'
+  return ''
+})
 
 async function doLogin() {
   if (loading.value) return
@@ -55,6 +59,7 @@ async function doLogin() {
       <button type="button" @click="doLogin" :disabled="loading">
         {{ loading ? '登录中...' : '登录' }}
       </button>
+      <div class="link-row"><router-link to="/forgot-password">忘记密码？</router-link></div>
       <div class="link-row">
         还没有账号？<router-link to="/register">立即注册</router-link>
       </div>

@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const config = require('../config');
 const cache = require('../utils/cache');
 const { sendMail } = require('../utils/mailer');
+const { normalizeEmail, sendEmailCode, verifyEmailCode } = require('../utils/emailVerification');
 const presence = require('../utils/presence');
 const { getSystemSettings } = require('../utils/systemSettings');
 const { ok, error, hashPassword, comparePassword, signToken, normalizePhone, hashFingerprint, getClientIp } = require('../utils');
@@ -521,15 +522,48 @@ class CustomerAuthController {
     return ok(res, items);
   }
 
+  async sendProfilePasswordCode(req, res) {
+    const account = await resolveAccount(req.customer);
+    if (!account) return error(res, '账号不存在', 404, 404);
+    const result = await sendEmailCode({ scope: `customer-profile:${account._id}:change-password`, email: account.email, subject: '客户修改密码验证码', action: '修改密码' });
+    if (!result.ok) return error(res, result.message, result.code, result.status);
+    return ok(res, null, '验证码已发送');
+  }
+
+  async sendResetCode(req, res) {
+    const phone = normalizePhone(req.body.phone);
+    const email = normalizeEmail(req.body.email);
+    const account = await CustomerAccount.findOne({ phone, email });
+    if (account) {
+      const result = await sendEmailCode({ scope: `customer-reset-password:${account._id}`, email, subject: '客户找回密码验证码', action: '找回密码' });
+      if (!result.ok) return error(res, result.message, result.code, result.status);
+    }
+    return ok(res, null, '如手机号与邮箱匹配，验证码将发送至该邮箱');
+  }
+
+  async resetPassword(req, res) {
+    const phone = normalizePhone(req.body.phone);
+    const email = normalizeEmail(req.body.email);
+    const account = await CustomerAccount.findOne({ phone, email });
+    const valid = account && await verifyEmailCode({ scope: `customer-reset-password:${account._id}`, email, code: req.body.emailCode });
+    if (!valid) return error(res, '手机号、邮箱或验证码错误', 4004, 400);
+    account.password = hashPassword(req.body.newPassword);
+    await account.save();
+    await Customer.updateMany({ accountId: account._id }, { $set: { password: account.password } });
+    return ok(res, null, '密码已重置，请使用新密码登录');
+  }
+
   // POST /api/client/profile/password
   async updatePassword(req, res) {
     try {
-      const { currentPassword, newPassword, confirmPassword } = req.body;
+      const { currentPassword, newPassword, confirmPassword, emailCode } = req.body;
       if (newPassword !== confirmPassword) return error(res, '两次输入的新密码不一致', 4003, 400);
       const account = await resolveAccount(req.customer);
       if (!account) return error(res, '账号不存在', 4041, 404);
       if (!comparePassword(currentPassword, account.password)) return error(res, '当前密码错误', 4001, 400);
       if (comparePassword(newPassword, account.password)) return error(res, '新密码不能与当前密码相同', 4002, 400);
+      const valid = await verifyEmailCode({ scope: `customer-profile:${account._id}:change-password`, email: account.email, code: emailCode });
+      if (!valid) return error(res, '邮箱验证码错误或已过期', 4004, 400);
       account.password = hashPassword(newPassword);
       await account.save();
       // 旧 Customer.password 暂时同步，保证迁移期间旧版本服务仍可验证。

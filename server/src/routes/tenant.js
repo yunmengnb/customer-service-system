@@ -14,11 +14,17 @@ const { verifyCaptcha } = require('../middleware/captcha');
 
 // ===== 认证 =====
 router.get('/auth/captcha', CaptchaController.create);
+router.post('/auth/register-code', validators.emailCode, TenantAuthController.sendRegisterCode);
 router.post('/auth/register', verifyCaptcha, validators.tenantRegister, TenantAuthController.register);
 router.post('/auth/login', verifyCaptcha, validators.tenantLogin, TenantAuthController.login);
+router.post('/auth/forgot-password/code', validators.emailCode, TenantAuthController.sendResetCode);
+router.post('/auth/forgot-password/reset', validators.resetPassword, TenantAuthController.resetPassword);
 router.get('/auth/me', authTenantUser, TenantAuthController.me);
 router.post('/auth/logout', authTenantUser, TenantAuthController.logout);
 router.patch('/auth/profile', authTenantUser, TenantAuthController.updateProfile);
+router.post('/auth/profile/email-code', authTenantUser, validators.tenantProfileCode, TenantAuthController.sendProfileEmailCode);
+router.patch('/auth/profile/email', authTenantUser, validators.tenantEmail, TenantAuthController.updateEmail);
+router.patch('/auth/profile/password', authTenantUser, validators.tenantPassword, TenantAuthController.updatePassword);
 
 // ===== 公告（只读）=====
 router.get('/announcements', authTenantUser, AnnouncementController.list);

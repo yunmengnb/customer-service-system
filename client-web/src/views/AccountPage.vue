@@ -17,12 +17,13 @@
         <nav class="auth-tabs account-auth-tabs">
           <button type="button" :class="{ active: authTab === 'login' }" @click="switchAuthTab('login')">登录</button>
           <button type="button" :class="{ active: authTab === 'register' }" @click="switchAuthTab('register')">注册</button>
+          <button type="button" :class="{ active: authTab === 'forgot' }" @click="switchAuthTab('forgot')">找回密码</button>
         </nav>
         <template v-if="authTab === 'login'">
           <div class="form-item"><label>手机号或邮箱</label><input v-model.trim="loginForm.identifier" autocomplete="username" placeholder="请输入手机号或邮箱" /></div>
           <div class="form-item"><label>密码</label><input v-model="loginForm.password" type="password" autocomplete="current-password" placeholder="请输入密码" @keyup.enter="submitLogin" /></div>
         </template>
-        <template v-else>
+        <template v-else-if="authTab === 'register'">
           <div class="auth-form-grid">
             <div class="form-item"><label>手机号</label><input v-model.trim="registerForm.phone" inputmode="tel" placeholder="请输入手机号" /></div>
             <div class="form-item"><label>QQ号</label><input v-model.trim="registerForm.qq" inputmode="numeric" maxlength="12" placeholder="请输入5-12位QQ号" /></div>
@@ -34,17 +35,28 @@
             <div class="form-item"><label>确认密码</label><input v-model="registerForm.confirmPassword" type="password" autocomplete="new-password" placeholder="请再次输入密码" @keyup.enter="submitRegister" /></div>
           </div>
         </template>
-        <div v-if="captcha.enabled && captcha.provider === 'image'" class="form-item"><label>图形验证码</label><div class="captcha-row"><input v-model.trim="captchaCode" maxlength="8" placeholder="请输入验证码" /><button type="button" class="captcha-image-button" :disabled="captchaLoading" @click="loadCaptcha"><img v-if="captcha.image" :src="captcha.image" alt="图形验证码" /><span v-else>点击刷新</span></button></div></div>
-        <div v-else-if="captcha.enabled && captcha.provider === 'geetest'" class="captcha-tip">{{ geetestReady ? '提交后完成安全验证' : '正在加载安全验证...' }}</div>
-        <div v-if="authMessage" class="password-feedback error">{{ authMessage }}</div>
-        <button type="button" class="dashboard-primary" :disabled="authLoading || captchaLoading" @click="authTab === 'login' ? submitLogin() : submitRegister()">{{ authLoading ? '处理中...' : (authTab === 'login' ? '登录' : '注册') }}</button>
+        <template v-else>
+          <div class="form-item"><label>手机号</label><input v-model.trim="resetForm.phone" inputmode="tel" autocomplete="tel" placeholder="请输入注册手机号" /></div>
+          <div class="form-item"><label>邮箱</label><input v-model.trim="resetForm.email" type="email" autocomplete="email" placeholder="请输入注册邮箱" /></div>
+          <div class="form-item"><label>邮箱验证码</label><div class="email-code-row"><input v-model.trim="resetForm.emailCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="请输入6位验证码" /><button type="button" :disabled="resetCodeLoading || resetCodeCountdown > 0" @click="sendResetCode">{{ resetCodeCountdown ? `${resetCodeCountdown}秒后重发` : (resetCodeLoading ? '发送中...' : '发送验证码') }}</button></div></div>
+          <div class="auth-form-grid">
+            <div class="form-item"><label>新密码</label><input v-model="resetForm.newPassword" type="password" autocomplete="new-password" placeholder="请输入6-72位新密码" /></div>
+            <div class="form-item"><label>确认新密码</label><input v-model="resetForm.confirmPassword" type="password" autocomplete="new-password" placeholder="请再次输入新密码" @keyup.enter="submitResetPassword" /></div>
+          </div>
+        </template>
+        <template v-if="authTab !== 'forgot'">
+          <div v-if="captcha.enabled && captcha.provider === 'image'" class="form-item"><label>图形验证码</label><div class="captcha-row"><input v-model.trim="captchaCode" maxlength="8" placeholder="请输入验证码" /><button type="button" class="captcha-image-button" :disabled="captchaLoading" @click="loadCaptcha"><img v-if="captcha.image" :src="captcha.image" alt="图形验证码" /><span v-else>点击刷新</span></button></div></div>
+          <div v-else-if="captcha.enabled && captcha.provider === 'geetest'" class="captcha-tip">{{ geetestReady ? '提交后完成安全验证' : '正在加载安全验证...' }}</div>
+        </template>
+        <div v-if="authMessage" :class="['password-feedback', authSuccess ? 'success' : 'error']">{{ authMessage }}</div>
+        <button type="button" class="dashboard-primary" :disabled="authLoading || (authTab !== 'forgot' && captchaLoading)" @click="submitAuth">{{ authLoading ? '处理中...' : (authTab === 'login' ? '登录' : (authTab === 'register' ? '注册' : '重置密码')) }}</button>
       </section>
 
       <template v-else>
         <section class="account-hero">
           <img v-if="customer.avatarUrl" :src="customer.avatarUrl" alt="客户头像" />
           <div v-else class="account-avatar">{{ customer.nickname?.[0] || '我' }}</div>
-          <div><span>个人中心</span><h1>{{ customer.nickname || '访客' }}</h1><p>{{ customer.phone || '' }}</p></div>
+          <div><span>个人中心</span><h1>{{ customer.nickname && customer.nickname !== '访客' ? customer.nickname : (customer.qq || '未完善QQ') }}</h1><p>{{ customer.phone || '' }}</p></div>
         </section>
         <nav class="account-tabs" aria-label="个人中心导航">
           <button type="button" :class="{ active: activeTab === 'channels' }" @click="activeTab = 'channels'">历史渠道</button>
@@ -79,6 +91,7 @@
         <form v-else class="account-card account-password-form" @submit.prevent="changePassword">
           <div class="account-section-title"><div><h2>修改密码</h2><p>修改成功后需使用新密码重新登录</p></div></div>
           <div class="form-item"><label>当前密码</label><input v-model="passwordForm.currentPassword" type="password" autocomplete="current-password" placeholder="请输入当前密码" /></div>
+          <div class="form-item"><label>邮箱验证码</label><div class="email-code-row"><input v-model.trim="passwordForm.emailCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="发送至绑定邮箱" /><button type="button" :disabled="passwordCodeLoading || passwordCodeCountdown > 0" @click="sendPasswordCode">{{ passwordCodeCountdown ? `${passwordCodeCountdown}秒后重发` : (passwordCodeLoading ? '发送中...' : '发送验证码') }}</button></div></div>
           <div class="form-item"><label>新密码</label><input v-model="passwordForm.newPassword" type="password" autocomplete="new-password" placeholder="请输入6-72位新密码" /></div>
           <div class="form-item"><label>确认新密码</label><input v-model="passwordForm.confirmPassword" type="password" autocomplete="new-password" placeholder="请再次输入新密码" /></div>
           <div v-if="passwordMessage" :class="['password-feedback', passwordSuccess ? 'success' : 'error']">{{ passwordMessage }}</div>
@@ -118,18 +131,24 @@ const channelToken = ref(String(route.query.channel || localStorage.getItem('cli
 const authTab = ref('login')
 const loginForm = ref({ identifier: '', password: '' })
 const registerForm = ref({ phone: '', qq: '', email: '', emailCode: '', password: '', confirmPassword: '' })
+const resetForm = ref({ phone: '', email: '', emailCode: '', newPassword: '', confirmPassword: '' })
 const authLoading = ref(false)
 const authMessage = ref('')
+const authSuccess = ref(false)
 const codeLoading = ref(false)
 const codeCountdown = ref(0)
+const resetCodeLoading = ref(false)
+const resetCodeCountdown = ref(0)
 const captcha = ref({ enabled: false, provider: '', captchaId: '', image: '' })
 const captchaCode = ref('')
 const captchaLoading = ref(false)
 const geetestReady = ref(false)
-const passwordForm = ref({ currentPassword: '', newPassword: '', confirmPassword: '' })
+const passwordForm = ref({ currentPassword: '', emailCode: '', newPassword: '', confirmPassword: '' })
 const passwordLoading = ref(false)
 const passwordMessage = ref('')
 const passwordSuccess = ref(false)
+const passwordCodeLoading = ref(false)
+const passwordCodeCountdown = ref(0)
 const userAgent = navigator.userAgent || ''
 const isIOS = /iphone|ipad|ipod/i.test(userAgent) || (/macintosh/i.test(userAgent) && navigator.maxTouchPoints > 1)
 const isCustomerAndroidApp = /YiMengCustomerAndroid\/[\w.-]+/i.test(userAgent)
@@ -137,6 +156,8 @@ const showDownloadModal = ref(false)
 const appDownloadLoading = ref(false)
 const appDownloadError = ref('')
 let codeTimer = null
+let resetCodeTimer = null
+let passwordCodeTimer = null
 let socket = null
 let notificationAudioContext = null
 let geetestInstance = null
@@ -177,7 +198,12 @@ async function loadAccount() {
   } finally { loading.value = false }
 }
 
-function switchAuthTab(tab) { authTab.value = tab; authMessage.value = ''; captchaCode.value = ''; geetestInstance?.reset?.() }
+function switchAuthTab(tab) { authTab.value = tab; authMessage.value = ''; authSuccess.value = false; captchaCode.value = ''; geetestInstance?.reset?.() }
+function submitAuth() {
+  if (authTab.value === 'login') return submitLogin()
+  if (authTab.value === 'register') return submitRegister()
+  return submitResetPassword()
+}
 async function loadGeetestScript() {
   if (window.initGeetest) return
   if (!geetestScriptPromise) geetestScriptPromise = new Promise((resolve, reject) => {
@@ -234,8 +260,35 @@ async function sendCode() {
     codeCountdown.value = 60; clearInterval(codeTimer); codeTimer = setInterval(() => { if (--codeCountdown.value <= 0) clearInterval(codeTimer) }, 1000)
   } catch (error) { authMessage.value = error?.message || '验证码发送失败' } finally { codeLoading.value = false }
 }
+async function sendResetCode() {
+  authMessage.value = ''; authSuccess.value = false; const form = resetForm.value
+  if (!/^[\d +\-]{6,20}$/.test(form.phone)) return authMessage.value = '请输入正确的手机号'
+  if (!/^\S+@\S+\.\S+$/.test(form.email)) return authMessage.value = '请输入正确的邮箱地址'
+  resetCodeLoading.value = true
+  try {
+    const res = await api.post('/client/auth/forgot-password/code', { phone: form.phone, email: form.email })
+    if (res.code !== 0) throw new Error(res.message)
+    authSuccess.value = true; authMessage.value = res.message || '验证码已发送'
+    resetCodeCountdown.value = 60; clearInterval(resetCodeTimer); resetCodeTimer = setInterval(() => { if (--resetCodeCountdown.value <= 0) clearInterval(resetCodeTimer) }, 1000)
+  } catch (error) { authMessage.value = error?.message || '验证码发送失败' } finally { resetCodeLoading.value = false }
+}
+async function submitResetPassword() {
+  authMessage.value = ''; authSuccess.value = false; const form = resetForm.value
+  if (!/^[\d +\-]{6,20}$/.test(form.phone)) return authMessage.value = '请输入正确的手机号'
+  if (!/^\S+@\S+\.\S+$/.test(form.email)) return authMessage.value = '请输入正确的邮箱地址'
+  if (!/^\d{6}$/.test(form.emailCode)) return authMessage.value = '请输入6位邮箱验证码'
+  if (form.newPassword.length < 6 || form.newPassword.length > 72) return authMessage.value = '新密码须为6-72位'
+  if (form.newPassword !== form.confirmPassword) return authMessage.value = '两次输入的新密码不一致'
+  authLoading.value = true
+  try {
+    const res = await api.post('/client/auth/forgot-password/reset', form)
+    if (res.code !== 0) throw new Error(res.message)
+    switchAuthTab('login'); authSuccess.value = true; authMessage.value = res.message || '密码已重置，请使用新密码登录'; loginForm.value.identifier = form.phone
+    resetForm.value = { phone: '', email: '', emailCode: '', newPassword: '', confirmPassword: '' }
+  } catch (error) { authMessage.value = error?.message || '密码重置失败' } finally { authLoading.value = false }
+}
 async function submitRegister() {
-  authMessage.value = ''; const form = registerForm.value
+  authMessage.value = ''; authSuccess.value = false; const form = registerForm.value
   if (Object.values(form).some(value => !value)) return authMessage.value = '请填写完整注册信息'
   if (!/^[\d +\-]{6,20}$/.test(form.phone)) return authMessage.value = '请输入正确的手机号'
   if (!/^[1-9]\d{4,11}$/.test(form.qq)) return authMessage.value = '请输入5-12位QQ号'
@@ -247,15 +300,25 @@ async function submitRegister() {
   try { await finishAuth(await api.post('/client/auth/register', { ...form, fingerprint: navigator.userAgent, ...await getCaptchaPayload() })) }
   catch (error) { authMessage.value = error?.message || '注册失败'; await loadCaptcha(); geetestInstance?.reset?.() } finally { authLoading.value = false }
 }
+async function sendPasswordCode() {
+  passwordMessage.value = ''; passwordSuccess.value = false; passwordCodeLoading.value = true
+  try {
+    const res = await api.post('/client/profile/password-code')
+    if (res.code !== 0) throw new Error(res.message)
+    passwordSuccess.value = true; passwordMessage.value = res.message || '验证码已发送'
+    passwordCodeCountdown.value = 60; clearInterval(passwordCodeTimer); passwordCodeTimer = setInterval(() => { if (--passwordCodeCountdown.value <= 0) clearInterval(passwordCodeTimer) }, 1000)
+  } catch (error) { passwordMessage.value = error?.message || '验证码发送失败' } finally { passwordCodeLoading.value = false }
+}
 async function changePassword() {
   passwordMessage.value = ''; passwordSuccess.value = false; const form = passwordForm.value
-  if (!form.currentPassword || !form.newPassword || !form.confirmPassword) return passwordMessage.value = '请填写完整密码信息'
+  if (!form.currentPassword || !form.emailCode || !form.newPassword || !form.confirmPassword) return passwordMessage.value = '请填写完整密码信息和邮箱验证码'
+  if (!/^\d{6}$/.test(form.emailCode)) return passwordMessage.value = '请输入6位邮箱验证码'
   if (form.newPassword.length < 6 || form.newPassword.length > 72) return passwordMessage.value = '新密码须为6-72位'
   if (form.newPassword !== form.confirmPassword) return passwordMessage.value = '两次输入的新密码不一致'
   passwordLoading.value = true
   try {
     const res = await api.post('/client/profile/password', form); if (res.code !== 0) throw new Error(res.message)
-    passwordSuccess.value = true; passwordMessage.value = res.message || '密码修改成功'; passwordForm.value = { currentPassword: '', newPassword: '', confirmPassword: '' }
+    passwordSuccess.value = true; passwordMessage.value = res.message || '密码修改成功'; passwordForm.value = { currentPassword: '', emailCode: '', newPassword: '', confirmPassword: '' }
     localStorage.removeItem('client_token'); setTimeout(() => { customer.value = null; authTab.value = 'login'; passwordMessage.value = ''; loadCaptcha() }, 1000)
   } catch (error) { passwordMessage.value = error?.message || '密码修改失败' } finally { passwordLoading.value = false }
 }
@@ -377,6 +440,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointerdown', unlockNotificationSound)
   window.removeEventListener('keydown', unlockNotificationSound)
   clearInterval(codeTimer)
+  clearInterval(resetCodeTimer)
+  clearInterval(passwordCodeTimer)
   geetestInstance?.destroy?.()
   socket?.off('channel-history.updated', handleChannelHistoryUpdate)
   socket?.off('message.new', handleNewMessage)

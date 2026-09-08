@@ -4,7 +4,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 const MOBILE_BREAKPOINT = 768
 const desktopPrefix = '/desktop'
 const mobilePrefix = '/m'
-const publicPaths = new Set(['/login', '/register'])
+const publicPaths = new Set(['/login', '/register', '/forgot-password'])
 
 const devicePrefix = () => window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT}px)`).matches ? mobilePrefix : desktopPrefix
 
@@ -24,6 +24,7 @@ function mapPathToDevice(path, prefix = devicePrefix()) {
 const routes = [
   { path: '/login', component: () => import('./views/Login.vue'), meta: { public: true } },
   { path: '/register', component: () => import('./views/Register.vue'), meta: { public: true } },
+  { path: '/forgot-password', component: () => import('./views/ForgotPassword.vue'), meta: { public: true } },
   {
     path: '/employee-login',
     component: { template: '<div></div>' },

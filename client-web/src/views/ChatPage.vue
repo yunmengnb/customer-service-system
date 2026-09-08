@@ -304,6 +304,7 @@
         <div class="auth-tabs">
           <button type="button" :class="{ active: authTab === 'register' }" @click="switchAuthTab('register')">注册</button>
           <button type="button" :class="{ active: authTab === 'login' }" @click="switchAuthTab('login')">登录</button>
+          <button type="button" :class="{ active: authTab === 'forgot' }" @click="switchAuthTab('forgot')">找回密码</button>
         </div>
         <template v-if="authTab === 'register'">
           <div class="modal-desc">注册账号后即可开始咨询</div>
@@ -324,12 +325,22 @@
             <div class="form-item"><label>确认密码</label><input v-model="registerForm.confirmPassword" type="password" autocomplete="new-password" placeholder="请再次输入密码" @keyup.enter="doRegister" /></div>
           </div>
         </template>
-        <template v-else>
+        <template v-else-if="authTab === 'login'">
           <div class="modal-desc">使用手机号或邮箱登录</div>
           <div class="form-item"><label>手机号或邮箱</label><input v-model.trim="loginForm.identifier" autocomplete="username" placeholder="请输入手机号或邮箱" /></div>
           <div class="form-item"><label>密码</label><input v-model="loginForm.password" type="password" autocomplete="current-password" placeholder="请输入密码" @keyup.enter="doLogin" /></div>
         </template>
-        <div v-if="captcha.enabled && captcha.provider === 'image'" class="form-item">
+        <template v-else>
+          <div class="modal-desc">验证注册手机号和邮箱后重置密码</div>
+          <div class="form-item"><label>手机号</label><input v-model.trim="resetForm.phone" inputmode="tel" autocomplete="tel" placeholder="请输入注册手机号" /></div>
+          <div class="form-item"><label>邮箱</label><input v-model.trim="resetForm.email" type="email" autocomplete="email" placeholder="请输入注册邮箱" /></div>
+          <div class="form-item"><label>邮箱验证码</label><div class="email-code-row"><input v-model.trim="resetForm.emailCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="请输入6位验证码" /><button type="button" :disabled="resetCodeLoading || resetCodeCountdown > 0" @click="sendResetCode">{{ resetCodeCountdown ? `${resetCodeCountdown}秒后重发` : (resetCodeLoading ? '发送中...' : '发送验证码') }}</button></div></div>
+          <div class="auth-form-grid">
+            <div class="form-item"><label>新密码</label><input v-model="resetForm.newPassword" type="password" autocomplete="new-password" placeholder="请输入6-72位新密码" /></div>
+            <div class="form-item"><label>确认新密码</label><input v-model="resetForm.confirmPassword" type="password" autocomplete="new-password" placeholder="请再次输入新密码" @keyup.enter="submitResetPassword" /></div>
+          </div>
+        </template>
+        <div v-if="authTab !== 'forgot' && captcha.enabled && captcha.provider === 'image'" class="form-item">
           <label>图形验证码</label>
           <div class="captcha-row">
             <input v-model.trim="captchaCode" autocomplete="off" maxlength="8" placeholder="请输入验证码" :aria-label="'图形验证码'" />
@@ -339,13 +350,13 @@
             </button>
           </div>
         </div>
-        <div v-else-if="captcha.enabled && captcha.provider === 'geetest'" class="captcha-tip">
+        <div v-else-if="authTab !== 'forgot' && captcha.enabled && captcha.provider === 'geetest'" class="captcha-tip">
           {{ geetestReady ? '提交后完成安全验证' : (captchaLoading ? '正在加载安全验证...' : '安全验证加载失败，请重试') }}
         </div>
         <div class="err" v-if="loginErr">{{ loginErr }}</div>
         <div class="modal-actions">
-          <button class="btn btn-primary" @click="authTab === 'register' ? doRegister() : doLogin()" :disabled="loginLoading || captchaLoading">
-            {{ loginLoading ? '处理中...' : (authTab === 'register' ? '注册并进入聊天' : '登录并进入聊天') }}
+          <button class="btn btn-primary" @click="submitAuth" :disabled="loginLoading || (authTab !== 'forgot' && captchaLoading)">
+            {{ loginLoading ? '处理中...' : (authTab === 'register' ? '注册并进入聊天' : (authTab === 'login' ? '登录并进入聊天' : '重置密码')) }}
           </button>
         </div>
       </div>
@@ -436,10 +447,13 @@ const appDownloadError = ref('')
 const authTab = ref('register')
 const loginForm = ref({ identifier: '', password: '' })
 const registerForm = ref({ phone: '', qq: '', email: '', emailCode: '', password: '', confirmPassword: '' })
+const resetForm = ref({ phone: '', email: '', emailCode: '', newPassword: '', confirmPassword: '' })
 const loginLoading = ref(false)
 const loginErr = ref('')
 const codeLoading = ref(false)
 const codeCountdown = ref(0)
+const resetCodeLoading = ref(false)
+const resetCodeCountdown = ref(0)
 const captcha = ref({ enabled: false, provider: '', captchaId: '', image: '' })
 const captchaCode = ref('')
 const captchaLoading = ref(false)
@@ -481,6 +495,7 @@ let initialScrollTimers = []
 let scrollFrame = null
 let pendingScrollForce = false
 let codeCountdownTimer = null
+let resetCodeTimer = null
 let complaintEmailCodeTimer = null
 let geetestInstance = null
 let complaintGeetestInstance = null
@@ -730,6 +745,12 @@ function switchAuthTab(tab) {
   geetestInstance?.reset?.()
 }
 
+function submitAuth() {
+  if (authTab.value === 'register') return doRegister()
+  if (authTab.value === 'login') return doLogin()
+  return submitResetPassword()
+}
+
 async function getCaptchaPayload() {
   if (captcha.value.enabled && captcha.value.provider === 'image') {
     if (!captchaCode.value) throw new Error('请输入图形验证码')
@@ -773,6 +794,41 @@ async function sendRegisterCode() {
   } finally {
     codeLoading.value = false
   }
+}
+
+async function sendResetCode() {
+  loginErr.value = ''
+  const form = resetForm.value
+  if (!/^[\d +\-]{6,20}$/.test(form.phone)) return loginErr.value = '请输入正确的手机号'
+  if (!/^\S+@\S+\.\S+$/.test(form.email)) return loginErr.value = '请输入正确的邮箱地址'
+  resetCodeLoading.value = true
+  try {
+    const res = await api.post('/client/auth/forgot-password/code', { phone: form.phone, email: form.email })
+    if (res.code !== 0) throw new Error(res.message)
+    loginErr.value = res.message || '验证码已发送'
+    resetCodeCountdown.value = 60
+    clearInterval(resetCodeTimer)
+    resetCodeTimer = setInterval(() => { if (--resetCodeCountdown.value <= 0) clearInterval(resetCodeTimer) }, 1000)
+  } catch (error) { loginErr.value = error?.message || '验证码发送失败' } finally { resetCodeLoading.value = false }
+}
+
+async function submitResetPassword() {
+  loginErr.value = ''
+  const form = resetForm.value
+  if (!/^[\d +\-]{6,20}$/.test(form.phone)) return loginErr.value = '请输入正确的手机号'
+  if (!/^\S+@\S+\.\S+$/.test(form.email)) return loginErr.value = '请输入正确的邮箱地址'
+  if (!/^\d{6}$/.test(form.emailCode)) return loginErr.value = '请输入6位邮箱验证码'
+  if (form.newPassword.length < 6 || form.newPassword.length > 72) return loginErr.value = '新密码须为6-72位'
+  if (form.newPassword !== form.confirmPassword) return loginErr.value = '两次输入的新密码不一致'
+  loginLoading.value = true
+  try {
+    const res = await api.post('/client/auth/forgot-password/reset', form)
+    if (res.code !== 0) throw new Error(res.message)
+    switchAuthTab('login')
+    loginErr.value = res.message || '密码已重置，请使用新密码登录'
+    loginForm.value.identifier = form.phone
+    resetForm.value = { phone: '', email: '', emailCode: '', newPassword: '', confirmPassword: '' }
+  } catch (error) { loginErr.value = error?.message || '密码重置失败' } finally { loginLoading.value = false }
 }
 
 async function doLogin() {
@@ -1699,6 +1755,7 @@ onUnmounted(() => {
   clearInterval(messageSyncTimer)
   clearInterval(channelStatusTimer)
   clearInterval(codeCountdownTimer)
+  clearInterval(resetCodeTimer)
   clearInterval(complaintEmailCodeTimer)
   clearTimeout(toastTimer)
   clearTimeout(longPressTimer)

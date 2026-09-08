@@ -1,219 +1,90 @@
 <!-- 忆梦云团队开发 - 移动端资料管理 -->
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../../api'
 
 const router = useRouter()
-const form = ref({ displayName: '', avatarUrl: '' })
-const loading = ref(false)
-const saving = ref(false)
+const user = reactive({ displayName: '', avatarUrl: '', role: '' })
+const tenant = reactive({ email: '', qq: '' })
+const emailForm = reactive({ email: '', emailCode: '' })
+const passwordForm = reactive({ currentPassword: '', newPassword: '', confirmPassword: '', emailCode: '' })
+const loading = ref(true)
+const busy = ref(false)
+const sending = ref('')
 const notice = ref({ type: '', text: '' })
+const isOwner = computed(() => user.role === 'owner')
 
-function showNotice(type, text) {
-  notice.value = { type, text }
-  setTimeout(() => (notice.value = { type: '', text: '' }), 2500)
+function showNotice(type, text) { notice.value = { type, text }; setTimeout(() => { if (notice.value.text === text) notice.value = { type: '', text: '' } }, 2600) }
+function persist(data) {
+  const storage = sessionStorage.getItem('tenant_token') ? sessionStorage : localStorage
+  if (data?.token) storage.setItem('tenant_token', data.token)
+  if (data?.user) { Object.assign(user, data.user); storage.setItem('tenant_user', JSON.stringify(data.user)) }
+  if (data?.tenant) { Object.assign(tenant, data.tenant); emailForm.email = data.tenant.email || ''; storage.setItem('tenant_info', JSON.stringify(data.tenant)) }
 }
-
-async function loadProfile() {
-  loading.value = true
-  try {
-    const res = await api.get('/tenant/auth/me')
-    if (res.code === 0 && res.data?.user) {
-      form.value.displayName = res.data.user.displayName || ''
-      form.value.avatarUrl = res.data.user.avatarUrl || ''
-    }
-  } catch (error) {
-    showNotice('error', '加载资料失败')
-  } finally {
-    loading.value = false
-  }
-}
+onMounted(async () => { try { const res = await api.get('/tenant/auth/me'); if (res.code !== 0) throw new Error(res.message); persist(res.data) } catch (e) { showNotice('error', e?.message || '加载资料失败') } finally { loading.value = false } })
 
 async function onAvatarChange(event) {
-  const file = event.target.files?.[0]
+  const file = event.target.files?.[0]; event.target.value = ''
   if (!file) return
-
-  if (!file.type.startsWith('image/')) {
-    showNotice('error', '请选择图片文件')
-    return
-  }
-  if (file.size > 5 * 1024 * 1024) {
-    showNotice('error', '图片不能超过 5MB')
-    return
-  }
-
-  const fd = new FormData()
-  fd.append('file', file)
-
-  try {
-    showNotice('success', '上传中...')
-    const res = await api.post('/upload/tenant', fd, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    })
-    if (res.code === 0 && res.data?.url) {
-      form.value.avatarUrl = res.data.url
-      showNotice('success', '头像上传成功')
-    } else {
-      showNotice('error', res.message || '上传失败')
-    }
-  } catch (error) {
-    showNotice('error', '上传失败，请重试')
-  } finally {
-    event.target.value = ''
-  }
+  if (!file.type.startsWith('image/') || file.size > 5 * 1024 * 1024) return showNotice('error', '请选择不超过5MB的图片')
+  busy.value = true
+  try { const fd = new FormData(); fd.append('file', file); const res = await api.upload('/upload/tenant', fd); if (res.code !== 0) throw new Error(res.message); user.avatarUrl = res.data.url } catch (e) { showNotice('error', e?.message || '上传失败') } finally { busy.value = false }
 }
-
-async function save() {
-  const name = form.value.displayName.trim()
-  if (!name) {
-    showNotice('error', '昵称不能为空')
-    return
-  }
-  if (name.length > 50) {
-    showNotice('error', '昵称最多 50 字')
-    return
-  }
-
-  saving.value = true
-  try {
-    const res = await api.patch('/tenant/auth/profile', {
-      displayName: name,
-      avatarUrl: form.value.avatarUrl.trim(),
-    })
-
-    if (res.code !== 0) throw new Error(res.message || '保存失败')
-
-    // 更新本地存储
-    const storage = sessionStorage.getItem('tenant_token') ? sessionStorage : localStorage
-    if (res.data?.token) storage.setItem('tenant_token', res.data.token)
-    if (res.data?.user) storage.setItem('tenant_user', JSON.stringify(res.data.user))
-
-    showNotice('success', '保存成功')
-    setTimeout(() => router.back(), 800)
-  } catch (error) {
-    showNotice('error', error?.message || '保存失败')
-  } finally {
-    saving.value = false
-  }
+async function saveProfile() {
+  const displayName = user.displayName.trim(), qq = tenant.qq.trim()
+  if (!displayName) return showNotice('error', '昵称不能为空')
+  if (qq && !/^[1-9]\d{4,11}$/.test(qq)) return showNotice('error', 'QQ号格式不正确')
+  busy.value = true
+  try { const res = await api.patch('/tenant/auth/profile', { displayName, avatarUrl: user.avatarUrl.trim(), ...(isOwner.value ? { qq } : {}) }); if (res.code !== 0) throw new Error(res.message); persist(res.data); showNotice('success', '资料已保存') } catch (e) { showNotice('error', e?.message || '保存失败') } finally { busy.value = false }
+}
+async function sendCode(purpose) {
+  sending.value = purpose
+  try { const res = await api.post('/tenant/auth/profile/email-code', { purpose, ...(purpose === 'change-email' ? { email: emailForm.email } : {}) }); if (res.code !== 0) throw new Error(res.message); showNotice('success', res.message) } catch (e) { showNotice('error', e?.message || '验证码发送失败') } finally { sending.value = '' }
+}
+async function updateEmail() {
+  busy.value = true
+  try { const res = await api.patch('/tenant/auth/profile/email', emailForm); if (res.code !== 0) throw new Error(res.message); tenant.email = res.data.email; emailForm.emailCode = ''; showNotice('success', res.message) } catch (e) { showNotice('error', e?.message || '邮箱修改失败') } finally { busy.value = false }
+}
+async function updatePassword() {
+  busy.value = true
+  try { const res = await api.patch('/tenant/auth/profile/password', passwordForm); if (res.code !== 0) throw new Error(res.message); for (const storage of [sessionStorage, localStorage]) { storage.removeItem('tenant_token'); storage.removeItem('tenant_user'); storage.removeItem('tenant_info') } router.replace({ path: '/login', query: { reset: '1' } }) } catch (e) { showNotice('error', e?.message || '密码修改失败') } finally { busy.value = false }
 }
 </script>
 
 <template>
   <section class="edit-shell">
-    <header class="edit-header">
-      <button type="button" aria-label="返回我的" @click="router.back()">←</button>
-      <strong>资料管理</strong>
-    </header>
-    <div class="edit-page">
-      <div v-if="notice.text" :class="['edit-notice', 'is-' + notice.type]">{{ notice.text }}</div>
-
-    <div v-if="loading" class="edit-state">正在加载...</div>
-    <template v-else>
-      <!-- 头像 -->
-      <div class="edit-card">
-        <div class="edit-card-title">头像</div>
-        <div class="edit-avatar-row">
-          <div class="edit-avatar-preview">
-            <img v-if="form.avatarUrl" :src="form.avatarUrl" alt="头像" />
-            <span v-else>{{ (form.displayName || '?').slice(0, 1).toUpperCase() }}</span>
-          </div>
-          <label class="edit-avatar-btn">
-            选择图片
-            <input type="file" accept="image/*" hidden @change="onAvatarChange" />
-          </label>
-          <button
-            v-if="form.avatarUrl"
-            class="edit-avatar-remove"
-            type="button"
-            @click="form.avatarUrl = ''"
-          >
-            清除
-          </button>
-        </div>
-      </div>
-
-      <!-- 昵称 -->
-      <div class="edit-card">
-        <div class="edit-card-title">昵称</div>
-        <input
-          v-model="form.displayName"
-          class="edit-input"
-          type="text"
-          maxlength="50"
-          placeholder="请输入昵称"
-        />
-      </div>
-
-      <!-- 保存按钮 -->
-      <div class="edit-save-wrap">
-        <button class="edit-save" :disabled="saving" @click="save">
-          {{ saving ? '保存中...' : '保存' }}
-        </button>
-      </div>
-    </template>
-    </div>
+    <header><button type="button" @click="router.back()">‹</button><strong>资料管理</strong></header>
+    <main>
+      <div v-if="notice.text" class="notice" :class="notice.type">{{ notice.text }}</div>
+      <div v-if="loading" class="state">正在加载...</div>
+      <template v-else>
+        <form class="card" @submit.prevent="saveProfile">
+          <h2>基本资料</h2>
+          <div class="avatar"><div><img v-if="user.avatarUrl" :src="user.avatarUrl" alt="头像" /><span v-else>{{ (user.displayName || '?')[0] }}</span></div><label>选择图片<input type="file" accept="image/*" hidden @change="onAvatarChange" /></label></div>
+          <label><span>昵称</span><input v-model="user.displayName" maxlength="50" required /></label>
+          <label v-if="isOwner"><span>QQ</span><input v-model.trim="tenant.qq" inputmode="numeric" maxlength="12" placeholder="请输入QQ号" /></label>
+          <button type="submit" :disabled="busy">保存基本资料</button>
+        </form>
+        <form v-if="isOwner" class="card" @submit.prevent="updateEmail">
+          <h2>修改邮箱</h2><p>验证码将发送到新邮箱。</p>
+          <label><span>新邮箱</span><input v-model.trim="emailForm.email" type="email" required /></label>
+          <label><span>邮箱验证码</span><div class="code"><input v-model.trim="emailForm.emailCode" maxlength="6" required /><button type="button" :disabled="sending === 'change-email'" @click="sendCode('change-email')">发送验证码</button></div></label>
+          <button type="submit" :disabled="busy">确认修改邮箱</button>
+        </form>
+        <form v-if="isOwner" class="card" @submit.prevent="updatePassword">
+          <h2>修改密码</h2><p>验证码将发送到 {{ tenant.email }}。</p>
+          <label><span>当前密码</span><input v-model="passwordForm.currentPassword" type="password" required /></label>
+          <label><span>邮箱验证码</span><div class="code"><input v-model.trim="passwordForm.emailCode" maxlength="6" required /><button type="button" :disabled="sending === 'change-password'" @click="sendCode('change-password')">发送验证码</button></div></label>
+          <label><span>新密码</span><input v-model="passwordForm.newPassword" type="password" minlength="6" required /></label>
+          <label><span>确认新密码</span><input v-model="passwordForm.confirmPassword" type="password" minlength="6" required /></label>
+          <button type="submit" :disabled="busy">确认修改密码</button>
+        </form>
+      </template>
+    </main>
   </section>
 </template>
 
 <style scoped>
-.edit-shell { min-height: 100vh; background: #f5f6f8; }
-.edit-header {
-  height: 52px; display: flex; align-items: center; justify-content: center;
-  border-bottom: 1px solid #eceff1; background: #fff; position: relative;
-}
-.edit-header button {
-  position: absolute; left: 10px; padding: 8px; border: none; background: transparent;
-  color: #2563eb; font-size: 21px; line-height: 1;
-}
-.edit-header strong { font-size: 17px; color: #0f172a; }
-.edit-page { min-height: calc(100vh - 52px); padding: 14px; box-sizing: border-box; background: #f5f6f8; }
-
-.edit-notice {
-  position: fixed; top: 60px; left: 50%; transform: translateX(-50%);
-  padding: 10px 20px; border-radius: 8px; font-size: 14px; font-weight: 500;
-  z-index: 99; box-shadow: 0 4px 12px rgba(0,0,0,.1);
-}
-.edit-notice.is-success { background: #dcfce7; color: #15803d; }
-.edit-notice.is-error { background: #fee2e2; color: #dc2626; }
-
-.edit-state { padding: 48px 20px; text-align: center; color: #64748b; }
-
-.edit-card {
-  background: #fff; border-radius: 14px; padding: 16px; margin-bottom: 14px;
-}
-.edit-card-title { font-size: 13px; color: #94a3b8; margin-bottom: 12px; }
-
-.edit-avatar-row { display: flex; align-items: center; gap: 14px; }
-.edit-avatar-preview {
-  width: 64px; height: 64px; border-radius: 50%;
-  background: #e2e8f0;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 26px; font-weight: 600; color: #64748b;
-  overflow: hidden; flex-shrink: 0;
-}
-.edit-avatar-preview img { width: 100%; height: 100%; object-fit: cover; }
-.edit-avatar-btn {
-  padding: 8px 16px; border: 1px solid #bfdbfe; border-radius: 8px;
-  background: #eff6ff; color: #2563eb; font-size: 14px; font-weight: 500;
-  cursor: pointer;
-}
-.edit-avatar-remove {
-  padding: 8px 14px; border: 1px solid #fecaca; border-radius: 8px;
-  background: #fef2f2; color: #dc2626; font-size: 14px; font-weight: 500;
-}
-
-.edit-input {
-  width: 100%; padding: 12px 14px; border: 1px solid #e2e8f0; border-radius: 10px;
-  font-size: 15px; color: #0f172a; background: #f8fafc; box-sizing: border-box;
-}
-.edit-input:focus { outline: none; border-color: #2563eb; background: #fff; }
-
-.edit-save-wrap { margin-top: 24px; }
-.edit-save {
-  width: 100%; padding: 14px; border: none; border-radius: 14px;
-  background: #2563eb; color: #fff; font-size: 16px; font-weight: 600;
-}
-.edit-save:active { background: #1d4ed8; }
-.edit-save:disabled { background: #93c5fd; }
+.edit-shell{min-height:100vh;background:#f5f6f8}.edit-shell>header{position:sticky;top:0;z-index:2;height:52px;display:flex;align-items:center;justify-content:center;border-bottom:1px solid #e5e7eb;background:#fff}.edit-shell>header button{position:absolute;left:10px;border:0;background:none;color:#2563eb;font-size:30px}.edit-shell main{padding:14px}.notice{position:fixed;top:60px;left:50%;z-index:5;transform:translateX(-50%);width:max-content;max-width:90%;padding:10px 16px;border-radius:9px;background:#dcfce7;color:#15803d}.notice.error{background:#fee2e2;color:#dc2626}.state{text-align:center;padding:48px;color:#64748b}.card{margin-bottom:14px;padding:16px;border-radius:14px;background:#fff}.card h2{margin:0 0 4px;font-size:17px}.card p{margin:0 0 16px;color:#64748b;font-size:12px}.card>label{display:block;margin-top:14px}.card>label>span{display:block;margin-bottom:7px;color:#64748b;font-size:13px}.card input{width:100%;padding:12px;border:1px solid #e2e8f0;border-radius:10px;font-size:15px}.card>button{width:100%;margin-top:18px;padding:13px;border:0;border-radius:11px;background:#2563eb;color:#fff;font-weight:600}.card button:disabled{opacity:.55}.avatar{display:flex;align-items:center;gap:14px;margin:16px 0}.avatar>div{display:grid;width:64px;height:64px;overflow:hidden;border-radius:50%;background:#dbeafe;color:#2563eb;font-size:24px;place-items:center}.avatar img{width:100%;height:100%;object-fit:cover}.avatar label{padding:8px 14px;border:1px solid #bfdbfe;border-radius:8px;color:#2563eb;font-size:13px}.code{display:flex;gap:8px}.code button{flex:0 0 105px;border:1px solid #bfdbfe;border-radius:10px;background:#eff6ff;color:#2563eb}
 </style>

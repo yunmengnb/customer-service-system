@@ -47,6 +47,7 @@ async function start() {
   
   await setupSocketIO(io);
   ChatController.setIO(io);
+  app.set('io', io);
   
   // 中间件
   app.use(helmet({
@@ -101,6 +102,7 @@ async function start() {
   app.use('/api/client/auth/login', loginLimiter);
   app.use('/api/client/auth/register-code', loginLimiter);
   app.use('/api/client/auth/register', loginLimiter);
+  app.use('/api/client/auth/forgot-password', loginLimiter);
   app.use('/api/client/channels/:token/auth/login', loginLimiter);
   app.use('/api/client/channels/:token/auth/register-code', loginLimiter);
   app.use('/api/client/channels/:token/auth/register', loginLimiter);

@@ -41,6 +41,9 @@ class SystemSettingController {
     const setting = await SystemSetting.getSingleton();
     const body = req.body || {};
     if (typeof body.registerEnabled === 'boolean') setting.registerEnabled = body.registerEnabled;
+    if (typeof body.tenantRegisterEmailVerificationEnabled === 'boolean') {
+      setting.tenantRegisterEmailVerificationEnabled = body.tenantRegisterEmailVerificationEnabled;
+    }
     if (typeof body.loginEnabled === 'boolean') setting.loginEnabled = body.loginEnabled;
     if (body.customerServiceDomain !== undefined) {
       const domain = normalizeDomain(body.customerServiceDomain);

@@ -4,6 +4,7 @@ const PlatformAdmin = require('../models/PlatformAdmin');
 const Tenant = require('../models/Tenant');
 const TenantUser = require('../models/TenantUser');
 const Customer = require('../models/Customer');
+const CustomerAccount = require('../models/CustomerAccount');
 const Channel = require('../models/Channel');
 
 /**
@@ -110,22 +111,35 @@ function requireTenantAdmin(req, res, next) {
 /**
  * 客户认证中间件
  */
-function authCustomer(req, res, next) {
+async function authCustomer(req, res, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
-  
-  if (!token) {
-    return error(res, '未登录', 4011, 401);
-  }
-  
+  if (!token) return error(res, '未登录', 4011, 401);
   const payload = verifyToken(token);
-  if (!payload || payload.type !== 'customer') {
-    return error(res, '令牌无效或已过期', 4012, 401);
+  if (!payload || payload.type !== 'customer') return error(res, '令牌无效或已过期', 4012, 401);
+
+  try {
+    const legacyBinding = !payload.accountId && payload.id ? await Customer.findById(payload.id).select('accountId') : null;
+    const accountId = payload.accountId || legacyBinding?.accountId;
+    const account = await CustomerAccount.findOne({ _id: accountId, status: 'active' }).select('_id');
+    if (!account) return error(res, '账号已被禁用或不存在', 4032, 403);
+    if (payload.id) {
+      const binding = await Customer.findOne({
+        _id: payload.id,
+        accountId: account._id,
+        tenantId: payload.tenantId,
+        channelId: payload.channelId,
+        status: 'active',
+        blocked: false,
+      }).select('_id');
+      if (!binding) return error(res, '当前账号已被限制访问', 4035, 403);
+    }
+    req.customer = { ...payload, accountId: account._id.toString() };
+    req.tenantId = payload.tenantId;
+    next();
+  } catch (_) {
+    return error(res, '服务异常', 5001, 500);
   }
-  
-  req.customer = payload;
-  req.tenantId = payload.tenantId;
-  next();
 }
 
 /**

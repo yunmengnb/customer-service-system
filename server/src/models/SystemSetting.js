@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const SystemSettingSchema = new mongoose.Schema({
   singletonKey: { type: String, default: 'platform', unique: true, immutable: true },
   registerEnabled: { type: Boolean, default: true },
+  tenantRegisterEmailVerificationEnabled: { type: Boolean, default: false },
   loginEnabled: { type: Boolean, default: true },
   customerServiceDomain: { type: String, default: '', trim: true },
   siteTitle: { type: String, default: '忆梦云客服', trim: true, maxlength: 120 },

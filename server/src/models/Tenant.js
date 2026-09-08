@@ -27,6 +27,11 @@ const TenantSchema = new mongoose.Schema({
     trim: true,
     lowercase: true,
   },
+  qq: {
+    type: String,
+    trim: true,
+    default: '',
+  },
   plan: {
     agentLimit: { type: Number, default: 10 },
     channelLimit: { type: Number, default: 5 },

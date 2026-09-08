@@ -70,6 +70,11 @@ body {
 .simple-box .err { color: #ef4444; font-size: 13px; margin-bottom: 12px; }
 .simple-box .success { color: #047857; font-size: 13px; margin-bottom: 12px; }
 .simple-box .link-row { text-align: center; margin-top: 16px; font-size: 13px; color: #6b7280; }
+.simple-box .link-row + .link-row { margin-top: 8px; }
+.simple-box .code-row { display: grid; grid-template-columns: minmax(0, 1fr) 112px; gap: 10px; margin-bottom: 12px; }
+.simple-box .code-row input { margin-bottom: 0; }
+.simple-box .code-row button { border: 1px solid #bfdbfe; border-radius: 8px; background: #eff6ff; color: #2563eb; font-size: 13px; cursor: pointer; }
+.simple-box .code-row button:disabled { opacity: .55; cursor: not-allowed; }
 .auth-captcha { margin-bottom: 12px; }
 .image-captcha { display: grid; grid-template-columns: minmax(0, 1fr) 120px; gap: 10px; }
 .simple-box .image-captcha input { margin-bottom: 0; }

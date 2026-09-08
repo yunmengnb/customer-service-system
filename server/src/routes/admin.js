@@ -56,8 +56,11 @@ router.post('/app/customer-center/android/versions', authAdmin, requireSuperAdmi
 router.put('/app/customer-center/android/versions/:id', authAdmin, requireSuperAdmin, validators.appVersion, AppController.updateCustomerVersion);
 router.patch('/app/customer-center/android/versions/:id/status', authAdmin, requireSuperAdmin, validators.updateAnnouncementStatus, AppController.updateCustomerVersionStatus);
 router.delete('/app/customer-center/android/versions/:id', authAdmin, requireSuperAdmin, AppController.removeCustomerVersion);
+router.patch('/tenants/:id', authAdmin, requireSuperAdmin, TenantAdminController.update);
 router.patch('/tenants/:id/status', authAdmin, requireSuperAdmin, TenantAdminController.updateStatus);
 router.patch('/tenants/:id/plan', authAdmin, requireSuperAdmin, TenantAdminController.updatePlan);
+router.patch('/customers/:id', authAdmin, requireSuperAdmin, AdminCustomerController.update);
+router.patch('/customers/:id/status', authAdmin, requireSuperAdmin, AdminCustomerController.updateStatus);
 router.get('/settings', authAdmin, requireSuperAdmin, SystemSettingController.get);
 router.put('/settings', authAdmin, requireSuperAdmin, SystemSettingController.update);
 router.post('/settings/test-email', authAdmin, requireSuperAdmin, SystemSettingController.testEmail);

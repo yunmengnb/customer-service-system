@@ -53,8 +53,54 @@ const appVersion = [
 const tenantRegister = [
   body('name').trim().notEmpty().withMessage('企业名称不能为空'),
   body('username').trim().notEmpty().withMessage('用户名不能为空').isLength({ min: 3 }).withMessage('用户名至少3位'),
-  body('password').notEmpty().withMessage('密码不能为空').isLength({ min: 6 }).withMessage('密码至少6位'),
-  body('email').trim().isEmail().withMessage('邮箱格式不正确'),
+  body('password').isString().isLength({ min: 6, max: 72 }).withMessage('密码须为6-72位'),
+  body('email').trim().normalizeEmail().isEmail().withMessage('邮箱格式不正确'),
+  body('emailCode').optional({ checkFalsy: true }).trim().matches(/^\d{6}$/).withMessage('请输入6位邮箱验证码'),
+  validate,
+];
+
+const emailCode = [
+  body('email').trim().normalizeEmail().isEmail().withMessage('邮箱格式不正确'),
+  validate,
+];
+
+const resetPassword = [
+  body('email').trim().normalizeEmail().isEmail().withMessage('邮箱格式不正确'),
+  body('emailCode').trim().matches(/^\d{6}$/).withMessage('请输入6位邮箱验证码'),
+  body('newPassword').isString().isLength({ min: 6, max: 72 }).withMessage('新密码须为6-72位'),
+  body('confirmPassword').custom((value, { req }) => value === req.body.newPassword).withMessage('两次输入的新密码不一致'),
+  validate,
+];
+
+const customerResetCode = [
+  body('phone').trim().matches(/^[\d\s+-]{6,20}$/).withMessage('手机号格式不正确'),
+  body('email').trim().normalizeEmail().isEmail().withMessage('邮箱格式不正确'),
+  validate,
+];
+
+const customerResetPassword = [
+  body('phone').trim().matches(/^[\d\s+-]{6,20}$/).withMessage('手机号格式不正确'),
+  ...resetPassword.slice(0, -1),
+  validate,
+];
+
+const tenantProfileCode = [
+  body('purpose').isIn(['change-email', 'change-password']).withMessage('验证码用途无效'),
+  body('email').if(body('purpose').equals('change-email')).trim().normalizeEmail().isEmail().withMessage('邮箱格式不正确'),
+  validate,
+];
+
+const tenantEmail = [
+  body('email').trim().normalizeEmail().isEmail().withMessage('邮箱格式不正确'),
+  body('emailCode').trim().matches(/^\d{6}$/).withMessage('请输入6位邮箱验证码'),
+  validate,
+];
+
+const tenantPassword = [
+  body('currentPassword').isString().notEmpty().withMessage('请输入当前密码'),
+  body('emailCode').trim().matches(/^\d{6}$/).withMessage('请输入6位邮箱验证码'),
+  body('newPassword').isString().isLength({ min: 6, max: 72 }).withMessage('新密码须为6-72位'),
+  body('confirmPassword').custom((value, { req }) => value === req.body.newPassword).withMessage('两次输入的新密码不一致'),
   validate,
 ];
 
@@ -115,6 +161,7 @@ const customerQQ = [
 // 客户修改密码
 const customerPassword = [
   body('currentPassword').isString().notEmpty().withMessage('请输入当前密码'),
+  body('emailCode').trim().matches(/^\d{6}$/).withMessage('请输入6位邮箱验证码'),
   body('newPassword').isString().isLength({ min: 6, max: 72 }).withMessage('新密码须为6-72位'),
   body('confirmPassword').isString().notEmpty().withMessage('请再次输入新密码').custom((value, { req }) => {
     if (value !== req.body.newPassword) throw new Error('两次输入的新密码不一致');
@@ -159,6 +206,13 @@ module.exports = {
   appVersion,
   tenantRegister,
   tenantLogin,
+  emailCode,
+  resetPassword,
+  customerResetCode,
+  customerResetPassword,
+  tenantProfileCode,
+  tenantEmail,
+  tenantPassword,
   createAgent,
   customerLogin,
   customerRegisterCode,

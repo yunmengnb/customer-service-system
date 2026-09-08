@@ -9,8 +9,11 @@ const loading = ref(true)
 const keyword = ref('')
 const statusFilter = ref('')
 const showPlanModal = ref(false)
+const showEditModal = ref(false)
 const editingTenant = ref(null)
+const saving = ref(false)
 const plan = ref({ agentLimit: 10, channelLimit: 5 })
+const editForm = ref({ name: '', username: '', email: '', qq: '', password: '' })
 
 // 轻量 Toast 工具
 const toast = (() => ({
@@ -54,6 +57,45 @@ async function toggleStatus(t) {
       toast.error(res.message || '操作失败')
     }
   } catch (e) { toast.error(e?.message || '网络错误') }
+}
+
+function openEditModal(t) {
+  editingTenant.value = t
+  editForm.value = {
+    name: t.name || '',
+    username: t.username || '',
+    email: t.email || '',
+    qq: t.qq || '',
+    password: '',
+  }
+  showEditModal.value = true
+}
+
+async function saveTenant() {
+  if (!editForm.value.name.trim() || !editForm.value.username.trim() || !editForm.value.email.trim()) {
+    toast.error('请完整填写租户名称、账号和邮箱')
+    return
+  }
+  saving.value = true
+  try {
+    const payload = {
+      name: editForm.value.name.trim(),
+      username: editForm.value.username.trim(),
+      email: editForm.value.email.trim(),
+      qq: editForm.value.qq.trim(),
+    }
+    if (editForm.value.password) payload.password = editForm.value.password
+    const res = await api.patch(`/admin/tenants/${editingTenant.value._id}`, payload)
+    if (res.code !== 0) throw new Error(res.message || '保存失败')
+    Object.assign(editingTenant.value, res.data)
+    showEditModal.value = false
+    editingTenant.value = null
+    toast.success('租户资料已更新')
+  } catch (e) {
+    toast.error(e?.message || '网络错误')
+  } finally {
+    saving.value = false
+  }
 }
 
 function openPlanModal(t) {
@@ -149,6 +191,7 @@ onMounted(load)
           </td>
           <td data-label="操作" style="text-align:right;">
             <div style="display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap;">
+              <button class="btn-link" @click="openEditModal(t)">编辑</button>
               <button class="btn-link" @click="openPlanModal(t)">套餐</button>
               <button class="btn-link" :class="{ danger: t.status === 'active' }" @click="toggleStatus(t)">
                 {{ t.status === 'active' ? '禁用' : '启用' }}
@@ -164,6 +207,27 @@ onMounted(load)
         </tr>
       </tbody>
     </table>
+  </div>
+
+  <!-- 编辑弹窗 -->
+  <div v-if="showEditModal && editingTenant" class="modal-overlay" @click.self="showEditModal = false">
+    <form class="modal" @submit.prevent="saveTenant">
+      <div class="modal-header">
+        <h3>编辑租户</h3>
+        <button class="btn-link" type="button" @click="showEditModal = false" style="padding:4px 8px;">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="input-group"><label>租户名称</label><input v-model="editForm.name" class="input" maxlength="100" required /></div>
+        <div class="input-group"><label>登录账号</label><input v-model="editForm.username" class="input" minlength="3" maxlength="50" required /></div>
+        <div class="input-group"><label>邮箱</label><input v-model="editForm.email" class="input" type="email" required /></div>
+        <div class="input-group"><label>QQ</label><input v-model="editForm.qq" class="input" inputmode="numeric" /></div>
+        <div class="input-group"><label>重置密码</label><input v-model="editForm.password" class="input" type="password" minlength="6" maxlength="72" autocomplete="new-password" placeholder="留空则不修改" /></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" type="button" @click="showEditModal = false">取消</button>
+        <button class="btn btn-primary" type="submit" :disabled="saving">{{ saving ? '保存中...' : '保存修改' }}</button>
+      </div>
+    </form>
   </div>
 
   <!-- 套餐弹窗 -->

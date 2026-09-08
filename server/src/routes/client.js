@@ -23,6 +23,8 @@ router.get('/auth/captcha', CaptchaController.create);
 router.post('/auth/login', verifyCaptcha, validators.customerLogin, CustomerAuthController.accountLogin);
 router.post('/auth/register-code', validators.customerRegisterCode, CustomerAuthController.sendAccountRegisterCode);
 router.post('/auth/register', verifyCaptcha, validators.customerRegister, CustomerAuthController.accountRegister);
+router.post('/auth/forgot-password/code', validators.customerResetCode, CustomerAuthController.sendResetCode);
+router.post('/auth/forgot-password/reset', validators.customerResetPassword, CustomerAuthController.resetPassword);
 
 // 已登录客户访问过的渠道（必须置于动态 token 路由之前）
 router.get('/channels/history', authCustomer, CustomerAuthController.channelHistory);
@@ -40,6 +42,7 @@ router.post('/channels/:token/auth/register', verifyCaptcha, validators.customer
 // 客户资料
 router.get('/me', authCustomer, CustomerAuthController.me);
 router.post('/profile/qq', authCustomer, validators.customerQQ, CustomerAuthController.updateQQ);
+router.post('/profile/password-code', authCustomer, CustomerAuthController.sendProfilePasswordCode);
 router.post('/profile/password', authCustomer, validators.customerPassword, CustomerAuthController.updatePassword);
 
 // 会话与消息
