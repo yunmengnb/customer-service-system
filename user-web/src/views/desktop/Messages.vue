@@ -2,9 +2,9 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { io } from 'socket.io-client'
 import ChatPanel from './ChatPanel.vue'
 import api from '../../api'
+import { getTenantSocket } from '../../socket'
 
 const route = useRoute()
 const router = useRouter()
@@ -22,7 +22,10 @@ const searchResults = ref([])
 const searchResultsLoading = ref(false)
 const targetMessageId = ref(null)
 let searchTimer = null
+let socketRefreshTimer = null
 let requestSequence = 0
+let activeRequestKey = ''
+let activeRequest = null
 let socket = null
 
 // 选中会话：优先从路由取（桌面端直接打开聊天链接），否则停留在会话列表
@@ -62,18 +65,21 @@ async function loadConversations() {
     loading.value = false
     return
   }
-  const sequence = ++requestSequence
   const keyword = search.value.trim()
+  const params = {
+    limit: 100,
+    status: filter.value === 'all' ? undefined : filter.value,
+    channelId: selectedChannelId.value || undefined,
+    keyword: keyword || undefined,
+  }
+  const requestKey = JSON.stringify(params)
+  if (activeRequest && activeRequestKey === requestKey) return activeRequest
+  const sequence = ++requestSequence
   if (keyword) searching.value = true
+  activeRequestKey = requestKey
+  activeRequest = api.get('/tenant/conversations', { params })
   try {
-    const res = await api.get('/tenant/conversations', {
-      params: {
-        limit: 100,
-        status: filter.value === 'all' ? undefined : filter.value,
-        channelId: selectedChannelId.value || undefined,
-        keyword: keyword || undefined,
-      },
-    })
+    const res = await activeRequest
     if (sequence === requestSequence && res.code === 0) conversations.value = res.data.items
   } catch (e) {
     console.error(e)
@@ -81,6 +87,10 @@ async function loadConversations() {
     if (sequence === requestSequence) {
       loading.value = false
       searching.value = false
+    }
+    if (activeRequestKey === requestKey) {
+      activeRequestKey = ''
+      activeRequest = null
     }
   }
 }
@@ -110,14 +120,36 @@ watch(selectedChannelId, () => {
   loadConversations()
 })
 
+function scheduleConversationRefresh() {
+  clearTimeout(socketRefreshTimer)
+  socketRefreshTimer = setTimeout(loadConversations, 250)
+}
+
 function setupSocket() {
-  const token = sessionStorage.getItem('tenant_token') || localStorage.getItem('tenant_token')
-  if (!token) return
-  socket = io({ auth: { token, type: 'tenant_user' }, transports: ['polling', 'websocket'] })
-  socket.on('conversation.created', loadConversations)
-  socket.on('conversation.accepted', loadConversations)
-  socket.on('conversation.updated', loadConversations)
+  socket = getTenantSocket()
+  if (!socket) return
+  socket.on('conversation.created', scheduleConversationRefresh)
+  socket.on('conversation.accepted', handleConversationUpdated)
+  socket.on('conversation.updated', handleConversationUpdated)
   socket.on('message.new', handleNewMessage)
+}
+
+function handleConversationUpdated(update) {
+  const conversationId = String(update.conversationId?._id || update.conversationId || '')
+  const index = conversations.value.findIndex((conversation) => String(conversation._id) === conversationId)
+  if (index === -1) {
+    scheduleConversationRefresh()
+    return
+  }
+
+  const conversation = conversations.value[index]
+  Object.assign(conversation, {
+    ...(update.status ? { status: update.status } : {}),
+    ...(update.assignedAgentId ? { assignedAgentId: update.assignedAgentId } : {}),
+    ...(update.lastMessage ? { lastMessage: update.lastMessage } : {}),
+    ...(update.lastMessageAt ? { lastMessageAt: update.lastMessageAt } : {}),
+    ...(Number.isFinite(update.agentUnreadCount) ? { agentUnreadCount: update.agentUnreadCount } : {}),
+  })
 }
 
 function handleNewMessage(message) {
@@ -131,7 +163,7 @@ function handleNewMessage(message) {
       lastMessageAt: message.createdAt || new Date().toISOString(),
     })
   }
-  loadConversations()
+  if (index === -1) scheduleConversationRefresh()
 }
 
 function clearConversationUnread(id) {
@@ -222,7 +254,11 @@ onMounted(async () => {
 })
 onUnmounted(() => {
   clearTimeout(searchTimer)
-  socket?.disconnect()
+  clearTimeout(socketRefreshTimer)
+  socket?.off('conversation.created', scheduleConversationRefresh)
+  socket?.off('conversation.accepted', handleConversationUpdated)
+  socket?.off('conversation.updated', handleConversationUpdated)
+  socket?.off('message.new', handleNewMessage)
 })
 </script>
 
@@ -240,7 +276,7 @@ onUnmounted(() => {
           </div>
           <div v-if="filteredChannels.length" class="msg-sider-list channel-list">
             <button v-for="channel in filteredChannels" :key="channel._id" class="channel-item" @click="openChannel(channel)">
-              <img v-if="channel.avatarUrl" class="mi-avatar channel-avatar-image" :src="channel.avatarUrl" alt="" />
+              <img v-if="channel.avatarUrl" class="mi-avatar channel-avatar-image" :src="channel.avatarUrl" loading="lazy" decoding="async" alt="" />
               <span v-else class="mi-avatar channel-avatar">{{ channel.name?.slice(0, 1) || '渠' }}</span>
               <span class="mi-body">
                 <span class="mi-row"><strong class="mi-name">{{ channel.name }}</strong><i>›</i></span>
@@ -295,7 +331,7 @@ onUnmounted(() => {
                 :class="{ active: selectedId === conv._id }"
                 @click="openSearchMatches(conv)"
               >
-                <img v-if="conv.customer?.avatarUrl" class="mi-avatar" :src="conv.customer.avatarUrl" alt="客户QQ头像" />
+                <img v-if="conv.customer?.avatarUrl" class="mi-avatar" :src="conv.customer.avatarUrl" loading="lazy" decoding="async" alt="客户QQ头像" />
                 <div v-else class="mi-avatar" :style="{ background: getAvatarColor(conv._id) }">
                   {{ conv.customer?.phone?.slice(-1) || '客' }}
                 </div>

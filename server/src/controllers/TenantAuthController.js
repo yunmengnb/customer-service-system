@@ -28,7 +28,6 @@ class TenantAuthController {
   async sendRegisterCode(req, res) {
     const settings = await getSystemSettings();
     if (!settings.registerEnabled) return error(res, '系统暂未开放注册', 4034, 403);
-    if (!settings.tenantRegisterEmailVerificationEnabled) return ok(res, null, '当前未启用租户注册邮箱验证');
     const email = normalizeEmail(req.body.email);
     if (await Tenant.exists({ email })) return error(res, '邮箱已被注册');
     const result = await sendEmailCode({ scope: 'tenant-register', email, subject: '租户注册邮箱验证码', action: '租户注册' });

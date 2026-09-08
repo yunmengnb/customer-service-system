@@ -63,16 +63,17 @@ async function setupSocketIO(io) {
         };
       } else if (payload.type === 'customer') {
         if (payload.id && payload.tenantId && payload.channelId) {
+          const isGuest = payload.identity === 'guest';
           const binding = await Customer.findOne({
             _id: payload.id,
-            accountId: payload.accountId,
+            ...(isGuest ? { accountId: null, identityType: 'guest' } : { accountId: payload.accountId }),
             tenantId: payload.tenantId,
             channelId: payload.channelId,
             status: 'active',
             blocked: false,
-          }).select('accountId tenantId channelId');
+          }).select('accountId tenantId channelId identityType');
           const [account, tenant, channel] = binding ? await Promise.all([
-            CustomerAccount.findOne({ _id: binding.accountId, status: 'active' }).select('_id'),
+            isGuest ? Promise.resolve(true) : CustomerAccount.findOne({ _id: binding.accountId, status: 'active' }).select('_id'),
             Tenant.findOne({ _id: binding.tenantId, status: 'active' }).select('_id'),
             Channel.findOne({ _id: binding.channelId, tenantId: binding.tenantId }).select('_id'),
           ]) : [];
@@ -82,7 +83,7 @@ async function setupSocketIO(io) {
           socket.user = {
             ...payload,
             id: binding._id.toString(),
-            accountId: binding.accountId.toString(),
+            accountId: binding.accountId?.toString(),
             tenantId: binding.tenantId.toString(),
             channelId: binding.channelId.toString(),
           };

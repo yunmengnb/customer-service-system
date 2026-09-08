@@ -119,6 +119,21 @@ async function authCustomer(req, res, next) {
   if (!payload || payload.type !== 'customer') return error(res, '令牌无效或已过期', 4012, 401);
 
   try {
+    if (payload.identity === 'guest') {
+      const binding = await Customer.findOne({
+        _id: payload.id,
+        accountId: null,
+        tenantId: payload.tenantId,
+        channelId: payload.channelId,
+        identityType: 'guest',
+        status: 'active',
+        blocked: false,
+      }).select('_id');
+      if (!binding) return error(res, '访客身份无效或已绑定，请重新进入', 4012, 401);
+      req.customer = payload;
+      req.tenantId = payload.tenantId;
+      return next();
+    }
     const legacyBinding = !payload.accountId && payload.id ? await Customer.findById(payload.id).select('accountId') : null;
     const accountId = payload.accountId || legacyBinding?.accountId;
     const account = await CustomerAccount.findOne({ _id: accountId, status: 'active' }).select('_id');
@@ -134,7 +149,7 @@ async function authCustomer(req, res, next) {
       }).select('_id');
       if (!binding) return error(res, '当前账号已被限制访问', 4035, 403);
     }
-    req.customer = { ...payload, accountId: account._id.toString() };
+    req.customer = { ...payload, identity: 'customer', accountId: account._id.toString() };
     req.tenantId = payload.tenantId;
     next();
   } catch (_) {

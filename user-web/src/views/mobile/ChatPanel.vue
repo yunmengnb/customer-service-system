@@ -1,9 +1,9 @@
 <!-- 忆梦云团队开发 - 手机端聊天展示组件独立实现 -->
 <script setup>
 import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
-import { io } from 'socket.io-client'
 import api from '../../api'
 import ConfirmDialog from '../../components/ConfirmDialog.vue'
+import { getTenantSocket } from '../../socket'
 
 const props = defineProps({
   conversationId: { type: String, default: null },
@@ -25,6 +25,7 @@ const msgContainer = ref(null)
 const loadingHistory = ref(false)
 const hasMoreMessages = ref(true)
 let socket = null
+let socketConnectedOnce = false
 let messageSyncTimer = null
 let messageSyncInFlight = false
 
@@ -255,34 +256,52 @@ async function handleUpload(ev) {
   finally { uploading.value = false; ev.target.value = '' }
 }
 
+function queryCustomerPresence() {
+  const customerId = conversation.value?.customer?._id
+  if (customerId) socket?.emit('presence:query', { type: 'customer', userId: customerId }, ({ online } = {}) => { customerOnline.value = Boolean(online) })
+}
+function handleSocketConnect() {
+  if (socketConnectedOnce) syncLatestMessages()
+  else socketConnectedOnce = true
+  queryCustomerPresence()
+}
+function handlePresenceChanged(data) {
+  if (data.type === 'customer' && String(data.userId) === String(conversation.value?.customer?._id)) customerOnline.value = Boolean(data.online)
+}
+function handleSocketMessage(msg) {
+  if (String(msg.conversationId) !== String(props.conversationId)) return
+  const shouldScroll = isNearBottom()
+  mergeMessage(msg)
+  if (shouldScroll) nextTick(scrollToBottom)
+}
+function handleConversationUpdated(data) {
+  if (String(data.conversationId) !== String(props.conversationId) || !conversation.value) return
+  if (data.assignedAgentId) conversation.value.assignedAgentId = data.assignedAgentId
+  if (data.status) {
+    conversation.value.status = data.status
+    accepted.value = data.status !== 'waiting'
+  }
+}
+function removeSocketListeners() {
+  socket?.off('connect', handleSocketConnect)
+  socket?.off('presence:changed', handlePresenceChanged)
+  socket?.off('message.new', handleSocketMessage)
+  socket?.off('message.recalled', applyRecall)
+  socket?.off('message.deleted', applyDelete)
+  socket?.off('conversation.updated', handleConversationUpdated)
+}
 function setupSocket() {
-  socket?.disconnect()
-  const token = sessionStorage.getItem('tenant_token') || localStorage.getItem('tenant_token')
-  if (!token) return
-  socket = io({ auth: { token, type: 'tenant_user' }, transports: ['polling', 'websocket'] })
-  socket.on('connect', () => {
-    syncLatestMessages()
-    const customerId = conversation.value?.customer?._id
-    if (customerId) socket.emit('presence:query', { type: 'customer', userId: customerId }, ({ online } = {}) => { customerOnline.value = Boolean(online) })
-  })
-  socket.on('presence:changed', (data) => {
-    if (data.type === 'customer' && String(data.userId) === String(conversation.value?.customer?._id)) customerOnline.value = Boolean(data.online)
-  })
-  socket.on('message.new', (msg) => {
-    if (String(msg.conversationId) !== String(props.conversationId)) return
-    mergeMessage(msg)
-    nextTick(scrollToBottom)
-  })
+  removeSocketListeners()
+  socket = getTenantSocket()
+  if (!socket) return
+  socketConnectedOnce = socket.connected
+  socket.on('connect', handleSocketConnect)
+  socket.on('presence:changed', handlePresenceChanged)
+  socket.on('message.new', handleSocketMessage)
   socket.on('message.recalled', applyRecall)
   socket.on('message.deleted', applyDelete)
-  socket.on('conversation.updated', (data) => {
-    if (String(data.conversationId) === String(props.conversationId)) {
-      if (data.assignedAgentId) conversation.value.assignedAgentId = data.assignedAgentId
-      if (data.status) conversation.value.status = data.status
-      accepted.value = data.status !== 'waiting'
-    }
-  })
-  socket.on('conversation.accepted', () => { loadConversation(); loadMessages() })
+  socket.on('conversation.updated', handleConversationUpdated)
+  queryCustomerPresence()
 }
 
 async function init() {
@@ -311,7 +330,7 @@ watch(
       if (targetId && targetId !== previousTargetId) loadMessages()
       return
     }
-    socket?.disconnect(); socket = null
+    removeSocketListeners(); socket = null
     customerOnline.value = false
     clearInterval(messageSyncTimer); messageSyncTimer = null
     showMore.value = false
@@ -324,10 +343,11 @@ watch(
 )
 
 function updateViewport() {
+  const shouldScroll = isNearBottom()
   const viewport = window.visualViewport
   viewportHeight.value = `${Math.round(viewport?.height || window.innerHeight)}px`
   viewportTop.value = `${Math.round(viewport?.offsetTop || 0)}px`
-  requestAnimationFrame(scrollToBottom)
+  if (shouldScroll) requestAnimationFrame(scrollToBottom)
 }
 
 onMounted(() => {
@@ -339,7 +359,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  socket?.disconnect()
+  removeSocketListeners()
   clearInterval(messageSyncTimer)
   clearTimeout(toastTimer)
   clearTimeout(longPressTimer)
@@ -349,6 +369,10 @@ onUnmounted(() => {
   document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
 
+function isNearBottom() {
+  const container = msgContainer.value
+  return Boolean(container && container.scrollHeight - container.scrollTop - container.clientHeight <= 120)
+}
 function scrollToBottom() {
   if (!msgContainer.value) return
   msgContainer.value.scrollTo({ top: msgContainer.value.scrollHeight, behavior: 'auto' })
@@ -357,10 +381,6 @@ async function scrollToLatest() {
   await nextTick()
   await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
   scrollToBottom()
-  const images = msgContainer.value?.querySelectorAll('img') || []
-  images.forEach((image) => {
-    if (!image.complete) image.addEventListener('load', scrollToBottom, { once: true })
-  })
 }
 function showToast(message) {
   toast.value = message
@@ -426,23 +446,6 @@ function handleBubbleClick(event) {
   if (Date.now() >= suppressBubbleClickUntil) return
   event.preventDefault()
   event.stopPropagation()
-}
-function showVideoFirstFrame(event) {
-  const video = event.currentTarget
-  if (!video || !Number.isFinite(video.duration) || video.duration <= 0) return
-
-  const captureFrame = () => {
-    try {
-      const canvas = document.createElement('canvas')
-      canvas.width = video.videoWidth
-      canvas.height = video.videoHeight
-      canvas.getContext('2d')?.drawImage(video, 0, 0)
-      video.poster = canvas.toDataURL('image/jpeg', 0.82)
-    } catch {}
-  }
-
-  video.addEventListener('seeked', captureFrame, { once: true })
-  video.currentTime = Math.min(0.2, video.duration / 2)
 }
 function fallbackCopyText(text) {
   const textarea = document.createElement('textarea')
@@ -569,7 +572,7 @@ defineExpose({ reload: init })
         <button class="cp-back" type="button" aria-label="返回消息列表" @click="emit('back')">←</button>
         <button v-if="$slots.back" class="cp-back" @click="emit('back')">←</button>
         <div class="cp-title-wrap" @click="showInfo = !showInfo">
-          <img v-if="conversation.customer?.avatarUrl" class="cp-avatar cp-avatar-image" :src="conversation.customer.avatarUrl" alt="客户QQ头像" />
+          <img v-if="conversation.customer?.avatarUrl" class="cp-avatar cp-avatar-image" :src="conversation.customer.avatarUrl" loading="lazy" decoding="async" alt="客户QQ头像" />
           <div v-else class="cp-avatar">{{ avatarChar() }}</div>
           <div>
             <div class="cp-title">
@@ -612,16 +615,16 @@ defineExpose({ reload: init })
 
           <div v-else class="cp-bubble-row" :data-message-id="msg._id" :class="msg.senderType === 'customer' ? 'is-left' : 'is-right'">
             <template v-if="msg.senderType === 'customer'">
-              <img v-if="conversation.customer?.avatarUrl" class="cp-bubble-avatar" :src="conversation.customer.avatarUrl" alt="客户头像" />
+              <img v-if="conversation.customer?.avatarUrl" class="cp-bubble-avatar" :src="conversation.customer.avatarUrl" loading="lazy" decoding="async" alt="客户头像" />
               <div v-else class="cp-bubble-avatar" :style="{ background: `linear-gradient(135deg,#f59e0b,#d97706)` }">{{ avatarChar() }}</div>
               <div class="cp-bubble-wrap">
                 <div class="cp-bubble cp-bubble-customer" :class="{ 'cp-media-message-bubble': ['image', 'video', 'file'].includes(msg.messageType) && msg.attachmentUrl, 'cp-menu-active': contextMenu?.msg === msg }" @contextmenu="showContextMenu($event, msg)" @touchstart="startLongPress($event, msg)" @touchend="finishLongPress" @touchcancel="cancelLongPress" @touchmove="moveLongPress" @click.capture="handleBubbleClick">
                   <template v-if="msg.recalledAt"><span class="cp-recalled">消息已撤回</span></template>
-                  <template v-else-if="msg.messageType === 'image' && msg.attachmentUrl"><img :src="msg.attachmentUrl" class="cp-bubble-img" @click="openPreview(msg)" /><div v-if="imageCaption(msg)" class="cp-image-caption">{{ imageCaption(msg) }}</div></template>
+                  <template v-else-if="msg.messageType === 'image' && msg.attachmentUrl"><img :src="msg.attachmentUrl" class="cp-bubble-img" loading="lazy" decoding="async" alt="聊天图片" @click="openPreview(msg)" /><div v-if="imageCaption(msg)" class="cp-image-caption">{{ imageCaption(msg) }}</div></template>
                   <template v-else-if="msg.messageType === 'video' && msg.attachmentUrl">
                     <div class="cp-video-wrap">
-                      <img v-if="msg.thumbnailUrl" :src="msg.thumbnailUrl" :alt="msg.attachmentName || '视频封面'" class="cp-bubble-img cp-bubble-video" loading="lazy" @load="scrollToBottom" @click.prevent="openPreview(msg)" />
-                      <video v-else :src="msg.attachmentUrl" class="cp-bubble-img cp-bubble-video" preload="metadata" playsinline muted @loadeddata="showVideoFirstFrame($event); scrollToBottom()" @click.prevent="openPreview(msg)"></video>
+                      <img v-if="msg.thumbnailUrl" :src="msg.thumbnailUrl" :alt="msg.attachmentName || '视频封面'" class="cp-bubble-img cp-bubble-video" loading="lazy" decoding="async" @click.prevent="openPreview(msg)" />
+                      <button v-else type="button" class="cp-bubble-img cp-bubble-video cp-video-placeholder" aria-label="加载并播放视频" @click.prevent="openPreview(msg)">视频</button>
                       <span class="cp-video-play-icon" @click.prevent="openPreview(msg)">▶</span>
                     </div>
                   </template>
@@ -643,11 +646,11 @@ defineExpose({ reload: init })
               <div class="cp-bubble-wrap">
                 <div class="cp-bubble" :class="{ 'cp-media-message-bubble': ['image', 'video', 'file'].includes(msg.messageType) && msg.attachmentUrl, 'cp-menu-active': contextMenu?.msg === msg }" @contextmenu="showContextMenu($event, msg)" @touchstart="startLongPress($event, msg)" @touchend="finishLongPress" @touchcancel="cancelLongPress" @touchmove="moveLongPress" @click.capture="handleBubbleClick">
                   <template v-if="msg.recalledAt"><span class="cp-recalled">消息已撤回</span></template>
-                  <template v-else-if="msg.messageType === 'image' && msg.attachmentUrl"><img :src="msg.attachmentUrl" class="cp-bubble-img" @click="openPreview(msg)" /><div v-if="imageCaption(msg)" class="cp-image-caption">{{ imageCaption(msg) }}</div></template>
+                  <template v-else-if="msg.messageType === 'image' && msg.attachmentUrl"><img :src="msg.attachmentUrl" class="cp-bubble-img" loading="lazy" decoding="async" alt="聊天图片" @click="openPreview(msg)" /><div v-if="imageCaption(msg)" class="cp-image-caption">{{ imageCaption(msg) }}</div></template>
                   <template v-else-if="msg.messageType === 'video' && msg.attachmentUrl">
                     <div class="cp-video-wrap">
-                      <img v-if="msg.thumbnailUrl" :src="msg.thumbnailUrl" :alt="msg.attachmentName || '视频封面'" class="cp-bubble-img cp-bubble-video" loading="lazy" @load="scrollToBottom" @click.prevent="openPreview(msg)" />
-                      <video v-else :src="msg.attachmentUrl" class="cp-bubble-img cp-bubble-video" preload="metadata" playsinline muted @loadeddata="showVideoFirstFrame($event); scrollToBottom()" @click.prevent="openPreview(msg)"></video>
+                      <img v-if="msg.thumbnailUrl" :src="msg.thumbnailUrl" :alt="msg.attachmentName || '视频封面'" class="cp-bubble-img cp-bubble-video" loading="lazy" decoding="async" @click.prevent="openPreview(msg)" />
+                      <button v-else type="button" class="cp-bubble-img cp-bubble-video cp-video-placeholder" aria-label="加载并播放视频" @click.prevent="openPreview(msg)">视频</button>
                       <span class="cp-video-play-icon" @click.prevent="openPreview(msg)">▶</span>
                     </div>
                   </template>
@@ -664,7 +667,7 @@ defineExpose({ reload: init })
                 <div v-if="msg.autoReplyType === 'keyword'" class="cp-keyword-reply-notice">关键词自动回复内容可作为参考</div>
                 <div class="cp-bubble-time">{{ formatTime(msg.createdAt) }}</div>
               </div>
-              <img v-if="msg.senderType === 'agent' && (msg.sender?.avatarUrl || conversation.channel?.avatarUrl)" class="cp-bubble-avatar" :src="msg.sender?.avatarUrl || conversation.channel.avatarUrl" alt="客服头像" />
+              <img v-if="msg.senderType === 'agent' && (msg.sender?.avatarUrl || conversation.channel?.avatarUrl)" class="cp-bubble-avatar" :src="msg.sender?.avatarUrl || conversation.channel.avatarUrl" loading="lazy" decoding="async" alt="客服头像" />
               <div v-else class="cp-bubble-avatar" :style="{ background: `linear-gradient(135deg,#2563eb,#1d4ed8)` }">{{ msg.senderType === 'bot' ? 'AI' : (msg.sender?.displayName?.[0] || '我') }}</div>
             </template>
           </div>
@@ -719,7 +722,7 @@ defineExpose({ reload: init })
           <div v-if="!quickReplies.length" class="cp-quick-empty">暂无快捷回复</div>
           <button v-for="qr in quickReplies" :key="qr._id" class="cp-quick-item" :disabled="Boolean(sendingQuickReplyId)" @click="sendQuickReply(qr)">
             <span><strong>{{ qr.title }}</strong><small>{{ qr.content || '图片回复' }}</small></span>
-            <img v-if="qr.imageUrl" :src="qr.imageUrl" alt="快捷回复图片" />
+            <img v-if="qr.imageUrl" :src="qr.imageUrl" loading="lazy" decoding="async" alt="快捷回复图片" />
           </button>
         </div>
       </section>
@@ -731,7 +734,7 @@ defineExpose({ reload: init })
         <button type="button" class="cp-preview-close" @click="closePreview">×</button>
       </div>
       <img v-if="preview.type === 'image'" :src="preview.url" :alt="preview.name || '图片预览'" />
-      <video v-else :src="preview.url" controls autoplay></video>
+      <video v-else :src="preview.url" controls autoplay preload="metadata" playsinline></video>
     </div>
 
     <div v-if="contextMenu" class="cp-menu-mask" @pointerdown="closeContextMenu">
@@ -862,6 +865,8 @@ defineExpose({ reload: init })
 .cp-bubble-row {
   display: flex; align-items: flex-start; gap: 8px;
   margin-bottom: 12px;
+  content-visibility: auto;
+  contain-intrinsic-size: 120px;
 }
 .cp-bubble-wrap {
   display: flex; flex-direction: column; gap: 2px; max-width: 72%;
@@ -918,6 +923,7 @@ defineExpose({ reload: init })
 .cp-bubble.cp-media-message-bubble::before { display: none; }
 .cp-bubble-img { max-width: min(150px, 42vw); max-height: 200px; border-radius: 8px; display: block; object-fit: contain; cursor: pointer; }
 .cp-video-wrap { position: relative; display: inline-block; max-width: min(150px, 42vw); }
+.cp-video-placeholder { width: min(150px, 42vw); height: 110px; border: 0; background: linear-gradient(135deg, #dbeafe, #bfdbfe); color: #1e40af; font: inherit; }
 .cp-video-play-icon {
   position: absolute; top: 50%; left: 50%;
   transform: translate(-50%, -50%);

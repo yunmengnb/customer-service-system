@@ -244,8 +244,8 @@ onUnmounted(() => window.removeEventListener('tenant-profile-updated', handlePro
 
 /* 内容 */
 .dsk-content {
-  flex: 1; overflow-y: auto; padding: 20px;
-  min-width: 0;
+  flex: 1; min-width: 0; min-height: 0;
+  overflow-y: auto; padding: 20px;
 }
 .dsk-content-full {
   padding: 0; margin: 0; min-height: 0; overflow: hidden;

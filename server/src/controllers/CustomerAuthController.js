@@ -11,7 +11,7 @@ const { sendMail } = require('../utils/mailer');
 const { normalizeEmail, sendEmailCode, verifyEmailCode } = require('../utils/emailVerification');
 const presence = require('../utils/presence');
 const { getSystemSettings } = require('../utils/systemSettings');
-const { ok, error, hashPassword, comparePassword, signToken, normalizePhone, hashFingerprint, getClientIp } = require('../utils');
+const { ok, error, hashPassword, comparePassword, signToken, verifyToken, normalizePhone, hashFingerprint, getClientIp } = require('../utils');
 
 async function getChannelByToken(publicToken) {
   const key = `config:channel:token:${publicToken}`;
@@ -90,6 +90,7 @@ async function createGreetingMessages(channel, conversation) {
 function accountJson(account, binding = null) {
   const data = account.toJSON();
   data.accountId = data._id;
+  data.identityType = 'customer';
   if (binding) {
     data._id = binding._id;
     data.bindingId = binding._id;
@@ -101,9 +102,72 @@ function accountJson(account, binding = null) {
   return data;
 }
 
+function guestJson(binding) {
+  const data = binding.toJSON();
+  data.identityType = 'guest';
+  data.bindingId = data._id;
+  delete data.phone;
+  delete data.email;
+  delete data.qq;
+  return data;
+}
+
+function channelJson(channel) {
+  return {
+    id: channel._id,
+    name: channel.name,
+    brandName: channel.brandName,
+    brandColor: channel.brandColor,
+    avatarUrl: channel.avatarUrl,
+    welcomeMessage: channel.welcomeMessage,
+    welcomeImageUrl: channel.welcomeImageUrl || '',
+    welcomeImageName: channel.welcomeImageName || '',
+    offlineMessage: channel.offlineMessage || '',
+    status: channel.status,
+  };
+}
+
 function createAccountSession(res, account, isNew = false) {
   const token = signToken({ type: 'customer', accountId: account._id.toString() }, config.jwt.customerExpiresIn);
   return ok(res, { token, isNew, profileRequired: !account.qq, customer: accountJson(account) });
+}
+
+function getGuestPayload(req, channel) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const payload = token ? verifyToken(token) : null;
+  if (!payload || payload.type !== 'customer' || payload.identity !== 'guest') return null;
+  if (String(payload.channelId) !== String(channel._id) || String(payload.tenantId) !== String(channel.tenantId)) return null;
+  return payload;
+}
+
+async function bindGuestToAccount(req, channel, account) {
+  const guestPayload = getGuestPayload(req, channel);
+  if (!guestPayload?.id) return { binding: null };
+  const guestBinding = await Customer.findOne({
+    _id: guestPayload.id,
+    accountId: null,
+    tenantId: channel.tenantId,
+    channelId: channel._id,
+    identityType: 'guest',
+    status: 'active',
+    blocked: false,
+  });
+  if (!guestBinding) return { binding: null };
+  const existing = await Customer.findOne({ accountId: account._id, channelId: channel._id }).select('_id');
+  if (existing && String(existing._id) !== String(guestBinding._id)) {
+    return { conflict: true };
+  }
+  guestBinding.accountId = account._id;
+  guestBinding.phone = account.phone;
+  guestBinding.password = account.password;
+  guestBinding.qq = account.qq;
+  guestBinding.email = account.email;
+  guestBinding.nickname = account.nickname;
+  guestBinding.avatarUrl = account.avatarUrl;
+  guestBinding.identityType = 'customer';
+  await guestBinding.save();
+  return { binding: guestBinding };
 }
 
 async function resolveAccount(payload) {
@@ -144,6 +208,75 @@ async function resolveAccount(payload) {
 }
 
 class CustomerAuthController {
+  // POST /api/client/channels/:token/auth/guest
+  async guest(req, res) {
+    const channel = await getChannelByToken(req.params.token);
+    if (!channel) return error(res, '客服链接无效或已过期', 404, 404);
+
+    const fingerprintHash = hashFingerprint(req.body.fingerprint);
+    const ip = getClientIp(req);
+    let binding = await Customer.findOne({
+      channelId: channel._id,
+      identityType: 'guest',
+      registerFingerprintHash: fingerprintHash,
+    }).sort({ lastLoginAt: -1, createdAt: -1 });
+    let restored = Boolean(binding);
+
+    if (!binding) {
+      const guestKey = crypto.randomBytes(16).toString('hex');
+      try {
+        binding = await Customer.create({
+          accountId: null,
+          tenantId: channel.tenantId,
+          channelId: channel._id,
+          phone: `guest_${channel._id}_${guestKey}`,
+          password: hashPassword(crypto.randomBytes(32).toString('hex')),
+          nickname: '访客',
+          identityType: 'guest',
+          registerIp: ip,
+          registerUserAgent: req.headers['user-agent'] || '',
+          registerFingerprintHash: fingerprintHash,
+          lastLoginIp: ip,
+          lastLoginAt: new Date(),
+        });
+        restored = false;
+      } catch (err) {
+        if (err?.code !== 11000) throw err;
+        binding = await Customer.findOne({
+          channelId: channel._id,
+          identityType: 'guest',
+          registerFingerprintHash: fingerprintHash,
+        });
+        if (!binding) throw err;
+        restored = true;
+      }
+    } else {
+      if (binding.blocked || binding.status !== 'active') return error(res, '当前访客已被限制访问', 4035, 403);
+      binding.lastLoginIp = ip;
+      binding.lastLoginAt = new Date();
+      await binding.save();
+    }
+
+    const resolved = await resolveConversation(channel, binding._id);
+    if (resolved.created) await createGreetingMessages(channel, resolved.conversation);
+    const jwt = signToken({
+      type: 'customer',
+      identity: 'guest',
+      id: binding._id.toString(),
+      tenantId: channel.tenantId.toString(),
+      channelId: channel._id.toString(),
+      conversationId: resolved.conversation._id.toString(),
+    }, config.jwt.customerExpiresIn);
+    return ok(res, {
+      token: jwt,
+      restored,
+      profileRequired: false,
+      customer: guestJson(binding),
+      channel: channelJson(channel),
+      conversation: { id: resolved.conversation._id, status: resolved.conversation.status },
+    });
+  }
+
   // POST /api/client/auth/login
   async accountLogin(req, res) {
     const settings = await getSystemSettings();
@@ -245,7 +378,9 @@ class CustomerAuthController {
     account.lastLoginIp = getClientIp(req);
     account.lastLoginAt = new Date();
     await account.save();
-    return CustomerAuthController.prototype.createSession(req, res, channel, account, false);
+    const guestBinding = await bindGuestToAccount(req, channel, account);
+    if (guestBinding.conflict) return error(res, '该客户账号已和该客服有对话，暂无法绑定', 4091, 409);
+    return CustomerAuthController.prototype.createSession(req, res, channel, account, false, guestBinding.binding);
   }
 
   // POST /api/client/channels/:token/auth/register-code
@@ -316,12 +451,14 @@ class CustomerAuthController {
       throw err;
     }
     await cache.remove(codeKey);
-    return CustomerAuthController.prototype.createSession(req, res, channel, account, true);
+    const guestBinding = await bindGuestToAccount(req, channel, account);
+    if (guestBinding.conflict) return error(res, '当前访客记录无法绑定到该客户账号，请刷新后登录已有账号', 4091, 409);
+    return CustomerAuthController.prototype.createSession(req, res, channel, account, true, guestBinding.binding);
   }
 
-  async createSession(req, res, channel, account, isNew) {
+  async createSession(req, res, channel, account, isNew, preferredBinding = null) {
     const ip = getClientIp(req);
-    let binding = await Customer.findOne({ accountId: account._id, channelId: channel._id });
+    let binding = preferredBinding || await Customer.findOne({ accountId: account._id, channelId: channel._id });
     if (!binding) {
       binding = await Customer.create({
         accountId: account._id,
@@ -332,6 +469,7 @@ class CustomerAuthController {
         qq: account.qq,
         email: account.email,
         nickname: account.nickname,
+        identityType: 'customer',
         avatarUrl: account.avatarUrl,
         registerIp: ip,
         registerUserAgent: req.headers['user-agent'] || '',
@@ -450,6 +588,7 @@ class CustomerAuthController {
 
   // POST /api/client/profile/qq
   async updateQQ(req, res) {
+    if (req.customer.identity === 'guest') return error(res, '访客不能修改客户资料，请先绑定客户账号', 4036, 403);
     const account = await resolveAccount(req.customer);
     const binding = await Customer.findById(req.customer.id);
     if (!account || !binding) return error(res, '账号不存在', 404);
@@ -466,6 +605,11 @@ class CustomerAuthController {
 
   // GET /api/client/me
   async me(req, res) {
+    if (req.customer.identity === 'guest') {
+      const binding = await Customer.findById(req.customer.id);
+      if (!binding) return error(res, '访客身份不存在', 404);
+      return ok(res, guestJson(binding));
+    }
     const account = await resolveAccount(req.customer);
     if (!account) return error(res, '账号不存在', 404);
     const binding = req.customer.id ? await Customer.findById(req.customer.id) : null;

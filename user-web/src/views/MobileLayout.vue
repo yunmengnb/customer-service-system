@@ -109,8 +109,8 @@ function goBack() {
 
 <style scoped>
 .mob-app {
-  display: flex; flex-direction: column; height: 100vh;
-  background: #f5f6f8;
+  display: flex; flex-direction: column; height: 100vh; height: 100dvh;
+  min-height: 0; overflow: hidden; background: #f5f6f8;
   font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
   color: #0f172a; max-width: 480px; margin: 0 auto;
 }
@@ -140,7 +140,7 @@ function goBack() {
 
 /* 内容 */
 .mob-content {
-  flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch;
   padding-bottom: calc(60px + env(safe-area-inset-bottom, 0));
 }
 .without-tabbar .mob-content { padding-bottom: env(safe-area-inset-bottom, 0); }

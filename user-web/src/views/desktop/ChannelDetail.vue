@@ -3,6 +3,7 @@
 import { ref, onMounted, reactive, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '../../api'
+import { buildCustomerServiceUrl, copyText } from '../../clipboard'
 import ConfirmDialog from '../../components/ConfirmDialog.vue'
 
 const props = defineProps({ channelId: String, embedded: Boolean })
@@ -207,27 +208,14 @@ async function confirmDelete() {
   await load()
 }
 
-function copyLink() {
-  const host = window.location.hostname
-  const url = `${window.location.protocol}//${host}:5176${channel.value.link}`
-  const doCopy = (text) => {
-    if (navigator.clipboard && window.isSecureContext) {
-      return navigator.clipboard.writeText(text)
-    }
-    return new Promise((resolve, reject) => {
-      const ta = document.createElement('textarea')
-      ta.value = text
-      ta.style.cssText = 'position:fixed;opacity:0;pointer-events:none;'
-      document.body.appendChild(ta)
-      ta.select()
-      try { document.execCommand('copy'); document.body.removeChild(ta); resolve() }
-      catch (e) { document.body.removeChild(ta); reject(e) }
-    })
+async function copyLink() {
+  const url = buildCustomerServiceUrl(channel.value.link)
+  try {
+    await copyText(url)
+    alert('客服链接已复制:\n' + url)
+  } catch {
+    window.prompt('自动复制失败，请选择链接并手动复制', url)
   }
-  doCopy(url).then(
-    () => alert('客服链接已复制:\n' + url),
-    () => alert('复制失败，请手动复制:\n' + url)
-  )
 }
 
 onMounted(load)

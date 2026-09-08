@@ -2,6 +2,7 @@
 <script setup>
 import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import api from '../../api'
+import { buildCustomerServiceUrl, copyText } from '../../clipboard'
 import ConfirmDialog from '../../components/ConfirmDialog.vue'
 import ChannelDetail from './ChannelDetail.vue'
 const user = JSON.parse(sessionStorage.getItem('tenant_user') || localStorage.getItem('tenant_user') || 'null')
@@ -29,41 +30,14 @@ async function createChannel() {
   }
 }
 
-function copyLink(link) {
-  const host = window.location.hostname
-  const url = /^https?:\/\//i.test(link)
-    ? link
-    : `${window.location.protocol}//${host}:5176${link}`
-
-  const doCopy = (text) => {
-    // Clipboard API（HTTPS / localhost）
-    if (navigator.clipboard && window.isSecureContext) {
-      return navigator.clipboard.writeText(text)
-    }
-    // Fallback：隐藏 textarea + execCommand（HTTP / IP 访问也能用）
-    return new Promise((resolve, reject) => {
-      const ta = document.createElement('textarea')
-      ta.value = text
-      ta.style.position = 'fixed'
-      ta.style.opacity = '0'
-      ta.style.pointerEvents = 'none'
-      document.body.appendChild(ta)
-      ta.select()
-      try {
-        document.execCommand('copy')
-        document.body.removeChild(ta)
-        resolve()
-      } catch (e) {
-        document.body.removeChild(ta)
-        reject(e)
-      }
-    })
+async function copyLink(link) {
+  const url = buildCustomerServiceUrl(link)
+  try {
+    await copyText(url)
+    alert('客服链接已复制:\n' + url)
+  } catch {
+    window.prompt('自动复制失败，请选择链接并手动复制', url)
   }
-
-  doCopy(url).then(
-    () => alert('客服链接已复制:\n' + url),
-    (e) => alert('复制失败，请手动复制:\n' + url)
-  )
 }
 
 async function toggleStatus(ch) {
@@ -213,6 +187,9 @@ onUnmounted(() => {
   box-shadow: 0 24px 80px rgba(15, 23, 42, .24);
 }
 .channel-config-dialog :deep(.detail-page.embedded) {
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
   border: 0;
   border-radius: 0;
   background: #fff;

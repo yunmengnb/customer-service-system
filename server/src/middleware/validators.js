@@ -54,8 +54,12 @@ const tenantRegister = [
   body('name').trim().notEmpty().withMessage('企业名称不能为空'),
   body('username').trim().notEmpty().withMessage('用户名不能为空').isLength({ min: 3 }).withMessage('用户名至少3位'),
   body('password').isString().isLength({ min: 6, max: 72 }).withMessage('密码须为6-72位'),
+  body('confirmPassword').isString().notEmpty().withMessage('请再次输入密码').custom((value, { req }) => {
+    if (value !== req.body.password) throw new Error('两次输入的密码不一致');
+    return true;
+  }),
   body('email').trim().normalizeEmail().isEmail().withMessage('邮箱格式不正确'),
-  body('emailCode').optional({ checkFalsy: true }).trim().matches(/^\d{6}$/).withMessage('请输入6位邮箱验证码'),
+  body('emailCode').trim().matches(/^\d{6}$/).withMessage('请输入6位邮箱验证码'),
   validate,
 ];
 
@@ -117,6 +121,12 @@ const createAgent = [
   body('displayName').trim().notEmpty().withMessage('显示名不能为空'),
   body('password').notEmpty().withMessage('密码不能为空').isLength({ min: 6 }).withMessage('密码至少6位'),
   body('role').optional().isIn(['admin', 'agent']).withMessage('角色无效'),
+  validate,
+];
+
+// 访客进入/恢复
+const customerGuest = [
+  body('fingerprint').isString().trim().isLength({ min: 8, max: 500 }).withMessage('访客指纹无效'),
   validate,
 ];
 
@@ -214,6 +224,7 @@ module.exports = {
   tenantEmail,
   tenantPassword,
   createAgent,
+  customerGuest,
   customerLogin,
   customerRegisterCode,
   customerRegister,

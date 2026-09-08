@@ -2,11 +2,12 @@
 <script setup>
 import { onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { io } from 'socket.io-client'
 
 const route = useRoute()
 let socket = null
-let socketToken = null
+let socketModule = null
+let socketSetupId = 0
+let isUnmounted = false
 let notificationAudioContext = null
 
 function getNotificationAudioContext() {
@@ -45,21 +46,28 @@ function playNotificationSound() {
   })
 }
 
-function setupNotificationSocket() {
+function handleNotificationMessage(message) {
+  if (message.senderType === 'customer') playNotificationSound()
+}
+
+async function setupNotificationSocket() {
+  const setupId = ++socketSetupId
   const token = sessionStorage.getItem('tenant_token') || localStorage.getItem('tenant_token')
   if (!token) {
-    socket?.disconnect()
+    socket?.off('message.new', handleNotificationMessage)
     socket = null
-    socketToken = null
+    socketModule?.disconnectTenantSocket()
     return
   }
-  if (socket && socketToken === token) return
-  socket?.disconnect()
-  socketToken = token
-  socket = io({ auth: { token, type: 'tenant_user' }, transports: ['polling', 'websocket'] })
-  socket.on('message.new', (message) => {
-    if (message.senderType === 'customer') playNotificationSound()
-  })
+
+  const loadedSocketModule = socketModule || await import('./socket')
+  if (isUnmounted || setupId !== socketSetupId) return
+  socketModule = loadedSocketModule
+  const nextSocket = loadedSocketModule.getTenantSocket()
+  if (socket === nextSocket) return
+  socket?.off('message.new', handleNotificationMessage)
+  socket = nextSocket
+  socket?.on('message.new', handleNotificationMessage)
 }
 
 watch(() => route.fullPath, setupNotificationSocket)
@@ -71,7 +79,10 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  socket?.disconnect()
+  isUnmounted = true
+  socketSetupId++
+  socket?.off('message.new', handleNotificationMessage)
+  socketModule?.disconnectTenantSocket()
   notificationAudioContext?.close().catch(() => {})
   window.removeEventListener('pointerdown', unlockNotificationSound)
   window.removeEventListener('keydown', unlockNotificationSound)

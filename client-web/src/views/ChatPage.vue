@@ -201,7 +201,8 @@
           <div class="dashboard-info-grid">
             <div><span>会话ID</span><strong>{{ conversation?._id || '-' }}</strong></div>
             <div><span>接入时间</span><strong>{{ formatDateTime(conversation?.acceptedAt) }}</strong></div>
-            <div><span>当前登录账号</span><strong>{{ customer?.phone || customer?.email || '-' }}</strong></div>
+            <div><span>当前身份</span><strong>{{ isGuest ? '访客' : '客户账号' }}</strong></div>
+            <div><span>当前登录账号</span><strong>{{ isGuest ? '未绑定账号' : (customer?.phone || customer?.email || '-') }}</strong></div>
             <div>
               <span>当前窗口链接</span>
               <button type="button" class="dashboard-copy-link" @click="copyCurrentWindowLink">
@@ -210,7 +211,7 @@
               </button>
             </div>
           </div>
-          <button type="button" class="dashboard-primary" @click="goToAccount">进入客户后台</button>
+          <button type="button" class="dashboard-primary" @click="goToAccount">{{ isGuest ? '绑定客户账号' : '进入客户后台' }}</button>
         </div>
       </section>
     </div>
@@ -301,6 +302,17 @@
     <div v-if="showLogin" class="modal-overlay auth-overlay">
       <div class="modal-content auth-modal">
         <div class="modal-title">{{ channel.brandName || '在线客服' }}</div>
+        <div v-if="authStep === 'identity'" class="identity-choice">
+          <div class="modal-desc">请选择本次咨询身份</div>
+          <button type="button" class="identity-option" @click="enterAsGuest">
+            <strong>访客咨询</strong><span>无需注册，可通过当前设备指纹恢复会话</span>
+          </button>
+          <button type="button" class="identity-option primary" @click="chooseCustomerIdentity">
+            <strong>客户账号</strong><span>登录或注册后可进入客户后台并跨渠道使用</span>
+          </button>
+        </div>
+        <template v-else>
+        <div v-if="isGuest" class="guest-bind-notice">当前为访客身份，登录或注册会将本次聊天记录绑定到客户账号。</div>
         <div class="auth-tabs">
           <button type="button" :class="{ active: authTab === 'register' }" @click="switchAuthTab('register')">注册</button>
           <button type="button" :class="{ active: authTab === 'login' }" @click="switchAuthTab('login')">登录</button>
@@ -355,9 +367,24 @@
         </div>
         <div class="err" v-if="loginErr">{{ loginErr }}</div>
         <div class="modal-actions">
+          <button v-if="!isGuest" type="button" class="btn btn-ghost" @click="authStep = 'identity'">返回选择</button>
           <button class="btn btn-primary" @click="submitAuth" :disabled="loginLoading || (authTab !== 'forgot' && captchaLoading)">
             {{ loginLoading ? '处理中...' : (authTab === 'register' ? '注册并进入聊天' : (authTab === 'login' ? '登录并进入聊天' : '重置密码')) }}
           </button>
+        </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- 访客禁止进入 APP -->
+    <div v-if="showGuestAppBlocked" class="modal-overlay" @click.self="showGuestAppBlocked = false">
+      <div class="modal-content install-guide-modal" role="dialog" aria-modal="true" aria-labelledby="guest-app-title">
+        <div class="install-guide-icon">访</div>
+        <div id="guest-app-title" class="modal-title">{{ guestPromptReason === 'return' ? '注册或绑定客户账号' : '访客无法进入客户后台' }}</div>
+        <div class="modal-desc">{{ guestPromptReason === 'return' ? '绑定客户账号后，本次访客聊天记录和客服渠道会归入该账号；也可以暂不绑定并继续咨询。' : '客户后台仅对已注册客户开放。绑定账号后，本次访客聊天记录会保留并归入该账号。' }}</div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" @click="showGuestAppBlocked = false">继续访客咨询</button>
+          <button type="button" class="btn btn-primary" @click="openGuestBinding">绑定客户账号</button>
         </div>
       </div>
     </div>
@@ -438,6 +465,10 @@ const viewportHeight = ref('100dvh')
 const viewportTop = ref('0px')
 
 const showLogin = ref(false)
+const authStep = ref('identity')
+const isGuest = computed(() => customer.value?.identityType === 'guest')
+const showGuestAppBlocked = ref(false)
+const guestPromptReason = ref('account')
 const showInstallGuide = ref(false)
 const userAgent = navigator.userAgent || ''
 const isIOS = /iphone|ipad|ipod/i.test(userAgent) || (/macintosh/i.test(userAgent) && navigator.maxTouchPoints > 1)
@@ -509,6 +540,7 @@ function localDateKey() {
 }
 
 function requestInstallGuide() {
+  if (isGuest.value) return
   if (!installGuideDismissed && !isCustomerAndroidApp && localStorage.getItem(installGuideDismissedDateKey) !== localDateKey()) {
     appDownloadError.value = ''
     showInstallGuide.value = true
@@ -712,10 +744,15 @@ async function loadChannel() {
       customer.value = meRes.data
       setupSocket()
       await Promise.all([loadConversation(), loadMessages()])
-      if (!customer.value.qq) showQQModal.value = true
+      if (isGuest.value) {
+        guestPromptReason.value = 'return'
+        showGuestAppBlocked.value = true
+      } else if (!customer.value.qq) {
+        showQQModal.value = true
+      }
     } else {
       showLogin.value = true
-      await loadCaptcha()
+      authStep.value = 'identity'
     }
   } finally {
     loading.value = false
@@ -743,6 +780,25 @@ function switchAuthTab(tab) {
   loginErr.value = ''
   captchaCode.value = ''
   geetestInstance?.reset?.()
+}
+
+function chooseCustomerIdentity() {
+  authStep.value = 'account'
+  authTab.value = 'login'
+  loadCaptcha()
+}
+
+async function enterAsGuest() {
+  loginErr.value = ''
+  loginLoading.value = true
+  try {
+    const res = await api.post(`/client/channels/${token.value}/auth/guest`, { fingerprint: generateFingerprint() })
+    await completeAuth(res)
+  } catch (error) {
+    loginErr.value = error?.message || '访客进入失败'
+  } finally {
+    loginLoading.value = false
+  }
 }
 
 function submitAuth() {
@@ -1111,8 +1167,21 @@ async function copyCurrentWindowLink() {
   showToast(copied ? '当前窗口链接已复制' : '复制失败，请长按链接复制')
 }
 
+function openGuestBinding() {
+  showGuestAppBlocked.value = false
+  showLogin.value = true
+  authStep.value = 'account'
+  authTab.value = 'login'
+  loadCaptcha()
+}
+
 function goToAccount() {
   showDashboard.value = false
+  if (isGuest.value) {
+    guestPromptReason.value = 'account'
+    showGuestAppBlocked.value = true
+    return
+  }
   router.push({ path: '/account', query: { channel: token.value } })
 }
 

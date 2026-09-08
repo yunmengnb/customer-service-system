@@ -34,7 +34,8 @@ router.post('/channels/:token/switch', authCustomer, CustomerAuthController.swit
 router.get('/channels/:token/captcha', CaptchaController.create);
 router.get('/channels/:token', CustomerAuthController.getChannelInfo);
 
-// 客户登录与注册
+// 客户/访客登录与注册
+router.post('/channels/:token/auth/guest', validators.customerGuest, CustomerAuthController.guest);
 router.post('/channels/:token/auth/login', verifyCaptcha, validators.customerLogin, CustomerAuthController.login);
 router.post('/channels/:token/auth/register-code', validators.customerRegisterCode, CustomerAuthController.sendRegisterCode);
 router.post('/channels/:token/auth/register', verifyCaptcha, validators.customerRegister, CustomerAuthController.register);

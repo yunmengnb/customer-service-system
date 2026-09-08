@@ -56,7 +56,7 @@
         <section class="account-hero">
           <img v-if="customer.avatarUrl" :src="customer.avatarUrl" alt="客户头像" />
           <div v-else class="account-avatar">{{ customer.nickname?.[0] || '我' }}</div>
-          <div><span>个人中心</span><h1>{{ customer.nickname && customer.nickname !== '访客' ? customer.nickname : (customer.qq || '未完善QQ') }}</h1><p>{{ customer.phone || '' }}</p></div>
+          <div><span>个人中心 · 客户</span><h1>{{ customer.nickname && customer.nickname !== '访客' ? customer.nickname : (customer.qq || '客户') }}</h1><p>{{ customer.email || '未完善邮箱' }}</p></div>
         </section>
         <nav class="account-tabs" aria-label="个人中心导航">
           <button type="button" :class="{ active: activeTab === 'channels' }" @click="activeTab = 'channels'">历史渠道</button>
@@ -177,6 +177,11 @@ async function loadAccount() {
   try {
     const meRes = await api.get('/client/me')
     if (meRes.code !== 0) throw new Error(meRes.message || '客户资料加载失败')
+    if (meRes.data?.identityType === 'guest') {
+      const target = channelToken.value ? `/c/${channelToken.value}` : '/account'
+      if (target !== '/account') await router.replace(target)
+      throw new Error('访客不能进入客户后台，请先在聊天页绑定客户账号')
+    }
     customer.value = meRes.data
     setupSocket()
 

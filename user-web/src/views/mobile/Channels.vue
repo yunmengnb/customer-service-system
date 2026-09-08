@@ -3,6 +3,7 @@
 import { computed, ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../../api'
+import { buildCustomerServiceUrl, copyText } from '../../clipboard'
 import ConfirmDialog from '../../components/ConfirmDialog.vue'
 
 const router = useRouter()
@@ -41,41 +42,14 @@ async function createChannel() {
   }
 }
 
-function copyLink(link) {
-  const host = window.location.hostname
-  const url = /^https?:\/\//i.test(link)
-    ? link
-    : `${window.location.protocol}//${host}:5176${link}`
-
-  const doCopy = (text) => {
-    // Clipboard API（HTTPS / localhost）
-    if (navigator.clipboard && window.isSecureContext) {
-      return navigator.clipboard.writeText(text)
-    }
-    // Fallback：隐藏 textarea + execCommand（HTTP / IP 访问也能用）
-    return new Promise((resolve, reject) => {
-      const ta = document.createElement('textarea')
-      ta.value = text
-      ta.style.position = 'fixed'
-      ta.style.opacity = '0'
-      ta.style.pointerEvents = 'none'
-      document.body.appendChild(ta)
-      ta.select()
-      try {
-        document.execCommand('copy')
-        document.body.removeChild(ta)
-        resolve()
-      } catch (e) {
-        document.body.removeChild(ta)
-        reject(e)
-      }
-    })
+async function copyLink(link) {
+  const url = buildCustomerServiceUrl(link)
+  try {
+    await copyText(url)
+    alert('客服链接已复制:\n' + url)
+  } catch {
+    window.prompt('自动复制失败，请长按链接并选择复制', url)
   }
-
-  doCopy(url).then(
-    () => alert('客服链接已复制:\n' + url),
-    (e) => alert('复制失败，请手动复制:\n' + url)
-  )
 }
 
 async function toggleStatus(ch) {

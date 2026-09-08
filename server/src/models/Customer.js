@@ -45,6 +45,12 @@ const CustomerSchema = new mongoose.Schema({
     default: '访客',
     maxlength: 50,
   },
+  identityType: {
+    type: String,
+    enum: ['customer', 'guest'],
+    default: 'customer',
+    index: true,
+  },
   avatarUrl: {
     type: String,
     default: '',
@@ -87,6 +93,10 @@ CustomerSchema.index({ channelId: 1, phone: 1 }, { unique: true });
 CustomerSchema.index(
   { accountId: 1, channelId: 1 },
   { unique: true, partialFilterExpression: { accountId: { $type: 'objectId' } } },
+);
+CustomerSchema.index(
+  { channelId: 1, registerFingerprintHash: 1 },
+  { unique: true, partialFilterExpression: { identityType: 'guest', registerFingerprintHash: { $type: 'string' } } },
 );
 
 CustomerSchema.methods.toJSON = function() {
