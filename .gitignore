@@ -1,0 +1,34 @@
+# 依赖与构建产物
+**/node_modules/
+**/dist/
+**/build/
+**/.gradle/
+
+# 本机配置与敏感文件
+**/.env
+!**/.env.example
+**/local.properties
+**/signing/
+*.jks
+*.keystore
+
+# 运行时上传与缓存
+server/uploads/
+.dbg/
+**/.dbg/
+
+# 编辑器与临时文件
+**/.vscode/
+**/*.swp
+**/*.swo
+*.tmp
+*.log
+
+# 本地工具与备份
+.trae/
+KF/
+.deploy_remote.py
+.remote_*
+
+# 本地调试记录
+debug-*.md
