@@ -75,13 +75,8 @@ async function toggleStatus(ch) {
 async function runConfirmedAction() {
   const action = confirmAction.value
   if (!action) return
-  if (action.type === 'rotate') {
-    const res = await api.post(`/tenant/channels/${action.channel._id}/rotate-token`)
-    if (res.code === 0) await load()
-  } else {
-    await api.delete(`/tenant/channels/${action.channel._id}`)
-    await load()
-  }
+  await api.delete(`/tenant/channels/${action.channel._id}`)
+  await load()
   confirmAction.value = null
 }
 
@@ -137,8 +132,7 @@ onUnmounted(() => {
               <button class="action-btn" @click="configuringId = ch._id">配置</button>
               <button class="action-btn" @click="copyLink(ch.link)">复制链接</button>
               <button v-if="isAdmin" class="action-btn" @click="toggleStatus(ch)">切{{ ch.status === 'online' ? '离线' : '在线' }}</button>
-              <button v-if="isAdmin" class="action-btn" @click="confirmAction = { type: 'rotate', channel: ch }">重置</button>
-              <button v-if="isAdmin" class="action-btn danger" @click="confirmAction = { type: 'remove', channel: ch }">删除</button>
+              <button v-if="isAdmin" class="action-btn danger" @click="confirmAction = { channel: ch }">删除</button>
             </td>
           </tr>
         <tr v-if="channels.length === 0"><td colspan="6" style="text-align:center;color:#9ca3af;padding:40px;">暂无渠道</td></tr>
@@ -185,11 +179,9 @@ onUnmounted(() => {
 
     <ConfirmDialog
       :open="!!confirmAction"
-      :title="confirmAction?.type === 'rotate' ? '重置客服链接' : '删除渠道'"
-      :message="confirmAction?.type === 'rotate'
-        ? '重置后旧链接将立即失效，确认继续吗？'
-        : `确认删除渠道「${confirmAction?.channel?.name || ''}」吗？关联关键词和快捷回复将一并删除。`"
-      :confirm-text="confirmAction?.type === 'rotate' ? '确认重置' : '确认删除'"
+      title="删除渠道"
+      :message="`确认删除渠道「${confirmAction?.channel?.name || ''}」吗？关联关键词和快捷回复将一并删除。`"
+      confirm-text="确认删除"
       danger
       @confirm="runConfirmedAction"
       @cancel="confirmAction = null"
@@ -212,8 +204,9 @@ onUnmounted(() => {
 }
 .channel-config-dialog {
   width: min(1120px, calc(100vw - 64px));
-  max-height: calc(100vh - 64px);
-  overflow-y: auto;
+  height: min(860px, calc(100dvh - 64px));
+  max-height: calc(100dvh - 64px);
+  overflow: hidden;
   overscroll-behavior: contain;
   border-radius: 16px;
   background: #fff;
@@ -225,6 +218,8 @@ onUnmounted(() => {
   background: #fff;
 }
 @media (max-width: 768px) {
+  .channel-config-overlay { align-items: stretch; padding: 0; }
+  .channel-config-dialog { width: 100%; height: 100dvh; max-height: none; border-radius: 0; }
   .page-content { padding: 12px; }
   .page-title { margin-bottom: 14px; font-size: 16px; }
   .page-title button { padding: 9px 16px; font-size: 13px; }

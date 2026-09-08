@@ -1,15 +1,19 @@
 <!-- 忆梦云团队开发 - 手机端消息列表 -->
 <script setup>
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { io } from 'socket.io-client'
 import api from '../../api'
 
+const route = useRoute()
 const router = useRouter()
 const conversations = ref([])
+const channels = ref([])
 const loading = ref(true)
-const filter = ref('all')
-const search = ref('')
+const validFilters = new Set(['all', 'waiting', 'active', 'closed'])
+const filter = ref(validFilters.has(String(route.query.status)) ? String(route.query.status) : 'all')
+const selectedChannelId = ref(typeof route.query.channelId === 'string' ? route.query.channelId : '')
+const search = ref(typeof route.query.keyword === 'string' ? route.query.keyword : '')
 const searching = ref(false)
 const searchDialog = ref(null)
 const searchResults = ref([])
@@ -23,14 +27,44 @@ const filteredConversations = computed(() => {
   if (filter.value !== 'all') list = list.filter((conversation) => conversation.status === filter.value)
   return list
 })
+const selectedChannel = computed(() => channels.value.find(channel => String(channel._id) === selectedChannelId.value) || null)
+const channelSearch = ref('')
+const filteredChannels = computed(() => {
+  const keyword = channelSearch.value.trim().toLowerCase()
+  if (!keyword) return channels.value
+  return channels.value.filter(channel => [channel.name, channel.brandName]
+    .some(value => String(value || '').toLowerCase().includes(keyword)))
+})
+const groupedConversations = computed(() => {
+  const groups = new Map()
+  const channelNames = new Map(channels.value.map(channel => [String(channel._id), channel.name]))
+  filteredConversations.value.forEach((conversation) => {
+    const key = String(conversation.channelId || conversation.channel?._id || conversation.channel?.id || 'unknown')
+    if (!groups.has(key)) groups.set(key, { key, name: conversation.channel?.name || channelNames.get(key) || '未知渠道', items: [], unread: 0 })
+    const group = groups.get(key)
+    group.items.push(conversation)
+    group.unread += conversation.agentUnreadCount || 0
+  })
+  return [...groups.values()]
+})
 
 async function loadConversations() {
+  if (!selectedChannelId.value) {
+    conversations.value = []
+    loading.value = false
+    return
+  }
   const sequence = ++requestSequence
   const keyword = search.value.trim()
   if (keyword) searching.value = true
   try {
     const res = await api.get('/tenant/conversations', {
-      params: { limit: 100, keyword: keyword || undefined },
+      params: {
+        limit: 100,
+        status: filter.value === 'all' ? undefined : filter.value,
+        channelId: selectedChannelId.value || undefined,
+        keyword: keyword || undefined,
+      },
     })
     if (sequence === requestSequence && res.code === 0) conversations.value = res.data.items
   } catch (error) {
@@ -43,9 +77,38 @@ async function loadConversations() {
   }
 }
 
+function syncQuery() {
+  const query = { ...route.query }
+  if (filter.value === 'all') delete query.status
+  else query.status = filter.value
+  if (selectedChannelId.value) {
+    query.channelId = selectedChannelId.value
+    query.channelName = selectedChannel.value?.name || undefined
+  } else {
+    delete query.channelId
+    delete query.channelName
+  }
+  if (search.value.trim()) query.keyword = search.value.trim()
+  else delete query.keyword
+  router.replace({ path: route.path, query })
+}
+
 watch(search, () => {
+  syncQuery()
   clearTimeout(searchTimer)
   searchTimer = setTimeout(loadConversations, 300)
+})
+watch(filter, () => {
+  syncQuery()
+  loadConversations()
+})
+watch(selectedChannelId, () => {
+  syncQuery()
+  loadConversations()
+})
+watch(() => route.query.channelId, (channelId) => {
+  const nextId = typeof channelId === 'string' ? channelId : ''
+  if (nextId !== selectedChannelId.value) selectedChannelId.value = nextId
 })
 
 function setupSocket() {
@@ -55,6 +118,10 @@ function setupSocket() {
   ;['conversation.created', 'conversation.accepted', 'conversation.updated']
     .forEach((event) => socket.on(event, loadConversations))
   socket.on('message.new', handleNewMessage)
+}
+
+function openChannel(channel) {
+  selectedChannelId.value = String(channel._id)
 }
 
 function handleNewMessage(message) {
@@ -76,7 +143,7 @@ function openConversation(conversation) {
     openSearchMatches(conversation)
     return
   }
-  router.push(`/m/messages/${conversation._id}`)
+  router.push({ path: `/m/messages/${conversation._id}`, query: { ...route.query } })
 }
 
 async function openSearchMatches(conversation) {
@@ -100,7 +167,7 @@ async function openSearchMatches(conversation) {
 function locateSearchMessage(message) {
   router.push({
     path: `/m/messages/${searchDialog.value._id}`,
-    query: { message: message._id },
+    query: { ...route.query, message: message._id },
   })
 }
 
@@ -141,8 +208,12 @@ function avatarColor(id) {
   return `linear-gradient(135deg, hsl(${hue},65%,58%), hsl(${(hue + 30) % 360},60%,42%))`
 }
 
-onMounted(() => {
-  loadConversations()
+onMounted(async () => {
+  const channelRes = await api.get('/tenant/channels').catch(() => null)
+  if (channelRes?.code === 0) channels.value = channelRes.data || []
+  if (selectedChannelId.value && !selectedChannel.value) selectedChannelId.value = ''
+  else if (selectedChannelId.value) syncQuery()
+  await loadConversations()
   setupSocket()
 })
 onUnmounted(() => {
@@ -153,8 +224,25 @@ onUnmounted(() => {
 
 <template>
   <section class="mobile-messages">
+    <div v-if="!selectedChannelId" class="mobile-channel-home">
+      <p>选择已授权渠道查看会话</p>
+      <div v-if="channels.length" class="mobile-channel-search">
+        <input v-model="channelSearch" type="search" placeholder="搜索渠道名称或品牌" aria-label="搜索渠道" />
+      </div>
+      <div v-if="filteredChannels.length" class="mobile-channel-list">
+        <button v-for="channel in filteredChannels" :key="channel._id" @click="openChannel(channel)">
+          <img v-if="channel.avatarUrl" :src="channel.avatarUrl" alt="" />
+          <span v-else class="mobile-channel-avatar">{{ channel.name?.slice(0, 1) || '渠' }}</span>
+          <span><strong>{{ channel.name }}</strong><small>{{ channel.brandName || '客服渠道' }}</small></span>
+          <i>›</i>
+        </button>
+      </div>
+      <div v-else class="mobile-state">暂无授权渠道</div>
+    </div>
+
+    <template v-else>
     <div class="mobile-tools">
-      <input v-model="search" type="search" placeholder="搜索客户、渠道或聊天内容" aria-label="搜索会话和聊天内容" />
+      <input v-model="search" type="search" placeholder="搜索当前渠道的客户或聊天内容" aria-label="搜索会话和聊天内容" />
       <div class="mobile-filters" aria-label="会话筛选">
         <button
           v-for="item in [{ key: 'all', label: '全部' }, { key: 'waiting', label: '待接入' }, { key: 'active', label: '处理中' }, { key: 'closed', label: '已结束' }]"
@@ -167,34 +255,37 @@ onUnmounted(() => {
 
     <div v-if="loading" class="mobile-state">加载中...</div>
     <div v-else-if="filteredConversations.length" class="mobile-list">
-      <button
-        v-for="conversation in filteredConversations"
-        :key="conversation._id"
-        class="mobile-item"
-        @click="openConversation(conversation)"
-      >
-        <img v-if="conversation.customer?.avatarUrl" class="mobile-avatar" :src="conversation.customer.avatarUrl" alt="客户QQ头像" />
-        <span v-else class="mobile-avatar" :style="{ background: avatarColor(conversation._id) }">
-          {{ conversation.customer?.phone?.slice(-1) || '客' }}
-        </span>
-        <span class="mobile-body">
-          <span class="mobile-row">
-            <span class="mobile-name">
-              {{ conversation.customer?.qq ? `QQ ${conversation.customer.qq}` : (conversation.customer?.phone ? `*${conversation.customer.phone.slice(-4)}` : '访客') }}
-              <span class="mobile-status" :class="statusTag(conversation.status).cls">{{ statusTag(conversation.status).text }}</span>
+      <section v-for="group in groupedConversations" :key="group.key" class="mobile-channel-group">
+        <header class="mobile-channel-head">
+          <strong>{{ group.name }}</strong>
+          <span>{{ group.items.length }} 个会话<i v-if="group.unread">{{ group.unread }} 条未读</i></span>
+        </header>
+        <button
+          v-for="conversation in group.items"
+          :key="conversation._id"
+          class="mobile-item"
+          @click="openConversation(conversation)"
+        >
+          <img v-if="conversation.customer?.avatarUrl" class="mobile-avatar" :src="conversation.customer.avatarUrl" alt="客户QQ头像" />
+          <span v-else class="mobile-avatar" :style="{ background: avatarColor(conversation._id) }">
+            {{ conversation.customer?.phone?.slice(-1) || '客' }}
+          </span>
+          <span class="mobile-body">
+            <span class="mobile-row">
+              <span class="mobile-name">
+                {{ conversation.customer?.qq ? `QQ ${conversation.customer.qq}` : (conversation.customer?.phone ? `*${conversation.customer.phone.slice(-4)}` : '访客') }}
+                <span class="mobile-status" :class="statusTag(conversation.status).cls">{{ statusTag(conversation.status).text }}</span>
+              </span>
+              <span class="mobile-time">{{ formatTime(conversation.lastMessageAt) }}</span>
             </span>
-            <span class="mobile-time">{{ formatTime(conversation.lastMessageAt) }}</span>
+            <span class="mobile-row mobile-summary">
+              <span class="mobile-last">{{ conversation.searchMatch ? latestMessageText(conversation.searchMatch.message) : latestMessageText(conversation.lastMessage) }}</span>
+              <span v-if="conversation.searchMatch" class="mobile-match-count">{{ conversation.searchMatch.count }}条相关</span>
+              <span v-else-if="conversation.agentUnreadCount > 0" class="mobile-unread">{{ conversation.agentUnreadCount }}</span>
+            </span>
           </span>
-          <span class="mobile-row mobile-summary">
-            <span class="mobile-last">{{ conversation.searchMatch ? latestMessageText(conversation.searchMatch.message) : latestMessageText(conversation.lastMessage) }}</span>
-            <span v-if="conversation.searchMatch" class="mobile-match-count">{{ conversation.searchMatch.count }}条相关</span>
-            <span v-else-if="conversation.agentUnreadCount > 0" class="mobile-unread">{{ conversation.agentUnreadCount }}</span>
-          </span>
-          <span v-if="conversation.channel?.name" class="mobile-channel">
-            {{ conversation.channel.name }}
-          </span>
-        </span>
-      </button>
+        </button>
+      </section>
     </div>
     <div v-else class="mobile-state">{{ searching ? '正在搜索...' : (search.trim() ? '没有找到相关聊天记录' : '暂无会话') }}</div>
 
@@ -217,17 +308,37 @@ onUnmounted(() => {
         <div v-else class="mobile-state">没有找到相关内容</div>
       </section>
     </div>
+    </template>
   </section>
 </template>
 
 <style scoped>
 .mobile-messages { min-height: 100%; background: #fff; }
+.mobile-channel-home > p { margin: 0; padding: 16px 16px 10px; color: #64748b; font-size: 13px; background: #f8fafc; }
+.mobile-channel-search { padding: 0 16px 14px; background: #f8fafc; }
+.mobile-channel-search input { width: 100%; min-height: 42px; padding: 0 14px; border: 1px solid #e2e8f0; border-radius: 12px; background: #fff; color: #0f172a; font-size: 14px; outline: none; box-sizing: border-box; }
+.mobile-channel-search input:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.12); }
+.mobile-channel-list > button { width: 100%; display: flex; align-items: center; gap: 12px; padding: 15px 16px; border: 0; border-bottom: 1px solid #f1f5f9; background: #fff; color: inherit; text-align: left; }
+.mobile-channel-list img, .mobile-channel-avatar { width: 46px; height: 46px; flex: 0 0 auto; border-radius: 12px; object-fit: cover; }
+.mobile-channel-avatar { display: grid; place-items: center; background: #dbeafe; color: #2563eb; font-size: 18px; font-weight: 700; }
+.mobile-channel-list button > span:nth-child(2) { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.mobile-channel-list strong, .mobile-channel-list small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mobile-channel-list strong { color: #0f172a; font-size: 15px; }
+.mobile-channel-list small { color: #94a3b8; font-size: 12px; }
+.mobile-channel-list i { color: #94a3b8; font-size: 24px; font-style: normal; }
 .mobile-tools { padding: 12px 16px 10px; background: rgba(255,255,255,.96); border-bottom: 1px solid #f1f5f9; backdrop-filter: blur(12px); }
-.mobile-tools input { width: 100%; min-height: 42px; padding: 0 14px; border: 1px solid #e2e8f0; border-radius: 12px; background: #f8fafc; color: #0f172a; font-size: 14px; outline: none; }
+.mobile-channel-back { padding: 0; border: 0; background: transparent; color: #2563eb; font-size: 13px; }
+.mobile-channel-title { display: block; margin: 5px 0 10px; overflow: hidden; color: #0f172a; font-size: 16px; text-overflow: ellipsis; white-space: nowrap; }
+.mobile-tools input { width: 100%; min-height: 42px; padding: 0 14px; border: 1px solid #e2e8f0; border-radius: 12px; background: #f8fafc; color: #0f172a; font-size: 14px; outline: none; box-sizing: border-box; }
 .mobile-tools input:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.12); background: #fff; }
 .mobile-filters { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 10px; }
 .mobile-filters button { min-height: 34px; border: 0; border-radius: 9px; background: #f1f5f9; color: #64748b; font-size: 12px; }
 .mobile-filters button.active { background: #dbeafe; color: #1d4ed8; font-weight: 700; }
+.mobile-channel-group + .mobile-channel-group { border-top: 8px solid #f1f5f9; }
+.mobile-channel-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; padding: 9px 16px; background: #f8fafc; color: #334155; }
+.mobile-channel-head strong { font-size: 13px; }
+.mobile-channel-head span { display: flex; align-items: center; gap: 8px; color: #94a3b8; font-size: 11px; }
+.mobile-channel-head i { padding: 2px 6px; border-radius: 999px; background: #fee2e2; color: #dc2626; font-style: normal; }
 .mobile-item { display: flex; width: 100%; gap: 12px; padding: 14px 16px; border: 0; border-bottom: 1px solid #f1f5f9; background: #fff; text-align: left; color: inherit; }
 .mobile-item:active { background: #f8fafc; }
 .mobile-avatar { width: 48px; height: 48px; border-radius: 50%; flex: 0 0 auto; display: grid; place-items: center; color: #fff; font-size: 18px; font-weight: 700; object-fit: cover; }

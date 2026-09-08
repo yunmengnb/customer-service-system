@@ -87,13 +87,8 @@ async function toggleStatus(ch) {
 async function runConfirmedAction() {
   const action = confirmAction.value
   if (!action) return
-  if (action.type === 'rotate') {
-    const res = await api.post(`/tenant/channels/${action.channel._id}/rotate-token`)
-    if (res.code === 0) await load()
-  } else {
-    await api.delete(`/tenant/channels/${action.channel._id}`)
-    await load()
-  }
+  await api.delete(`/tenant/channels/${action.channel._id}`)
+  await load()
   confirmAction.value = null
 }
 
@@ -141,8 +136,7 @@ onMounted(load)
         <div class="card-actions">
           <button class="primary-action" @click="openChannelConfig(ch._id)">进入配置</button>
           <button v-if="isAdmin" class="action-btn" @click="toggleStatus(ch)">{{ ch.status === 'online' ? '设为离线' : '设为在线' }}</button>
-          <button v-if="isAdmin" class="action-btn" @click="confirmAction = { type: 'rotate', channel: ch }">重置链接</button>
-          <button v-if="isAdmin" class="action-btn danger" @click="confirmAction = { type: 'remove', channel: ch }">删除</button>
+          <button v-if="isAdmin" class="action-btn danger" @click="confirmAction = { channel: ch }">删除</button>
         </div>
       </article>
     </div>
@@ -173,11 +167,9 @@ onMounted(load)
 
     <ConfirmDialog
       :open="!!confirmAction"
-      :title="confirmAction?.type === 'rotate' ? '重置客服链接' : '删除渠道'"
-      :message="confirmAction?.type === 'rotate'
-        ? '重置后旧链接将立即失效，确认继续吗？'
-        : `确认删除渠道「${confirmAction?.channel?.name || ''}」吗？关联关键词和快捷回复将一并删除。`"
-      :confirm-text="confirmAction?.type === 'rotate' ? '确认重置' : '确认删除'"
+      title="删除渠道"
+      :message="`确认删除渠道「${confirmAction?.channel?.name || ''}」吗？关联关键词和快捷回复将一并删除。`"
+      confirm-text="确认删除"
       danger
       @confirm="runConfirmedAction"
       @cancel="confirmAction = null"

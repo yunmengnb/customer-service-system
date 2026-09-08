@@ -24,6 +24,12 @@ const AnnouncementSchema = new mongoose.Schema({
     default: 'tenant',
     index: true,
   },
+  appType: {
+    type: String,
+    enum: ['staff', 'customer'],
+    default: 'staff',
+    index: true,
+  },
   status: {
     type: String,
     enum: ['draft', 'published'],
@@ -40,6 +46,6 @@ const AnnouncementSchema = new mongoose.Schema({
   versionKey: false,
 });
 
-AnnouncementSchema.index({ audience: 1, status: 1, publishedAt: -1 });
+AnnouncementSchema.index({ audience: 1, appType: 1, status: 1, publishedAt: -1 });
 
 module.exports = mongoose.model('Announcement', AnnouncementSchema, 'announcements');

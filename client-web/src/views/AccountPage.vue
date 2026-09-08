@@ -4,12 +4,13 @@
     <header class="account-header">
       <div class="account-header-inner">
         <router-link class="account-brand" :to="currentChannelPath">客户中心</router-link>
-        <button type="button" class="account-install" @click="installApp">创建快捷方式在桌面</button>
+        <button v-if="!isCustomerAndroidApp" type="button" class="account-install" @click="showDownloadModal = true">下载安卓客户端</button>
       </div>
     </header>
 
     <main class="account-main">
-      <section v-if="!customer" class="account-auth-card">
+      <div v-if="loading && !customer" class="account-loading">正在进入客户中心...</div>
+      <section v-else-if="!customer" class="account-auth-card">
         <div class="account-section-title">
           <div><h1>客户账号</h1><p>登录或注册后管理你的客服渠道</p></div>
         </div>
@@ -56,9 +57,16 @@
           <div class="account-section-title"><div><h2>历史渠道</h2><p>你使用此账号访问过的客服渠道</p></div><span>{{ channels.length }} 个</span></div>
           <div v-if="channels.length" class="channel-history-list">
             <button v-for="item in channels" :key="item.bindingId || item._id" type="button" class="channel-history-item" :disabled="item.status !== 'online'" @click="openChannel(item)">
-              <img v-if="item.avatarUrl" :src="item.avatarUrl" :alt="item.brandName || item.name" />
-              <div v-else class="channel-history-avatar" :style="{ background: item.brandColor || '#2563eb' }">{{ (item.brandName || item.name || '客')[0] }}</div>
-              <div class="channel-history-info"><div><strong>{{ item.brandName || item.name || '在线客服' }}</strong><span v-if="item.current" class="channel-current">当前</span></div><p>{{ item.name || '客服渠道' }} · 最近访问 {{ formatDateTime(item.lastVisitedAt) }}</p></div>
+              <img v-if="item.avatarUrl" :src="item.avatarUrl" alt="渠道头像" />
+              <div v-else class="channel-history-avatar" :style="{ background: item.brandColor || '#2563eb' }">客</div>
+              <div class="channel-history-info">
+                <div>
+                  <strong>{{ item.brandName || item.name || '客服渠道' }}</strong>
+                  <span v-if="item.current" class="channel-current">当前</span>
+                </div>
+                <p>{{ messageSummary(item.lastMessage) }}</p>
+              </div>
+              <span v-if="item.unreadCount" class="channel-unread">{{ item.unreadCount > 99 ? '99+' : item.unreadCount }}</span>
               <span :class="['channel-status', item.status === 'online' ? 'online' : 'offline']">{{ item.status === 'online' ? '进入咨询' : '暂时离线' }}</span>
             </button>
           </div>
@@ -78,20 +86,33 @@
         </form>
       </template>
     </main>
+
+    <div v-if="showDownloadModal && !isCustomerAndroidApp" class="modal-overlay install-guide-overlay" @click.self="showDownloadModal = false">
+      <section class="modal-content install-guide-modal" role="dialog" aria-modal="true" aria-labelledby="account-download-title">
+        <div class="install-guide-icon">客</div>
+        <div id="account-download-title" class="modal-title">下载客户安卓客户端</div>
+        <div class="modal-desc">此安装包仅用于客户中心，可管理历史客服渠道；客服坐席请勿下载此版本。</div>
+        <div v-if="appDownloadError" class="password-feedback error">{{ appDownloadError }}</div>
+        <div class="modal-actions install-guide-actions">
+          <button type="button" class="btn btn-ghost" :disabled="appDownloadLoading" @click="showDownloadModal = false">取消</button>
+          <button type="button" class="btn btn-primary" :disabled="appDownloadLoading" @click="downloadAndroidApp">{{ appDownloadLoading ? '获取中...' : '确认下载' }}</button>
+        </div>
+      </section>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import api from '../api'
+import api, { getSocket } from '../api'
 
 const route = useRoute()
 const router = useRouter()
 const customer = ref(null)
 const channels = ref([])
 const activeTab = ref('channels')
-const loading = ref(false)
+const loading = ref(Boolean(localStorage.getItem('client_token')))
 const errorMessage = ref('')
 const channelToken = ref(String(route.query.channel || localStorage.getItem('client_channel_token') || ''))
 const authTab = ref('login')
@@ -109,10 +130,18 @@ const passwordForm = ref({ currentPassword: '', newPassword: '', confirmPassword
 const passwordLoading = ref(false)
 const passwordMessage = ref('')
 const passwordSuccess = ref(false)
-let installPrompt = null
+const userAgent = navigator.userAgent || ''
+const isIOS = /iphone|ipad|ipod/i.test(userAgent) || (/macintosh/i.test(userAgent) && navigator.maxTouchPoints > 1)
+const isCustomerAndroidApp = /YiMengCustomerAndroid\/[\w.-]+/i.test(userAgent)
+const showDownloadModal = ref(false)
+const appDownloadLoading = ref(false)
+const appDownloadError = ref('')
 let codeTimer = null
+let socket = null
+let notificationAudioContext = null
 let geetestInstance = null
 let geetestScriptPromise = null
+const notifiedMessageIds = new Set()
 
 const currentChannelPath = computed(() => {
   const current = channels.value.find(item => item.current) || channels.value[0]
@@ -125,14 +154,21 @@ async function loadAccount() {
   loading.value = true
   errorMessage.value = ''
   try {
-    const [meRes, historyRes] = await Promise.all([api.get('/client/me'), api.get('/client/channels/history')])
-    if (meRes.code !== 0 || historyRes.code !== 0) throw new Error('客户资料加载失败')
+    const meRes = await api.get('/client/me')
+    if (meRes.code !== 0) throw new Error(meRes.message || '客户资料加载失败')
     customer.value = meRes.data
-    channels.value = historyRes.data || []
-    const current = channels.value.find(item => item.current)
-    if (current?.publicToken) {
-      channelToken.value = current.publicToken
-      localStorage.setItem('client_channel_token', current.publicToken)
+    setupSocket()
+
+    try {
+      const historyRes = await api.get('/client/channels/history')
+      channels.value = historyRes.code === 0 ? (historyRes.data || []) : []
+      const current = channels.value.find(item => item.current)
+      if (current?.publicToken) {
+        channelToken.value = current.publicToken
+        localStorage.setItem('client_channel_token', current.publicToken)
+      }
+    } catch {
+      channels.value = []
     }
   } catch (error) {
     customer.value = null
@@ -201,6 +237,11 @@ async function sendCode() {
 async function submitRegister() {
   authMessage.value = ''; const form = registerForm.value
   if (Object.values(form).some(value => !value)) return authMessage.value = '请填写完整注册信息'
+  if (!/^[\d +\-]{6,20}$/.test(form.phone)) return authMessage.value = '请输入正确的手机号'
+  if (!/^[1-9]\d{4,11}$/.test(form.qq)) return authMessage.value = '请输入5-12位QQ号'
+  if (!/^\S+@\S+\.\S+$/.test(form.email)) return authMessage.value = '请输入正确的邮箱地址'
+  if (!/^\d{6}$/.test(form.emailCode)) return authMessage.value = '请输入6位邮箱验证码'
+  if (form.password.length < 6 || form.password.length > 72) return authMessage.value = '密码须为6-72位'
   if (form.password !== form.confirmPassword) return authMessage.value = '两次输入的密码不一致'
   authLoading.value = true
   try { await finishAuth(await api.post('/client/auth/register', { ...form, fingerprint: navigator.userAgent, ...await getCaptchaPayload() })) }
@@ -219,22 +260,128 @@ async function changePassword() {
   } catch (error) { passwordMessage.value = error?.message || '密码修改失败' } finally { passwordLoading.value = false }
 }
 function openChannel(item) { if (item.publicToken) router.push(`/c/${item.publicToken}`) }
-function formatDate(value) { return value ? new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(value)) : '-' }
-function formatDateTime(value) { return value ? new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(value)) : '-' }
-function captureInstall(event) { event.preventDefault(); installPrompt = event }
-async function installApp() {
-  if (installPrompt) {
-    await installPrompt.prompt()
-    await installPrompt.userChoice
-    installPrompt = null
-    return
+function messageSummary(message) {
+  if (!message) return '暂无消息'
+  if (message.recalledAt) return '消息已撤回'
+  if (message.messageType === 'image') return '[图片]'
+  if (message.messageType === 'video') return '[视频]'
+  if (message.messageType === 'file') return `[文件] ${message.attachmentName || ''}`.trim()
+  return message.content || '暂无消息'
+}
+function handleChannelHistoryUpdate(update) {
+  if (!update?.bindingId) return
+  const index = channels.value.findIndex(item => String(item.bindingId) === String(update.bindingId))
+  if (index >= 0) channels.value.splice(index, 1, { ...channels.value[index], ...update })
+  else channels.value.push(update)
+  channels.value.sort((a, b) => new Date(b.lastMessageAt || 0) - new Date(a.lastMessageAt || 0))
+}
+function getNotificationAudioContext() {
+  if (!notificationAudioContext) {
+    const AudioContext = window.AudioContext || window.webkitAudioContext
+    if (AudioContext) notificationAudioContext = new AudioContext()
   }
-  window.alert('请使用浏览器菜单中的“安装应用”或“添加到主屏幕”功能创建桌面快捷方式。iPhone/iPad 请点击分享按钮，再选择“添加到主屏幕”。')
+  return notificationAudioContext
+}
+async function unlockNotificationSound() {
+  const context = getNotificationAudioContext()
+  if (context?.state === 'suspended') await context.resume().catch(() => {})
+}
+function playNotificationSound() {
+  const context = getNotificationAudioContext()
+  if (!context || context.state !== 'running') return
+  const start = context.currentTime
+  ;[
+    { delay: 0, frequency: 1320 },
+    { delay: 0.14, frequency: 1760 },
+    { delay: 0.3, frequency: 1480 },
+  ].forEach(({ delay, frequency }) => {
+    const oscillator = context.createOscillator()
+    const gain = context.createGain()
+    oscillator.type = 'square'
+    oscillator.frequency.setValueAtTime(frequency, start + delay)
+    gain.gain.setValueAtTime(0.0001, start + delay)
+    gain.gain.exponentialRampToValueAtTime(0.7, start + delay + 0.012)
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + delay + 0.13)
+    oscillator.connect(gain)
+    gain.connect(context.destination)
+    oscillator.start(start + delay)
+    oscillator.stop(start + delay + 0.14)
+  })
+}
+function handleNewMessage(message) {
+  const messageId = String(message?._id || '')
+  if (!messageId || notifiedMessageIds.has(messageId)) return
+  notifiedMessageIds.add(messageId)
+  const index = channels.value.findIndex(item => String(item.conversationId) === String(message.conversationId))
+  if (index < 0) return
+  const item = channels.value[index]
+  const incoming = ['agent', 'bot'].includes(message.senderType)
+  const summaryAlreadyUpdated = String(item.lastMessage?._id || '') === messageId
+  if (!summaryAlreadyUpdated) {
+    channels.value.splice(index, 1, {
+      ...item,
+      lastMessage: message,
+      lastMessageAt: message.createdAt || new Date().toISOString(),
+      unreadCount: incoming ? Number(item.unreadCount || 0) + 1 : Number(item.unreadCount || 0),
+    })
+    channels.value.sort((a, b) => new Date(b.lastMessageAt || 0) - new Date(a.lastMessageAt || 0))
+  }
+  if (!incoming) return
+  playNotificationSound()
+  if (!isCustomerAndroidApp && document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+    const notification = new Notification(item.brandName || item.name || '客服新消息', {
+      body: messageSummary(message),
+      icon: item.avatarUrl || '/pwa-192.png',
+      tag: `customer-channel-${item.bindingId}`,
+    })
+    notification.onclick = () => {
+      window.focus()
+      notification.close()
+      if (item.publicToken) router.push(`/c/${item.publicToken}`)
+    }
+  }
+}
+function setupSocket() {
+  const token = localStorage.getItem('client_token')
+  if (!token) return
+  socket = getSocket(token)
+  socket.off('channel-history.updated', handleChannelHistoryUpdate)
+  socket.off('message.new', handleNewMessage)
+  socket.on('channel-history.updated', handleChannelHistoryUpdate)
+  socket.on('message.new', handleNewMessage)
+}
+function formatDate(value) { return value ? new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(value)) : '-' }
+async function downloadAndroidApp() {
+  appDownloadLoading.value = true
+  appDownloadError.value = ''
+  try {
+    const res = await api.get('/app/customer-center/android/version')
+    const downloadUrl = res.code === 0 ? res.data?.downloadUrl : ''
+    if (!downloadUrl) throw new Error('暂无可下载的客户安卓客户端')
+    window.location.assign(downloadUrl)
+    showDownloadModal.value = false
+  } catch (error) {
+    appDownloadError.value = error?.message || '客户安卓客户端下载配置获取失败，请稍后重试。'
+  } finally {
+    appDownloadLoading.value = false
+  }
 }
 
 onMounted(() => {
-  document.title = '客户后台'; window.addEventListener('beforeinstallprompt', captureInstall)
+  document.title = '客户后台'
+  window.addEventListener('pointerdown', unlockNotificationSound, { once: true })
+  window.addEventListener('keydown', unlockNotificationSound, { once: true })
   if (localStorage.getItem('client_token')) loadAccount(); else loadCaptcha()
 })
-onBeforeUnmount(() => { clearInterval(codeTimer); geetestInstance?.destroy?.(); window.removeEventListener('beforeinstallprompt', captureInstall) })
+onBeforeUnmount(() => {
+  window.removeEventListener('pointerdown', unlockNotificationSound)
+  window.removeEventListener('keydown', unlockNotificationSound)
+  clearInterval(codeTimer)
+  geetestInstance?.destroy?.()
+  socket?.off('channel-history.updated', handleChannelHistoryUpdate)
+  socket?.off('message.new', handleNewMessage)
+  socket?.disconnect()
+  notificationAudioContext?.close().catch(() => {})
+  notificationAudioContext = null
+})
 </script>

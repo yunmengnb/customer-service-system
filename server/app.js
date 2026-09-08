@@ -22,6 +22,7 @@ const tenantRoutes = require('./src/routes/tenant');
 const clientRoutes = require('./src/routes/client');
 const appRoutes = require('./src/routes/app');
 const uploadRoutes = require('./src/routes/upload');
+const complaintUploadRoutes = require('./src/routes/complaintUpload');
 
 // Socket
 const setupSocketIO = require('./src/sockets');
@@ -109,6 +110,7 @@ async function start() {
   app.use('/api/tenant', tenantRoutes);
   app.use('/api/client', clientRoutes);
   app.use('/api/app', appRoutes);
+  app.use('/api/upload/complaint', complaintUploadRoutes);
   app.use('/api/upload', uploadRoutes);
   
   // 404

@@ -21,10 +21,21 @@ const tabs = computed(() => [
 const tabPaths = computed(() => new Set(tabs.value.map(tab => tab.path)))
 const showPrimaryNavigation = computed(() => tabPaths.value.has(route.path))
 const current = computed(() => tabs.value.find(tab => route.path === tab.path) || null)
-const pageTitle = computed(() => current.value?.label || ({
-  '/m/announcements': '系统公告',
-  '/m/profile/about': '关于软件',
-}[route.path] || (route.path.startsWith('/m/announcements/') ? '公告详情' : '详情')))
+const isChannelMessages = computed(() => route.path === '/m/messages' && Boolean(route.query.channelId))
+const pageTitle = computed(() => {
+  if (isChannelMessages.value) return String(route.query.channelName || '渠道会话')
+  return current.value?.label || ({
+    '/m/announcements': '系统公告',
+    '/m/profile/about': '关于软件',
+  }[route.path] || (route.path.startsWith('/m/announcements/') ? '公告详情' : '详情'))
+})
+
+function returnToChannels() {
+  const query = { ...route.query }
+  delete query.channelId
+  delete query.channelName
+  router.replace({ path: route.path, query })
+}
 
 function go(tab) {
   if (route.path !== tab.path) {
@@ -56,10 +67,11 @@ function goBack() {
   <div class="mob-app" :class="{ 'message-list-page': route.path === '/m/messages', 'without-tabbar': !showPrimaryNavigation }">
     <!-- 顶部状态栏 -->
     <header class="mob-header">
-      <button v-if="!showPrimaryNavigation" class="mob-header-back" type="button" aria-label="返回" @click="goBack">←</button>
+      <button v-if="isChannelMessages" class="mob-channel-back" type="button" @click="returnToChannels">‹ 返回渠道</button>
+      <button v-else-if="!showPrimaryNavigation" class="mob-header-back" type="button" aria-label="返回" @click="goBack">←</button>
       <div class="mob-header-title">{{ pageTitle }}</div>
       <div class="mob-header-right">
-        <button v-if="showPrimaryNavigation" class="mob-announcement-link" type="button" aria-label="系统公告" @click="router.push('/m/announcements')">公告</button>
+        <button v-if="showPrimaryNavigation && !isChannelMessages" class="mob-announcement-link" type="button" aria-label="系统公告" @click="router.push('/m/announcements')">公告</button>
       </div>
     </header>
 
@@ -114,12 +126,13 @@ function goBack() {
 .mob-header-title {
   font-size: 17px; font-weight: 600; color: #0f172a; flex: 1; text-align: center;
 }
-.mob-header-back, .mob-announcement-link {
+.mob-header-back, .mob-channel-back, .mob-announcement-link {
   position: absolute; border: none; background: transparent; color: #2563eb; cursor: pointer;
 }
 .mob-header-back {
   left: 10px; padding: 8px; font-size: 21px; line-height: 1;
 }
+.mob-channel-back { left: 10px; padding: 8px 4px; font-size: 13px; font-weight: 600; }
 .mob-header-right {
   position: absolute; right: 12px;
 }

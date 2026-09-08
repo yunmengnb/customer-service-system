@@ -35,7 +35,7 @@ const MessageSchema = new mongoose.Schema({
   },
   autoReplyType: {
     type: String,
-    enum: ['keyword', 'welcome'],
+    enum: ['keyword', 'welcome', 'offline'],
     default: null,
   },
   recalledAt: {

@@ -21,6 +21,71 @@ async function getChannelByToken(publicToken) {
   return channel;
 }
 
+async function resolveConversation(channel, customerId) {
+  const scope = {
+    tenantId: channel.tenantId,
+    channelId: channel._id,
+    customerId,
+  };
+  let conversation = await Conversation.findOne({
+    ...scope,
+    status: { $in: ['waiting', 'active'] },
+  }).sort({ lastMessageAt: -1 });
+  if (conversation) return { conversation, created: false };
+
+  conversation = await Conversation.findOneAndUpdate(
+    { ...scope, status: 'closed' },
+    {
+      $set: { status: 'waiting', assignedAgentId: null },
+      $unset: { acceptedAt: 1, closedAt: 1 },
+    },
+    { new: true, sort: { lastMessageAt: -1 } }
+  );
+  if (conversation) return { conversation, created: false };
+
+  conversation = await Conversation.findOne({
+    ...scope,
+    status: { $in: ['waiting', 'active'] },
+  }).sort({ lastMessageAt: -1 });
+  if (conversation) return { conversation, created: false };
+
+  conversation = await Conversation.create({ ...scope, status: 'waiting' });
+  return { conversation, created: true };
+}
+
+async function createGreetingMessages(channel, conversation) {
+  const messages = [];
+  const welcomeContent = String(channel.welcomeMessage || '').trim();
+  const welcomeImageUrl = String(channel.welcomeImageUrl || '').trim();
+  if (welcomeContent || welcomeImageUrl) {
+    messages.push(await Message.create({
+      tenantId: channel.tenantId,
+      conversationId: conversation._id,
+      senderType: 'bot',
+      messageType: welcomeImageUrl ? 'image' : 'text',
+      autoReplyType: 'welcome',
+      content: welcomeContent,
+      attachmentUrl: welcomeImageUrl,
+      attachmentName: channel.welcomeImageName || '',
+    }));
+  }
+  const offlineContent = String(channel.offlineMessage || '').trim();
+  if (channel.status === 'offline' && offlineContent) {
+    messages.push(await Message.create({
+      tenantId: channel.tenantId,
+      conversationId: conversation._id,
+      senderType: 'bot',
+      messageType: 'text',
+      autoReplyType: 'offline',
+      content: offlineContent,
+    }));
+  }
+  if (messages.length) {
+    conversation.lastMessageAt = messages[messages.length - 1].createdAt;
+    await conversation.save();
+  }
+}
+
 function accountJson(account, binding = null) {
   const data = account.toJSON();
   data.accountId = data._id;
@@ -143,8 +208,7 @@ class CustomerAuthController {
   // POST /api/client/channels/:token/auth/login
   async login(req, res) {
     const channel = await getChannelByToken(req.params.token);
-    if (!channel) return error(res, '客服链接无效或已过期', 404);
-    if (channel.status !== 'online') return error(res, '当前客服暂不在线', 503);
+    if (!channel) return error(res, '客服链接无效或已过期', 404, 404);
     const settings = await getSystemSettings();
     if (!settings.loginEnabled) return error(res, '系统暂时关闭登录', 4034, 403);
 
@@ -180,13 +244,13 @@ class CustomerAuthController {
     account.lastLoginIp = getClientIp(req);
     account.lastLoginAt = new Date();
     await account.save();
-    return this.createSession(req, res, channel, account, false);
+    return CustomerAuthController.prototype.createSession(req, res, channel, account, false);
   }
 
   // POST /api/client/channels/:token/auth/register-code
   async sendRegisterCode(req, res) {
     const channel = await getChannelByToken(req.params.token);
-    if (!channel) return error(res, '客服链接无效或已过期', 404);
+    if (!channel) return error(res, '客服链接无效或已过期', 404, 404);
     const settings = await getSystemSettings();
     if (!settings.registerEnabled) return error(res, '系统暂未开放注册', 4034, 403);
 
@@ -215,8 +279,7 @@ class CustomerAuthController {
   // POST /api/client/channels/:token/auth/register
   async register(req, res) {
     const channel = await getChannelByToken(req.params.token);
-    if (!channel) return error(res, '客服链接无效或已过期', 404);
-    if (channel.status !== 'online') return error(res, '当前客服暂不在线', 503);
+    if (!channel) return error(res, '客服链接无效或已过期', 404, 404);
     const settings = await getSystemSettings();
     if (!settings.registerEnabled) return error(res, '系统暂未开放注册', 4034, 403);
 
@@ -228,7 +291,7 @@ class CustomerAuthController {
     const codeKey = `customer:register-code:${crypto.createHash('sha256').update(email).digest('hex')}`;
     const verification = await cache.getJson(codeKey);
     const submittedHash = crypto.createHmac('sha256', config.jwt.secret).update(`${email}:${req.body.emailCode}`).digest('hex');
-    if (!verification?.codeHash || !crypto.timingSafeEqual(Buffer.from(verification.codeHash), Buffer.from(submittedHash))) {
+    if (!verification?.codeHash || verification.codeHash.length !== submittedHash.length || !crypto.timingSafeEqual(Buffer.from(verification.codeHash), Buffer.from(submittedHash))) {
       return error(res, '邮箱验证码错误或已过期', 4004, 400);
     }
 
@@ -282,31 +345,9 @@ class CustomerAuthController {
       await binding.save();
     }
 
-    let conversation = await Conversation.findOne({
-      tenantId: channel.tenantId,
-      channelId: channel._id,
-      customerId: binding._id,
-      status: { $in: ['waiting', 'active'] },
-    }).sort({ lastMessageAt: -1 });
-    if (!conversation) {
-      conversation = await Conversation.create({ tenantId: channel.tenantId, channelId: channel._id, customerId: binding._id, status: 'waiting' });
-      const welcomeContent = String(channel.welcomeMessage || '').trim();
-      const welcomeImageUrl = String(channel.welcomeImageUrl || '').trim();
-      if (welcomeContent || welcomeImageUrl) {
-        const welcomeMsg = await Message.create({
-          tenantId: channel.tenantId,
-          conversationId: conversation._id,
-          senderType: 'bot',
-          messageType: welcomeImageUrl ? 'image' : 'text',
-          autoReplyType: 'welcome',
-          content: welcomeContent,
-          attachmentUrl: welcomeImageUrl,
-          attachmentName: channel.welcomeImageName || '',
-        });
-        conversation.lastMessageAt = welcomeMsg.createdAt;
-        await conversation.save();
-      }
-    }
+    const resolved = await resolveConversation(channel, binding._id);
+    const conversation = resolved.conversation;
+    if (resolved.created) await createGreetingMessages(channel, conversation);
 
     const jwt = signToken({
       type: 'customer',
@@ -330,6 +371,8 @@ class CustomerAuthController {
         welcomeMessage: channel.welcomeMessage,
         welcomeImageUrl: channel.welcomeImageUrl || '',
         welcomeImageName: channel.welcomeImageName || '',
+        offlineMessage: channel.offlineMessage || '',
+        status: channel.status,
       },
       conversation: { id: conversation._id, status: conversation.status },
     });
@@ -341,7 +384,6 @@ class CustomerAuthController {
     if (!account) return error(res, '账号不存在', 404);
     const channel = await getChannelByToken(req.params.token);
     if (!channel) return error(res, '客服链接无效或已过期', 404);
-    if (channel.status !== 'online') return error(res, '当前客服暂不在线', 503);
 
     const ip = getClientIp(req);
     let binding = await Customer.findOne({ accountId: account._id, channelId: channel._id });
@@ -369,36 +411,9 @@ class CustomerAuthController {
       await binding.save();
     }
 
-    let conversation = await Conversation.findOne({
-      tenantId: channel.tenantId,
-      channelId: channel._id,
-      customerId: binding._id,
-      status: { $in: ['waiting', 'active'] },
-    }).sort({ lastMessageAt: -1 });
-    if (!conversation) {
-      conversation = await Conversation.create({
-        tenantId: channel.tenantId,
-        channelId: channel._id,
-        customerId: binding._id,
-        status: 'waiting',
-      });
-      const welcomeContent = String(channel.welcomeMessage || '').trim();
-      const welcomeImageUrl = String(channel.welcomeImageUrl || '').trim();
-      if (welcomeContent || welcomeImageUrl) {
-        const welcomeMsg = await Message.create({
-          tenantId: channel.tenantId,
-          conversationId: conversation._id,
-          senderType: 'bot',
-          messageType: welcomeImageUrl ? 'image' : 'text',
-          autoReplyType: 'welcome',
-          content: welcomeContent,
-          attachmentUrl: welcomeImageUrl,
-          attachmentName: channel.welcomeImageName || '',
-        });
-        conversation.lastMessageAt = welcomeMsg.createdAt;
-        await conversation.save();
-      }
-    }
+    const resolved = await resolveConversation(channel, binding._id);
+    const conversation = resolved.conversation;
+    if (resolved.created) await createGreetingMessages(channel, conversation);
 
     const jwt = signToken({
       type: 'customer',
@@ -428,7 +443,7 @@ class CustomerAuthController {
       offlineMessage: channel.offlineMessage,
       status: channel.status,
       agentIds,
-      agentOnline: onlineStates.some(Boolean),
+      agentOnline: channel.status === 'online' && onlineStates.some(Boolean),
     });
   }
 
@@ -460,22 +475,50 @@ class CustomerAuthController {
   async channelHistory(req, res) {
     const account = await resolveAccount(req.customer);
     if (!account) return error(res, '账号不存在', 404);
-    const bindings = await Customer.find({ accountId: account._id }).sort({ lastLoginAt: -1, createdAt: -1 }).lean();
+    const bindings = await Customer.find({ accountId: account._id }).lean();
     const channelIds = bindings.map(item => item.channelId);
-    const channels = await Channel.find({ _id: { $in: channelIds } })
-      .select('_id tenantId name publicToken brandName brandColor avatarUrl status')
-      .lean();
+    const bindingIds = bindings.map(item => item._id);
+    const [channels, conversations] = await Promise.all([
+      Channel.find({ _id: { $in: channelIds } })
+        .select('_id tenantId publicToken name brandName brandColor avatarUrl status')
+        .lean(),
+      Conversation.aggregate([
+        { $match: { customerId: { $in: bindingIds } } },
+        { $sort: { lastMessageAt: -1, createdAt: -1 } },
+        { $group: { _id: '$customerId', conversation: { $first: '$$ROOT' } } },
+      ]),
+    ]);
+    const conversationIds = conversations.map(item => item.conversation._id);
+    const latestMessages = conversationIds.length ? await Message.aggregate([
+      { $match: { conversationId: { $in: conversationIds }, deletedForCustomerAt: null } },
+      { $sort: { createdAt: -1 } },
+      { $group: { _id: '$conversationId', message: { $first: '$$ROOT' } } },
+    ]) : [];
     const channelMap = Object.fromEntries(channels.map(item => [String(item._id), item]));
-    return ok(res, bindings.flatMap(binding => {
+    const conversationMap = Object.fromEntries(conversations.map(item => [String(item._id), item.conversation]));
+    const messageMap = Object.fromEntries(latestMessages.map(item => [String(item._id), item.message]));
+    const items = bindings.flatMap(binding => {
       const channel = channelMap[String(binding.channelId)];
-      if (!channel) return [];
+      if (!channel || String(channel.tenantId) !== String(binding.tenantId)) return [];
+      const conversation = conversationMap[String(binding._id)];
+      const lastMessage = conversation ? messageMap[String(conversation._id)] || null : null;
       return [{
-        ...channel,
+        _id: channel._id,
         bindingId: binding._id,
-        lastVisitedAt: binding.lastLoginAt || binding.createdAt,
+        publicToken: channel.publicToken,
+        name: channel.name,
+        brandName: channel.brandName,
+        brandColor: channel.brandColor,
+        avatarUrl: channel.avatarUrl,
+        status: channel.status,
         current: String(binding.channelId) === String(req.customer.channelId),
+        conversationId: conversation?._id || null,
+        lastMessage,
+        lastMessageAt: lastMessage?.createdAt || conversation?.createdAt || binding.createdAt,
+        unreadCount: conversation?.customerUnreadCount || 0,
       }];
-    }));
+    }).sort((a, b) => new Date(b.lastMessageAt) - new Date(a.lastMessageAt));
+    return ok(res, items);
   }
 
   // POST /api/client/profile/password

@@ -7,10 +7,13 @@ const api = axios.create({
   timeout: 15000,
 })
 
-// 请求拦截：注入 token
+const isPublicAuthRequest = url => /^\/client\/(?:auth|channels\/[^/]+\/auth)\/(?:captcha|login|register|register-code)$/.test(url || '')
+  || /^\/client\/channels\/(?!history(?:\/|$))[^/]+(?:\/captcha)?$/.test(url || '')
+
+// 请求拦截：仅为需要鉴权的接口注入 token
 api.interceptors.request.use(config => {
   const token = localStorage.getItem('client_token')
-  if (token) {
+  if (token && !isPublicAuthRequest(config.url)) {
     config.headers.Authorization = `Bearer ${token}`
   }
   return config
@@ -20,7 +23,7 @@ api.interceptors.request.use(config => {
 api.interceptors.response.use(
   res => res.data,
   err => {
-    if (err.response?.status === 401) {
+    if (err.response?.status === 401 && err.config?.headers?.Authorization) {
       localStorage.removeItem('client_token')
     }
     return Promise.reject(err.response?.data || err)

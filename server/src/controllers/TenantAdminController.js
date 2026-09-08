@@ -1,6 +1,7 @@
 // 忆梦云团队开发
 const Tenant = require('../models/Tenant');
 const TenantUser = require('../models/TenantUser');
+const CustomerAccount = require('../models/CustomerAccount');
 const PlatformAdmin = require('../models/PlatformAdmin');
 const { ok, error, hashPassword } = require('../utils');
 
@@ -79,7 +80,7 @@ class TenantAdminController {
       Tenant.countDocuments(),
       Tenant.countDocuments({ status: 'active' }),
       TenantUser.countDocuments(),
-      require('../models/Customer').countDocuments(),
+      CustomerAccount.countDocuments(),
     ]);
     
     return ok(res, {

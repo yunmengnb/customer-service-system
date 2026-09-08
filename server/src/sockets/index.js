@@ -4,6 +4,10 @@ const { verifyToken } = require('../utils');
 const { getRedis, createRedisDuplicate } = require('../config/redis');
 const presence = require('../utils/presence');
 const Channel = require('../models/Channel');
+const Customer = require('../models/Customer');
+const CustomerAccount = require('../models/CustomerAccount');
+const PlatformAdmin = require('../models/PlatformAdmin');
+const Tenant = require('../models/Tenant');
 const TenantUser = require('../models/TenantUser');
 
 function broadcastPresence(io, user, online) {
@@ -30,7 +34,6 @@ async function setupSocketIO(io) {
   // 认证中间件
   io.use(async (socket, next) => {
     const token = socket.handshake.auth?.token || socket.handshake.query?.token;
-    const userType = socket.handshake.auth?.type || socket.handshake.query?.type;
     
     if (!token) {
       // 允许未认证的连接但不加入任何房间
@@ -45,11 +48,12 @@ async function setupSocketIO(io) {
     socket.user = payload;
     socket.userType = payload.type;
     
-    // 验证坐席权限（可选：保持轻量）
+    // 回查当前身份及所属资源，避免失效或伪造上下文的 token 加入广播房间。
     try {
       if (payload.type === 'tenant_user') {
         const user = await TenantUser.findOne({ _id: payload.id, tenantId: payload.tenantId });
-        if (!user || user.status !== 'active') {
+        const tenant = user && await Tenant.findById(user.tenantId).select('status');
+        if (!user || user.status !== 'active' || !tenant || tenant.status !== 'active') {
           return next(new Error('User not found or disabled'));
         }
         socket.user = {
@@ -57,6 +61,42 @@ async function setupSocketIO(io) {
           role: user.role,
           tenantId: user.tenantId.toString(),
         };
+      } else if (payload.type === 'customer') {
+        if (payload.id && payload.tenantId && payload.channelId) {
+          const binding = await Customer.findOne({
+            _id: payload.id,
+            accountId: payload.accountId,
+            tenantId: payload.tenantId,
+            channelId: payload.channelId,
+            status: 'active',
+            blocked: false,
+          }).select('accountId tenantId channelId');
+          const [account, tenant, channel] = binding ? await Promise.all([
+            CustomerAccount.findOne({ _id: binding.accountId, status: 'active' }).select('_id'),
+            Tenant.findOne({ _id: binding.tenantId, status: 'active' }).select('_id'),
+            Channel.findOne({ _id: binding.channelId, tenantId: binding.tenantId }).select('_id'),
+          ]) : [];
+          if (!binding || !account || !tenant || !channel) {
+            return next(new Error('Customer context is invalid'));
+          }
+          socket.user = {
+            ...payload,
+            id: binding._id.toString(),
+            accountId: binding.accountId.toString(),
+            tenantId: binding.tenantId.toString(),
+            channelId: binding.channelId.toString(),
+          };
+        } else {
+          const account = await CustomerAccount.findOne({ _id: payload.accountId, status: 'active' }).select('_id');
+          if (!account) return next(new Error('Customer account is invalid'));
+          socket.user = { type: 'customer', accountId: account._id.toString() };
+        }
+      } else if (payload.type === 'admin') {
+        const admin = await PlatformAdmin.findOne({ _id: payload.id, status: 'active' });
+        if (!admin) return next(new Error('Admin not found or disabled'));
+        socket.user = { ...payload, role: admin.role };
+      } else {
+        return next(new Error('Invalid user type'));
       }
     } catch (err) {
       return next(new Error('Authentication failed'));
@@ -81,23 +121,27 @@ async function setupSocketIO(io) {
         socket.join(`agent-${socket.user.id}`);
         socket.join(`presence-tenant-${socket.user.tenantId}`);
       } else if (socket.user.type === 'customer') {
-        socket.join(`customer-${socket.user.id}`);
-        socket.join(`presence-tenant-${socket.user.tenantId}`);
-        socket.join(`channel-${socket.user.channelId}`);
+        if (socket.user.id) socket.join(`customer-${socket.user.id}`);
+        if (socket.user.accountId) {
+          socket.join(`customer-account-${socket.user.accountId}`);
+        }
+        if (socket.user.tenantId) socket.join(`presence-tenant-${socket.user.tenantId}`);
+        if (socket.user.channelId) socket.join(`channel-${socket.user.channelId}`);
       } else if (socket.user.type === 'admin') {
         socket.join('admin');
       }
     }
     
-    if (socket.user) {
-      await presence.connect(socket.user.type, socket.user.id, socket.id);
+    const presenceUserId = socket.user?.id || socket.user?.accountId;
+    if (socket.user && presenceUserId) {
+      await presence.connect(socket.user.type, presenceUserId, socket.id);
       broadcastPresence(io, socket.user, true);
     }
 
     socket.emit('connected', { ok: true });
 
-    const presenceTimer = socket.user
-      ? setInterval(() => presence.touch(socket.user.type, socket.user.id, socket.id), 30000)
+    const presenceTimer = socket.user && presenceUserId
+      ? setInterval(() => presence.touch(socket.user.type, presenceUserId, socket.id), 30000)
       : null;
     presenceTimer?.unref();
 
@@ -109,15 +153,17 @@ async function setupSocketIO(io) {
     
     socket.on('disconnect', async () => {
       if (presenceTimer) clearInterval(presenceTimer);
-      if (!socket.user) return;
-      await presence.disconnect(socket.user.type, socket.user.id, socket.id);
-      const online = await presence.isOnline(socket.user.type, socket.user.id);
+      if (!socket.user || !presenceUserId) return;
+      await presence.disconnect(socket.user.type, presenceUserId, socket.id);
+      const online = await presence.isOnline(socket.user.type, presenceUserId);
       broadcastPresence(io, socket.user, online);
     });
     
     // 心跳
     socket.on('ping', async (cb) => {
-      if (socket.user) await presence.touch(socket.user.type, socket.user.id, socket.id);
+      if (socket.user && presenceUserId) {
+        await presence.touch(socket.user.type, presenceUserId, socket.id);
+      }
       if (cb) cb({ pong: true });
     });
   });

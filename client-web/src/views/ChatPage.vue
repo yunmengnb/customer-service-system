@@ -32,7 +32,8 @@
           <span v-else>等待客服接入...</span>
         </div>
       </div>
-      <button class="profile-trigger" v-if="customer" @click="openDashboard">
+      <button v-if="customer" type="button" class="complaint-trigger" @click="openComplaint">投诉</button>
+      <button v-if="customer" type="button" class="profile-trigger" @click="openDashboard">
         控制面板
       </button>
     </div>
@@ -196,45 +197,102 @@
           <button type="button" class="dashboard-close" aria-label="关闭控制面板" @click="closeDashboard">×</button>
         </header>
 
-        <div class="dashboard-profile">
-          <img v-if="customer?.avatarUrl" :src="customer.avatarUrl" alt="客户头像" />
-          <div v-else class="dashboard-avatar">{{ customer?.nickname?.[0] || '我' }}</div>
-          <div>
-            <strong>{{ customer?.nickname || '访客' }}</strong>
-            <span>{{ customer?.phone }}</span>
-          </div>
-        </div>
-
-        <nav class="dashboard-tabs" aria-label="控制面板导航">
-          <button type="button" :class="{ active: dashboardTab === 'profile' }" @click="dashboardTab = 'profile'">账号资料</button>
-          <button type="button" :class="{ active: dashboardTab === 'security' }" @click="dashboardTab = 'security'">安全设置</button>
-        </nav>
-
-        <div v-if="dashboardTab === 'profile'" class="dashboard-content">
+        <div class="dashboard-content dashboard-shortcut">
           <div class="dashboard-info-grid">
-            <div><span>手机号</span><strong>{{ customer?.phone || '-' }}</strong></div>
-            <div><span>QQ号</span><strong>{{ customer?.qq || '未完善' }}</strong></div>
-            <div><span>邮箱</span><strong>{{ customer?.email || '未完善' }}</strong></div>
-            <div><span>注册时间</span><strong>{{ formatDate(customer?.createdAt) }}</strong></div>
+            <div><span>会话ID</span><strong>{{ conversation?._id || '-' }}</strong></div>
+            <div><span>接入时间</span><strong>{{ formatDateTime(conversation?.acceptedAt) }}</strong></div>
+            <div><span>当前登录账号</span><strong>{{ customer?.phone || customer?.email || '-' }}</strong></div>
+            <div>
+              <span>当前窗口链接</span>
+              <button type="button" class="dashboard-copy-link" @click="copyCurrentWindowLink">
+                {{ currentWindowLink }}
+                <small>点击复制</small>
+              </button>
+            </div>
           </div>
           <button type="button" class="dashboard-primary" @click="goToAccount">进入客户后台</button>
         </div>
+      </section>
+    </div>
 
-        <form v-else class="dashboard-content password-form" @submit.prevent="submitPassword">
-          <div class="form-item">
-            <label for="current-password">当前密码</label>
-            <input id="current-password" v-model="passwordForm.currentPassword" type="password" autocomplete="current-password" placeholder="请输入当前密码" />
+    <!-- 投诉表单 -->
+    <div v-if="showComplaint" class="modal-overlay complaint-overlay" @click.self="closeComplaint">
+      <section class="complaint-panel" role="dialog" aria-modal="true" aria-labelledby="complaint-title">
+        <header class="complaint-header">
+          <div>
+            <div class="dashboard-eyebrow">意见反馈</div>
+            <h2 id="complaint-title">提交投诉</h2>
+            <p>请如实描述问题，我们会尽快核查处理。</p>
+          </div>
+          <button type="button" class="dashboard-close" aria-label="关闭投诉表单" @click="closeComplaint">×</button>
+        </header>
+
+        <form class="complaint-form" @submit.prevent="submitComplaint">
+          <div class="complaint-form-grid">
+            <div class="form-item">
+              <label for="complaint-category">投诉类型</label>
+              <select id="complaint-category" v-model="complaintForm.category">
+                <option value="agent" :disabled="!assignedAgentId">投诉客服</option>
+                <option value="platform">平台问题反馈</option>
+              </select>
+            </div>
+            <div class="form-item">
+              <label>当前渠道</label>
+              <input :value="channel.brandName || channel.name || '-'" disabled />
+            </div>
           </div>
           <div class="form-item">
-            <label for="new-password">新密码</label>
-            <input id="new-password" v-model="passwordForm.newPassword" type="password" autocomplete="new-password" placeholder="请输入6-72位新密码" />
+            <label for="complaint-subject">投诉标题</label>
+            <input id="complaint-subject" v-model.trim="complaintForm.subject" maxlength="100" placeholder="请概括您遇到的问题" />
           </div>
           <div class="form-item">
-            <label for="confirm-password">确认新密码</label>
-            <input id="confirm-password" v-model="passwordForm.confirmPassword" type="password" autocomplete="new-password" placeholder="请再次输入新密码" />
+            <label for="complaint-content">投诉内容</label>
+            <textarea id="complaint-content" v-model.trim="complaintForm.content" maxlength="5000" rows="5" placeholder="请填写事情经过、发生时间及您的诉求"></textarea>
+            <div class="complaint-counter">{{ complaintForm.content.length }}/5000</div>
           </div>
-          <div v-if="passwordMessage" :class="['password-feedback', passwordSuccess ? 'success' : 'error']">{{ passwordMessage }}</div>
-          <button type="submit" class="dashboard-primary" :disabled="passwordLoading">{{ passwordLoading ? '修改中...' : '确认修改密码' }}</button>
+          <div class="form-item">
+            <label>相关图片 <span class="optional-label">选填，最多5张</span></label>
+            <div class="complaint-images">
+              <div v-for="(image, index) in complaintImages" :key="image.url" class="complaint-image-item">
+                <img :src="image.url" :alt="image.name || `投诉图片${index + 1}`" />
+                <button type="button" aria-label="删除图片" @click="removeComplaintImage(index)">×</button>
+              </div>
+              <button v-if="complaintImages.length < 5" type="button" class="complaint-image-add" :disabled="complaintUploading" @click="complaintImageInput?.click()">
+                <span>+</span>
+                {{ complaintUploading ? '上传中' : '添加图片' }}
+              </button>
+            </div>
+            <input ref="complaintImageInput" class="hidden-file-input" type="file" accept="image/jpeg,image/png,image/gif,image/webp" multiple @change="uploadComplaintImages" />
+          </div>
+          <div class="form-item">
+            <label for="complaint-email-code">邮箱验证码</label>
+            <div class="email-code-row">
+              <input id="complaint-email-code" v-model.trim="complaintForm.emailCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="请输入6位验证码" />
+              <button type="button" :disabled="complaintEmailCodeLoading || complaintEmailCodeCountdown > 0" @click="sendComplaintEmailCode">
+                {{ complaintEmailCodeCountdown > 0 ? `${complaintEmailCodeCountdown}秒后重发` : (complaintEmailCodeLoading ? '发送中...' : '发送验证码') }}
+              </button>
+            </div>
+          </div>
+          <div v-if="complaintCaptcha.enabled && complaintCaptcha.provider === 'image'" class="form-item">
+            <label for="complaint-captcha">提交验证</label>
+            <div class="captcha-row">
+              <input id="complaint-captcha" v-model.trim="complaintCaptchaCode" autocomplete="off" maxlength="8" placeholder="请输入验证码" />
+              <button type="button" class="captcha-image-button" :disabled="complaintCaptchaLoading" @click="loadComplaintCaptcha">
+                <img v-if="complaintCaptcha.image" :src="complaintCaptcha.image" alt="图形验证码" />
+                <span v-else>{{ complaintCaptchaLoading ? '加载中...' : '点击刷新' }}</span>
+              </button>
+            </div>
+          </div>
+          <div v-else-if="complaintCaptcha.enabled && complaintCaptcha.provider === 'geetest'" class="captcha-tip">
+            {{ complaintGeetestReady ? '提交投诉时完成极验安全验证' : (complaintCaptchaLoading ? '正在加载安全验证...' : '安全验证加载失败，请重试') }}
+          </div>
+          <div v-if="complaintMessage" :class="['password-feedback', complaintSuccess ? 'success' : 'error']">{{ complaintMessage }}</div>
+          <div class="complaint-actions">
+            <button type="button" class="btn btn-ghost" @click="closeComplaint">取消</button>
+            <button type="submit" class="btn btn-primary" :disabled="complaintSubmitting || complaintUploading">
+              {{ complaintSubmitting ? '提交中...' : '提交投诉' }}
+            </button>
+          </div>
         </form>
       </section>
     </div>
@@ -293,6 +351,22 @@
       </div>
     </div>
 
+    <!-- 客户端下载引导 -->
+    <div v-if="showInstallGuide" class="modal-overlay install-guide-overlay" @click.self="dismissInstallGuide">
+      <div class="modal-content install-guide-modal" role="dialog" aria-modal="true" aria-labelledby="install-guide-title">
+        <div class="install-guide-icon">客</div>
+        <div id="install-guide-title" class="modal-title">{{ isIOS ? '添加客户后台到主屏幕' : '下载安卓客户端' }}</div>
+        <div v-if="isIOS" class="modal-desc">请点击浏览器底部的“分享”按钮，然后选择“添加到主屏幕”，即可快速进入客户后台。</div>
+        <div v-else class="modal-desc">安装安卓客户端后，可快速进入客户后台并查看历史客服渠道。</div>
+        <div v-if="appDownloadError" class="err">{{ appDownloadError }}</div>
+        <div class="modal-actions install-guide-actions">
+          <button type="button" class="btn btn-ghost" @click="dismissInstallGuide">{{ isIOS ? '我知道了' : '暂不下载' }}</button>
+          <button type="button" class="btn btn-ghost" @click="dismissInstallGuideToday">今天内不提醒</button>
+          <button v-if="!isIOS" type="button" class="btn btn-primary" :disabled="appDownloadLoading" @click="downloadAndroidApp">{{ appDownloadLoading ? '获取中...' : '下载客户端' }}</button>
+        </div>
+      </div>
+    </div>
+
     <!-- QQ 弹窗 -->
     <div v-if="showQQModal" class="modal-overlay">
       <div class="modal-content">
@@ -322,10 +396,15 @@ import { api, getSocket } from '../api'
 const route = useRoute()
 const router = useRouter()
 const token = computed(() => route.params.token)
+const currentWindowLink = computed(() => {
+  if (typeof window === 'undefined') return ''
+  return `${window.location.origin}/c/${token.value}`
+})
 
 const loading = ref(true)
 const channel = ref(null)
 const customer = ref(null)
+const conversation = ref(null)
 const conversationStatus = ref('waiting')
 const assignedAgentId = ref('')
 const agentOnline = ref(false)
@@ -348,6 +427,12 @@ const viewportHeight = ref('100dvh')
 const viewportTop = ref('0px')
 
 const showLogin = ref(false)
+const showInstallGuide = ref(false)
+const userAgent = navigator.userAgent || ''
+const isIOS = /iphone|ipad|ipod/i.test(userAgent) || (/macintosh/i.test(userAgent) && navigator.maxTouchPoints > 1)
+const isCustomerAndroidApp = /YiMengCustomerAndroid\/[\w.-]+/i.test(userAgent)
+const appDownloadLoading = ref(false)
+const appDownloadError = ref('')
 const authTab = ref('register')
 const loginForm = ref({ identifier: '', password: '' })
 const registerForm = ref({ phone: '', qq: '', email: '', emailCode: '', password: '', confirmPassword: '' })
@@ -366,15 +451,27 @@ const qqLoading = ref(false)
 const qqErr = ref('')
 
 const showDashboard = ref(false)
-const dashboardTab = ref('profile')
-const passwordForm = ref({ currentPassword: '', newPassword: '', confirmPassword: '' })
-const passwordLoading = ref(false)
-const passwordMessage = ref('')
-const passwordSuccess = ref(false)
+
+const showComplaint = ref(false)
+const complaintForm = ref({ category: 'agent', subject: '', content: '', emailCode: '' })
+const complaintImages = ref([])
+const complaintImageInput = ref(null)
+const complaintUploading = ref(false)
+const complaintCaptcha = ref({ enabled: false, provider: '', captchaId: '', image: '' })
+const complaintCaptchaCode = ref('')
+const complaintCaptchaLoading = ref(false)
+const complaintGeetestReady = ref(false)
+const complaintSubmitting = ref(false)
+const complaintEmailCodeLoading = ref(false)
+const complaintEmailCodeCountdown = ref(0)
+const complaintMessage = ref('')
+const complaintSuccess = ref(false)
 
 let socket = null
 let notificationAudioContext = null
 let messageSyncTimer = null
+let channelStatusTimer = null
+let presenceQueryVersion = 0
 let messageSyncInFlight = false
 let toastTimer = null
 let longPressTimer = null
@@ -384,8 +481,50 @@ let initialScrollTimers = []
 let scrollFrame = null
 let pendingScrollForce = false
 let codeCountdownTimer = null
+let complaintEmailCodeTimer = null
 let geetestInstance = null
+let complaintGeetestInstance = null
 let geetestScriptPromise = null
+let installGuideDismissed = false
+const installGuideDismissedDateKey = `client_install_guide_dismissed_${isIOS ? 'ios' : 'android'}_date`
+
+function localDateKey() {
+  const now = new Date()
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+}
+
+function requestInstallGuide() {
+  if (!installGuideDismissed && !isCustomerAndroidApp && localStorage.getItem(installGuideDismissedDateKey) !== localDateKey()) {
+    appDownloadError.value = ''
+    showInstallGuide.value = true
+  }
+}
+
+function dismissInstallGuide() {
+  installGuideDismissed = true
+  showInstallGuide.value = false
+}
+
+function dismissInstallGuideToday() {
+  localStorage.setItem(installGuideDismissedDateKey, localDateKey())
+  dismissInstallGuide()
+}
+
+async function downloadAndroidApp() {
+  appDownloadLoading.value = true
+  appDownloadError.value = ''
+  try {
+    const res = await api.get('/app/customer-center/android/version')
+    const downloadUrl = res.code === 0 ? res.data?.downloadUrl : ''
+    if (!downloadUrl) throw new Error('暂无可下载的安卓客户端')
+    window.location.assign(downloadUrl)
+    showInstallGuide.value = false
+  } catch (error) {
+    appDownloadError.value = error?.message || '安卓客户端下载配置获取失败，请稍后重试。'
+  } finally {
+    appDownloadLoading.value = false
+  }
+}
 
 function loadGeetestScript() {
   if (window.initGeetest) return Promise.resolve()
@@ -504,6 +643,24 @@ function playNotificationSound() {
   })
 }
 
+function applyAgentOnline(realOnline) {
+  agentOnline.value = channel.value?.status === 'online' && Boolean(realOnline)
+}
+
+async function refreshChannelStatus() {
+  try {
+    const res = await api.get(`/client/channels/${token.value}`)
+    if (res.code !== 0 || !res.data) return
+    const previousStatus = channel.value?.status
+    channel.value = { ...channel.value, ...res.data }
+    if (previousStatus !== res.data.status || !socket?.connected) {
+      applyAgentOnline(res.data.agentOnline)
+    } else {
+      queryAgentPresence()
+    }
+  } catch {}
+}
+
 async function loadChannel() {
   try {
     const saved = localStorage.getItem('client_token')
@@ -520,7 +677,7 @@ async function loadChannel() {
     channel.value = channelRes.data
     localStorage.setItem('client_channel_token', token.value)
     document.title = channelRes.data.brandName || '在线客服'
-    if (!assignedAgentId.value) agentOnline.value = Boolean(channelRes.data.agentOnline)
+    if (!assignedAgentId.value) applyAgentOnline(channelRes.data.agentOnline)
 
     let meRes = meResult.status === 'fulfilled' ? meResult.value : null
     if (meRes?.code === 0 && String(meRes.data.channelId) !== String(channelRes.data.id)) {
@@ -548,6 +705,7 @@ async function loadChannel() {
   } finally {
     loading.value = false
     await scrollInitialMessagesToBottom()
+    if (!showLogin.value) requestInstallGuide()
   }
 }
 
@@ -591,6 +749,7 @@ async function completeAuth(res) {
   await loadMessages()
   setupSocket()
   if (res.data.profileRequired) showQQModal.value = true
+  requestInstallGuide()
 }
 
 async function sendRegisterCode() {
@@ -648,6 +807,26 @@ async function doRegister() {
     loginErr.value = '请填写完整注册信息'
     return
   }
+  if (!/^[\d +\-]{6,20}$/.test(form.phone)) {
+    loginErr.value = '请输入正确的手机号'
+    return
+  }
+  if (!/^[1-9]\d{4,11}$/.test(form.qq)) {
+    loginErr.value = '请输入5-12位QQ号'
+    return
+  }
+  if (!/^\S+@\S+\.\S+$/.test(form.email)) {
+    loginErr.value = '请输入正确的邮箱地址'
+    return
+  }
+  if (!/^\d{6}$/.test(form.emailCode)) {
+    loginErr.value = '请输入6位邮箱验证码'
+    return
+  }
+  if (form.password.length < 6 || form.password.length > 72) {
+    loginErr.value = '密码须为6-72位'
+    return
+  }
   if (form.password !== form.confirmPassword) {
     loginErr.value = '两次输入的密码不一致'
     return
@@ -677,63 +856,208 @@ function openQQModal() {
 }
 
 function openDashboard() {
-  dashboardTab.value = 'profile'
-  passwordForm.value = { currentPassword: '', newPassword: '', confirmPassword: '' }
-  passwordMessage.value = ''
-  passwordSuccess.value = false
   showDashboard.value = true
+  loadConversation()
 }
 
 function closeDashboard() {
   showDashboard.value = false
-  passwordForm.value = { currentPassword: '', newPassword: '', confirmPassword: '' }
-  passwordMessage.value = ''
+}
+
+async function initializeComplaintGeetest(captchaConfig) {
+  complaintGeetestReady.value = false
+  complaintGeetestInstance?.destroy?.()
+  complaintGeetestInstance = null
+  await loadGeetestScript()
+  await new Promise((resolve, reject) => {
+    window.initGeetest({
+      gt: captchaConfig.gt,
+      challenge: captchaConfig.challenge,
+      offline: captchaConfig.success === false || captchaConfig.success === 0,
+      new_captcha: captchaConfig.new_captcha ?? captchaConfig.newCaptcha ?? true,
+      product: 'bind',
+      width: '100%',
+    }, instance => {
+      complaintGeetestInstance = instance
+      instance.onReady(() => {
+        complaintGeetestReady.value = true
+        resolve()
+      })
+      instance.onError(error => reject(new Error(error?.msg || '极验组件初始化失败')))
+    })
+  })
+}
+
+async function loadComplaintCaptcha() {
+  complaintCaptchaLoading.value = true
+  complaintCaptchaCode.value = ''
+  complaintGeetestReady.value = false
+  try {
+    const res = await api.get('/client/complaints/captcha')
+    if (res.code !== 0) throw new Error(res.message || '验证码加载失败')
+    complaintCaptcha.value = { enabled: false, provider: '', captchaId: '', image: '', ...res.data }
+    if (complaintCaptcha.value.enabled && complaintCaptcha.value.provider === 'geetest') {
+      await initializeComplaintGeetest(complaintCaptcha.value)
+    }
+  } catch (error) {
+    complaintCaptcha.value = { enabled: true, provider: '', captchaId: '', image: '' }
+    complaintMessage.value = error?.message || '安全验证加载失败'
+  } finally {
+    complaintCaptchaLoading.value = false
+  }
+}
+
+function openComplaint() {
+  complaintForm.value = {
+    category: assignedAgentId.value ? 'agent' : 'platform',
+    subject: '',
+    content: '',
+    emailCode: '',
+  }
+  complaintImages.value = []
+  complaintMessage.value = ''
+  complaintSuccess.value = false
+  showComplaint.value = true
+  loadComplaintCaptcha()
+}
+
+function closeComplaint() {
+  if (complaintSubmitting.value || complaintUploading.value) return
+  showComplaint.value = false
+  complaintMessage.value = ''
+  complaintGeetestInstance?.destroy?.()
+  complaintGeetestInstance = null
+}
+
+async function sendComplaintEmailCode() {
+  complaintMessage.value = ''
+  complaintSuccess.value = false
+  complaintEmailCodeLoading.value = true
+  try {
+    const res = await api.post('/client/complaints/email-code')
+    if (res.code !== 0) throw new Error(res.message || '验证码发送失败')
+    complaintEmailCodeCountdown.value = 60
+    clearInterval(complaintEmailCodeTimer)
+    complaintEmailCodeTimer = setInterval(() => {
+      complaintEmailCodeCountdown.value -= 1
+      if (complaintEmailCodeCountdown.value <= 0) clearInterval(complaintEmailCodeTimer)
+    }, 1000)
+    complaintSuccess.value = true
+    complaintMessage.value = res.message || '验证码已发送'
+  } catch (error) {
+    complaintMessage.value = error?.message || '验证码发送失败'
+  } finally {
+    complaintEmailCodeLoading.value = false
+  }
+}
+
+function getComplaintCaptchaPayload() {
+  if (!complaintCaptcha.value.enabled) return Promise.resolve({})
+  if (complaintCaptcha.value.provider === 'image') {
+    if (!complaintCaptchaCode.value) return Promise.reject(new Error('请输入图形验证码'))
+    return Promise.resolve({ captchaId: complaintCaptcha.value.captchaId, captchaCode: complaintCaptchaCode.value })
+  }
+  if (complaintCaptcha.value.provider !== 'geetest' || !complaintGeetestInstance || !complaintGeetestReady.value) {
+    return Promise.reject(new Error('安全验证尚未加载完成'))
+  }
+  return new Promise((resolve, reject) => {
+    complaintGeetestInstance.onSuccess(() => {
+      const result = complaintGeetestInstance.getValidate()
+      if (result) resolve(result)
+      else reject(new Error('请完成安全验证'))
+    })
+    complaintGeetestInstance.onError(error => reject(new Error(error?.msg || '安全验证失败')))
+    complaintGeetestInstance.onClose(() => reject(new Error('请完成安全验证')))
+    complaintGeetestInstance.verify()
+  })
+}
+
+async function uploadComplaintImages(event) {
+  const input = event.target
+  const files = Array.from(input.files || [])
+  input.value = ''
+  if (!files.length || complaintUploading.value) return
+  const available = 5 - complaintImages.value.length
+  if (files.length > available) {
+    complaintMessage.value = `最多还可添加${available}张图片`
+    return
+  }
+  if (files.some(file => !['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(file.type))) {
+    complaintMessage.value = '仅支持 JPG、PNG、GIF、WEBP 图片'
+    return
+  }
+  complaintUploading.value = true
+  complaintMessage.value = ''
+  try {
+    for (const file of files) {
+      const formData = new FormData()
+      formData.append('file', file)
+      const res = await api.post('/upload/complaint', formData)
+      if (res.code !== 0) throw new Error(res.message || '图片上传失败')
+      complaintImages.value.push({ url: res.data.url, signature: res.data.signature, name: res.data.name || file.name })
+    }
+  } catch (error) {
+    complaintMessage.value = error?.message || '图片上传失败'
+  } finally {
+    complaintUploading.value = false
+  }
+}
+
+function removeComplaintImage(index) {
+  complaintImages.value.splice(index, 1)
+}
+
+async function submitComplaint() {
+  complaintMessage.value = ''
+  complaintSuccess.value = false
+  const form = complaintForm.value
+  if (!form.subject) complaintMessage.value = '请填写投诉标题'
+  else if (!form.content) complaintMessage.value = '请填写投诉内容'
+  else if (!/^\d{6}$/.test(form.emailCode)) complaintMessage.value = '请输入6位邮箱验证码'
+  if (complaintMessage.value) return
+
+  complaintSubmitting.value = true
+  try {
+    const captchaPayload = await getComplaintCaptchaPayload()
+    const res = await api.post('/client/complaints', {
+      ...form,
+      images: complaintImages.value.map(image => image.url),
+      imageSignatures: complaintImages.value.map(image => image.signature),
+      ...captchaPayload,
+    })
+    if (res.code !== 0) throw new Error(res.message || '投诉提交失败')
+    complaintSuccess.value = true
+    complaintMessage.value = res.message || '投诉提交成功'
+    complaintForm.value = { ...form, subject: '', content: '', emailCode: '' }
+    complaintImages.value = []
+    setTimeout(() => {
+      showComplaint.value = false
+    }, 1200)
+  } catch (error) {
+    complaintMessage.value = error?.message || '投诉提交失败'
+    if (complaintCaptcha.value.enabled && complaintCaptcha.value.provider === 'image') await loadComplaintCaptcha()
+    complaintGeetestInstance?.reset?.()
+  } finally {
+    complaintSubmitting.value = false
+  }
+}
+
+async function copyCurrentWindowLink() {
+  const text = currentWindowLink.value
+  let copied = false
+  if (window.isSecureContext && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text)
+      copied = true
+    } catch {}
+  }
+  if (!copied) copied = fallbackCopyText(text)
+  showToast(copied ? '当前窗口链接已复制' : '复制失败，请长按链接复制')
 }
 
 function goToAccount() {
   showDashboard.value = false
-  router.push('/account')
-}
-
-function editQQFromDashboard() {
-  showDashboard.value = false
-  openQQModal()
-}
-
-async function submitPassword() {
-  passwordMessage.value = ''
-  passwordSuccess.value = false
-  const { currentPassword, newPassword, confirmPassword } = passwordForm.value
-  if (!currentPassword || !newPassword || !confirmPassword) {
-    passwordMessage.value = '请填写完整密码信息'
-    return
-  }
-  if (newPassword.length < 6 || newPassword.length > 72) {
-    passwordMessage.value = '新密码须为6-72位'
-    return
-  }
-  if (newPassword !== confirmPassword) {
-    passwordMessage.value = '两次输入的新密码不一致'
-    return
-  }
-
-  passwordLoading.value = true
-  try {
-    const res = await api.post('/client/profile/password', passwordForm.value)
-    if (res.code !== 0) throw new Error(res.message || '密码修改失败')
-    passwordSuccess.value = true
-    passwordMessage.value = res.message || '密码修改成功'
-    passwordForm.value = { currentPassword: '', newPassword: '', confirmPassword: '' }
-    localStorage.removeItem('client_token')
-    setTimeout(() => {
-      showDashboard.value = false
-      showLogin.value = true
-    }, 1200)
-  } catch (error) {
-    passwordMessage.value = error?.message || '密码修改失败'
-  } finally {
-    passwordLoading.value = false
-  }
+  router.push({ path: '/account', query: { channel: token.value } })
 }
 
 async function submitQQ() {
@@ -762,6 +1086,7 @@ async function loadConversation() {
   try {
     const res = await api.get('/client/conversation')
     if (res.code === 0 && res.data) {
+      conversation.value = res.data
       conversationStatus.value = res.data.status
       assignedAgentId.value = String(res.data.agent?.id || res.data.assignedAgentId || '')
       queryAgentPresence()
@@ -1176,21 +1501,27 @@ function handleNewMessage(msg) {
 }
 
 function queryAgentPresence() {
+  const queryVersion = ++presenceQueryVersion
+  if (channel.value?.status !== 'online') {
+    applyAgentOnline(false)
+    return
+  }
   if (!socket?.connected) return
   const agentIds = assignedAgentId.value
     ? [assignedAgentId.value]
     : (channel.value?.agentIds || []).map(String)
   if (!agentIds.length) {
-    agentOnline.value = false
+    applyAgentOnline(false)
     return
   }
   let pending = agentIds.length
   let anyOnline = false
   agentIds.forEach(userId => {
     socket.emit('presence:query', { type: 'tenant_user', userId }, ({ online } = {}) => {
+      if (queryVersion !== presenceQueryVersion) return
       anyOnline = anyOnline || Boolean(online)
       pending -= 1
-      if (!pending) agentOnline.value = anyOnline
+      if (!pending) applyAgentOnline(anyOnline)
     })
   })
 }
@@ -1214,7 +1545,13 @@ function handleConversationUpdated(data) {
 
 function handleConversationClosed(data) {
   conversationStatus.value = data.status || 'closed'
+  if (conversation.value) conversation.value = { ...conversation.value, ...data }
   scheduleScroll(false)
+}
+
+function handleSocketConnect() {
+  syncLatestMessages()
+  queryAgentPresence()
 }
 
 function setupSocket() {
@@ -1222,7 +1559,7 @@ function setupSocket() {
   if (!savedToken) return
 
   socket = getSocket(savedToken)
-  socket.off('connect', syncLatestMessages)
+  socket.off('connect', handleSocketConnect)
   socket.off('message.new', handleNewMessage)
   socket.off('message.recalled', applyRecall)
   socket.off('message.deleted', applyDelete)
@@ -1230,10 +1567,7 @@ function setupSocket() {
   socket.off('conversation.closed', handleConversationClosed)
   socket.off('presence:changed', handlePresenceChanged)
   socket.on('message.new', handleNewMessage)
-  socket.on('connect', () => {
-    syncLatestMessages()
-    queryAgentPresence()
-  })
+  socket.on('connect', handleSocketConnect)
   socket.on('message.recalled', applyRecall)
   socket.on('message.deleted', applyDelete)
   socket.on('conversation.updated', handleConversationUpdated)
@@ -1327,6 +1661,11 @@ function formatDate(iso) {
   }).format(new Date(iso))
 }
 
+function formatDateTime(iso) {
+  if (!iso) return '-'
+  return new Date(iso).toLocaleString('zh-CN', { hour12: false })
+}
+
 function generateFingerprint() {
   const raw = [
     navigator.userAgent,
@@ -1346,6 +1685,7 @@ onMounted(() => {
   window.addEventListener('resize', updateViewport)
   document.addEventListener('visibilitychange', handleVisibilityChange)
   messageSyncTimer = setInterval(syncLatestMessages, 30000)
+  channelStatusTimer = setInterval(refreshChannelStatus, 15000)
   loadChannel()
 })
 
@@ -1357,21 +1697,26 @@ onUnmounted(() => {
   window.removeEventListener('resize', updateViewport)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
   clearInterval(messageSyncTimer)
+  clearInterval(channelStatusTimer)
   clearInterval(codeCountdownTimer)
+  clearInterval(complaintEmailCodeTimer)
   clearTimeout(toastTimer)
   clearTimeout(longPressTimer)
   initialScrollTimers.forEach(clearTimeout)
   if (scrollFrame) cancelAnimationFrame(scrollFrame)
   geetestInstance?.destroy?.()
+  complaintGeetestInstance?.destroy?.()
   if (socket) {
     socket.off('message.new', handleNewMessage)
-    socket.off('connect', syncLatestMessages)
+    socket.off('connect', handleSocketConnect)
     socket.off('message.recalled', applyRecall)
     socket.off('message.deleted', applyDelete)
     socket.off('conversation.updated', handleConversationUpdated)
     socket.off('conversation.closed', handleConversationClosed)
+    socket.off('presence:changed', handlePresenceChanged)
     socket.disconnect()
   }
   notificationAudioContext?.close().catch(() => {})
+  notificationAudioContext = null
 })
 </script>

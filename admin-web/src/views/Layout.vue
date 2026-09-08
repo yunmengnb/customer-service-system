@@ -25,6 +25,7 @@ const navItems = computed(() => [
   { path: '/tenants', icon: '▣', label: '租户管理' },
   { path: '/customers', icon: '♙', label: '客户管理' },
   { path: '/conversations', icon: '▤', label: '系统会话' },
+  { path: '/complaints', icon: '◇', label: '投诉管理' },
   { path: '/announcements', icon: '◈', label: '公告管理' },
   { path: '/apps', icon: '▣', label: 'APP 管理' },
   { path: '/settings', icon: '⚙', label: '系统设置' },

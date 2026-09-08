@@ -1,9 +1,38 @@
 // 忆梦云团队开发 - 应用版本与更新日志配置
 module.exports = {
-  version: '1.1.0',
+  version: '1.1.3',
   edition: 'Node.js',
-  releasedAt: '2026-09-06',
+  releasedAt: '2026-09-07',
   changelog: [
+    {
+      version: '1.1.3',
+      releasedAt: '2026-09-07',
+      title: '投诉、通知与消息中心升级',
+      changes: [
+        '新增客户投诉提交和管理员投诉管理',
+        '新增客户 APP 后台消息通知、铃声和启动公告',
+        '重构消息中心渠道入口并完善多客服会话权限',
+        '优化客服链接控制面板、会话资料和客户中心实时消息',
+      ],
+    },
+    {
+      version: '1.1.2',
+      releasedAt: '2026-09-07',
+      title: '系统程序版本升级',
+      changes: [
+        '系统程序版本升级至 1.1.2',
+        '同步 Web 应用与 Docker Compose 版本配置',
+      ],
+    },
+    {
+      version: '1.1.1',
+      releasedAt: '2026-09-07',
+      title: '系统与 Android 客户端版本升级',
+      changes: [
+        '系统版本升级至 1.1.1',
+        'Android 客户端版本升级至 1.1.1 并递增内部版本号',
+      ],
+    },
     {
       version: '1.1.0',
       releasedAt: '2026-09-06',

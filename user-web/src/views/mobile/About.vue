@@ -1,11 +1,12 @@
 <!-- 忆梦云团队开发 - 移动端关于软件 -->
 <script setup>
 import { onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import api from '../../api'
 
-const router = useRouter()
 const versionName = ref('网页版')
 const isAndroidApp = ref(false)
+const downloading = ref(false)
+const downloadError = ref('')
 
 onMounted(() => {
   const bridge = window.YiMengAndroid
@@ -17,13 +18,23 @@ onMounted(() => {
   } catch (_) {}
 })
 
-function openCloudAnnouncements() {
-  if (window.YiMengAndroid?.openCloudAnnouncements) window.YiMengAndroid.openCloudAnnouncements()
-  else router.push('/m/announcements')
-}
-
 function checkForUpdate() {
   window.YiMengAndroid?.checkForUpdate?.()
+}
+
+async function downloadAndroidApp() {
+  downloading.value = true
+  downloadError.value = ''
+  try {
+    const res = await api.get('/app/android/check-update', { params: { versionCode: 1 } })
+    const downloadUrl = res.code === 0 ? res.data?.version?.downloadUrl : ''
+    if (!downloadUrl) throw new Error('暂无可下载的坐席客户端')
+    window.location.assign(downloadUrl)
+  } catch (error) {
+    downloadError.value = error?.message || '客户端下载配置获取失败，请稍后重试。'
+  } finally {
+    downloading.value = false
+  }
 }
 </script>
 
@@ -35,8 +46,9 @@ function checkForUpdate() {
       <p>多租户在线客服工作台</p>
       <span class="about-version">版本 {{ versionName }}</span>
       <div class="about-actions">
-        <button type="button" @click="openCloudAnnouncements">云公告</button>
         <button v-if="isAndroidApp" type="button" @click="checkForUpdate">检查更新</button>
+        <button v-else type="button" :disabled="downloading" @click="downloadAndroidApp">{{ downloading ? '获取中...' : '下载客服端APP' }}</button>
+        <span v-if="downloadError" class="about-error">{{ downloadError }}</span>
       </div>
     </div>
   </section>
@@ -63,5 +75,7 @@ p { margin: 0; color: #64748b; font-size: 14px; }
 .about-version { margin-top: 18px; color: #94a3b8; font-size: 12px; }
 .about-actions { display: grid; width: 100%; gap: 10px; margin-top: 28px; }
 .about-actions button { min-height: 44px; border: 1px solid #bfdbfe; border-radius: 10px; background: #eff6ff; color: #1d4ed8; font-size: 14px; font-weight: 600; }
+.about-actions button:disabled { cursor: wait; opacity: .65; }
 .about-actions button:active { background: #dbeafe; }
+.about-error { color: #dc2626; font-size: 12px; line-height: 1.5; }
 </style>

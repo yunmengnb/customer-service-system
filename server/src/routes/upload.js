@@ -128,30 +128,33 @@ async function handleApkUpload(req, res) {
   }
 }
 
-function apkUpload(req, res) {
-  const upload = multer({
-    storage: buildStorage('app'),
-    limits: { fileSize: 200 * 1024 * 1024 },
-    fileFilter: (uploadReq, file, cb) => {
-      const ext = path.extname(file.originalname).toLowerCase();
-      const mime = String(file.mimetype || '').toLowerCase();
-      if (ext === '.apk' && ['application/vnd.android.package-archive', 'application/octet-stream'].includes(mime)) {
-        return cb(null, true);
+function apkUpload(subDir) {
+  return (req, res) => {
+    const upload = multer({
+      storage: buildStorage(subDir),
+      limits: { fileSize: 200 * 1024 * 1024 },
+      fileFilter: (uploadReq, file, cb) => {
+        const ext = path.extname(file.originalname).toLowerCase();
+        const mime = String(file.mimetype || '').toLowerCase();
+        if (ext === '.apk' && ['application/vnd.android.package-archive', 'application/octet-stream'].includes(mime)) {
+          return cb(null, true);
+        }
+        cb(new Error('仅支持 APK 安装包'));
+      },
+    });
+    upload.single('file')(req, res, (err) => {
+      if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+        return error(res, 'APK 大小不能超过 200MB', 4001, 400);
       }
-      cb(new Error('仅支持 APK 安装包'));
-    },
-  });
-  upload.single('file')(req, res, (err) => {
-    if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
-      return error(res, 'APK 大小不能超过 200MB', 4001, 400);
-    }
-    if (err instanceof multer.MulterError) return error(res, '文件错误：' + err.message, 4001, 400);
-    if (err) return error(res, err.message, 4001, 400);
-    return handleApkUpload(req, res);
-  });
+      if (err instanceof multer.MulterError) return error(res, '文件错误：' + err.message, 4001, 400);
+      if (err) return error(res, err.message, 4001, 400);
+      return handleApkUpload(req, res);
+    });
+  };
 }
 
-router.post('/admin/app-apk', authAdmin, requireSuperAdmin, apkUpload);
+router.post('/admin/app-apk', authAdmin, requireSuperAdmin, apkUpload('app/staff'));
+router.post('/admin/customer-app-apk', authAdmin, requireSuperAdmin, apkUpload('app/customer'));
 router.post('/admin', authAdmin, configuredUpload('admin'));
 router.post('/tenant', authTenantUser, configuredUpload('tenant'));
 router.post('/client', authCustomer, configuredUpload('customer'));

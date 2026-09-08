@@ -18,6 +18,7 @@ const adminLogin = [
 const createAnnouncement = [
   body('title').trim().notEmpty().withMessage('公告标题不能为空').isLength({ max: 200 }).withMessage('公告标题不能超过200字'),
   body('content').trim().notEmpty().withMessage('公告内容不能为空'),
+  body('appType').optional().isIn(['staff', 'customer']).withMessage('APP 类型无效'),
   body('status').optional().isIn(['draft', 'published']).withMessage('公告状态无效'),
   validate,
 ];
@@ -25,6 +26,7 @@ const createAnnouncement = [
 const updateAnnouncement = [
   body('title').trim().notEmpty().withMessage('公告标题不能为空').isLength({ max: 200 }).withMessage('公告标题不能超过200字'),
   body('content').trim().notEmpty().withMessage('公告内容不能为空'),
+  body('appType').optional().isIn(['staff', 'customer']).withMessage('APP 类型无效'),
   body('status').optional().isIn(['draft', 'published']).withMessage('公告状态无效'),
   validate,
 ];
@@ -35,11 +37,14 @@ const updateAnnouncementStatus = [
 ];
 
 const appVersion = [
+  body('appType').optional().isIn(['staff', 'customer']).withMessage('APP 类型无效'),
   body('versionCode').isInt({ min: 1 }).withMessage('版本号必须为正整数').toInt(),
   body('versionName').trim().notEmpty().withMessage('版本名称不能为空').isLength({ max: 50 }).withMessage('版本名称不能超过50字'),
   body('downloadUrl').trim().notEmpty().withMessage('下载地址不能为空').isURL({ protocols: ['http', 'https'], require_protocol: true }).withMessage('下载地址格式无效'),
   body('releaseNotes').optional({ nullable: true }).isString().withMessage('更新说明格式无效'),
   body('forceUpdate').optional().isBoolean().withMessage('强制更新标记无效').toBoolean(),
+  body('downloadEnabled').optional().isBoolean().withMessage('下载开关无效').toBoolean(),
+  body('minSupportedVersionCode').optional().isInt({ min: 1 }).withMessage('最低支持版本号必须为正整数').toInt(),
   body('status').optional().isIn(['draft', 'published']).withMessage('版本状态无效'),
   validate,
 ];

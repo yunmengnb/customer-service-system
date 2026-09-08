@@ -12,6 +12,8 @@ const props = defineProps({
 const emit = defineEmits(['back', 'conversation-read', 'message-located'])
 
 const conversation = ref(null)
+const assignedAgentName = ref('')
+const assignedAgentUsername = ref('')
 const messages = ref([])
 const quickReplies = ref([])
 const input = ref('')
@@ -60,6 +62,13 @@ async function loadConversation() {
     if (res.code === 0) {
       conversation.value = res.data
       accepted.value = res.data.status !== 'waiting'
+      assignedAgentName.value = ''
+      const channelId = res.data.channelId || res.data.channel?.id || res.data.channel?._id
+      if (channelId) {
+        const channelRes = await api.get(`/tenant/channels/${channelId}`).catch(() => null)
+        const assignedId = String(res.data.assignedAgentId || '')
+        assignedAgentName.value = channelRes?.data?.employees?.find(employee => String(employee.id || employee._id) === assignedId)?.displayName || ''
+      }
     } else { conversation.value = null }
   } catch { conversation.value = null }
 }
@@ -136,6 +145,10 @@ async function accept() {
     if (res.code === 0) {
       accepted.value = true
       conversation.value.status = 'active'
+      conversation.value.assignedAgentId = res.data.assignedAgentId || currentUserId
+      const currentUser = JSON.parse(sessionStorage.getItem('tenant_user') || localStorage.getItem('tenant_user') || 'null')
+      assignedAgentName.value = currentUser?.displayName || ''
+      assignedAgentUsername.value = currentUser?.username || ''
     } else alert(res.message)
   } catch (e) { alert(e?.message || '接入失败') }
 }
@@ -721,8 +734,11 @@ defineExpose({ reload: init })
     <!-- 客户资料侧栏 -->
     <div v-if="showInfo && conversation" class="cp-info-drawer" @click.self="showInfo = false">
       <div class="cp-info-content">
-        <div class="cp-info-title">客户资料<button class="cp-info-close" @click="showInfo = false">×</button></div>
+        <div class="cp-info-title">会话资料<button class="cp-info-close" @click="showInfo = false">×</button></div>
         <div class="cp-info-body">
+          <div class="cp-info-row"><span>所属渠道</span><span>{{ conversation.channel?.name || '-' }}</span></div>
+          <div class="cp-info-row"><span>接待客服</span><span>{{ assignedAgentName || (conversation.status === 'waiting' ? '暂未接待' : '-') }}</span></div>
+          <div class="cp-info-row"><span>客服账号</span><span>{{ assignedAgentUsername || (conversation.status === 'waiting' ? '暂未接待' : '-') }}</span></div>
           <div class="cp-info-row"><span>会话 ID</span><span class="cp-info-id">{{ conversation._id }}</span></div>
           <div class="cp-info-row"><span>接入时间</span><span>{{ formatDateTime(conversation.acceptedAt) }}</span></div>
           <div class="cp-info-row"><span>结束时间</span><span>{{ formatDateTime(conversation.closedAt) }}</span></div>

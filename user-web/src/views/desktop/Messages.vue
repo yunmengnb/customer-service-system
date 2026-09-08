@@ -1,17 +1,21 @@
 <!-- 忆梦云团队开发 - 桌面端消息中心独立视图 -->
 <script setup>
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { io } from 'socket.io-client'
 import ChatPanel from './ChatPanel.vue'
 import api from '../../api'
 
 const route = useRoute()
+const router = useRouter()
 
 const conversations = ref([])
+const channels = ref([])
 const loading = ref(true)
-const filter = ref('all') // all / waiting / active / closed
-const search = ref('')
+const validFilters = new Set(['all', 'waiting', 'active', 'closed'])
+const filter = ref(validFilters.has(String(route.query.status)) ? String(route.query.status) : 'all')
+const selectedChannelId = ref(typeof route.query.channelId === 'string' ? route.query.channelId : '')
+const search = ref(typeof route.query.keyword === 'string' ? route.query.keyword : '')
 const searching = ref(false)
 const searchDialog = ref(null)
 const searchResults = ref([])
@@ -21,30 +25,54 @@ let searchTimer = null
 let requestSequence = 0
 let socket = null
 
-// 选中会话：优先从路由取（桌面端直接打开聊天链接），否则 null
+// 选中会话：优先从路由取（桌面端直接打开聊天链接），否则停留在会话列表
 const selectedId = ref(route.params.id || null)
-// 加载完列表后自动选中第一个
-watch([loading, conversations], () => {
-  if (!loading.value && conversations.value.length && !selectedId.value) {
-    selectedId.value = conversations.value[0]._id
-  }
-})
 
 const filteredConversations = computed(() => {
   let list = conversations.value
   if (filter.value !== 'all') list = list.filter(c => c.status === filter.value)
   return list
 })
+const groupedConversations = computed(() => {
+  const groups = new Map()
+  const channelNames = new Map(channels.value.map(channel => [String(channel._id), channel.name]))
+  filteredConversations.value.forEach((conversation) => {
+    const key = String(conversation.channelId || conversation.channel?._id || conversation.channel?.id || 'unknown')
+    if (!groups.has(key)) groups.set(key, { key, name: conversation.channel?.name || channelNames.get(key) || '未知渠道', items: [], unread: 0 })
+    const group = groups.get(key)
+    group.items.push(conversation)
+    group.unread += conversation.agentUnreadCount || 0
+  })
+  return [...groups.values()]
+})
 
 const unreadCount = computed(() => conversations.value.reduce((a, c) => a + (c.agentUnreadCount || 0), 0))
+const selectedChannel = computed(() => channels.value.find(channel => String(channel._id) === selectedChannelId.value) || null)
+const channelSearch = ref('')
+const filteredChannels = computed(() => {
+  const keyword = channelSearch.value.trim().toLowerCase()
+  if (!keyword) return channels.value
+  return channels.value.filter(channel => [channel.name, channel.brandName]
+    .some(value => String(value || '').toLowerCase().includes(keyword)))
+})
 
 async function loadConversations() {
+  if (!selectedChannelId.value) {
+    conversations.value = []
+    loading.value = false
+    return
+  }
   const sequence = ++requestSequence
   const keyword = search.value.trim()
   if (keyword) searching.value = true
   try {
     const res = await api.get('/tenant/conversations', {
-      params: { limit: 100, keyword: keyword || undefined },
+      params: {
+        limit: 100,
+        status: filter.value === 'all' ? undefined : filter.value,
+        channelId: selectedChannelId.value || undefined,
+        keyword: keyword || undefined,
+      },
     })
     if (sequence === requestSequence && res.code === 0) conversations.value = res.data.items
   } catch (e) {
@@ -57,9 +85,29 @@ async function loadConversations() {
   }
 }
 
+function syncQuery() {
+  const query = { ...route.query }
+  if (filter.value === 'all') delete query.status
+  else query.status = filter.value
+  if (selectedChannelId.value) query.channelId = selectedChannelId.value
+  else delete query.channelId
+  if (search.value.trim()) query.keyword = search.value.trim()
+  else delete query.keyword
+  router.replace({ path: route.path, query })
+}
+
 watch(search, () => {
+  syncQuery()
   clearTimeout(searchTimer)
   searchTimer = setTimeout(loadConversations, 300)
+})
+watch(filter, () => {
+  syncQuery()
+  loadConversations()
+})
+watch(selectedChannelId, () => {
+  syncQuery()
+  loadConversations()
 })
 
 function setupSocket() {
@@ -89,6 +137,15 @@ function handleNewMessage(message) {
 function clearConversationUnread(id) {
   const conversation = conversations.value.find(item => String(item._id) === String(id))
   if (conversation) conversation.agentUnreadCount = 0
+}
+
+function openChannel(channel) {
+  selectedChannelId.value = String(channel._id)
+}
+
+function returnToChannels() {
+  selectedId.value = null
+  selectedChannelId.value = ''
 }
 
 function selectConv(id) {
@@ -156,8 +213,11 @@ function getAvatarColor(id) {
   return `linear-gradient(135deg, hsl(${h},65%,58%), hsl(${(h+30)%360},60%,42%))`
 }
 
-onMounted(() => {
-  loadConversations()
+onMounted(async () => {
+  const channelRes = await api.get('/tenant/channels').catch(() => null)
+  if (channelRes?.code === 0) channels.value = channelRes.data || []
+  if (selectedChannelId.value && !selectedChannel.value) selectedChannelId.value = ''
+  await loadConversations()
   setupSocket()
 })
 onUnmounted(() => {
@@ -170,16 +230,47 @@ onUnmounted(() => {
   <div class="msg-page">
     <!-- ============ 桌面端三栏布局（>= 769px） ============ -->
     <template v-if="!loading">
-      <div class="msg-desktop">
+      <div v-if="!selectedChannelId" class="msg-desktop channel-select-view">
+        <aside class="msg-sider">
+          <div class="msg-sider-head">
+            <div class="msg-sider-title">授权渠道</div>
+            <div class="msg-sider-search">
+              <input v-model="channelSearch" type="search" placeholder="搜索渠道名称或品牌名..." />
+            </div>
+          </div>
+          <div v-if="filteredChannels.length" class="msg-sider-list channel-list">
+            <button v-for="channel in filteredChannels" :key="channel._id" class="channel-item" @click="openChannel(channel)">
+              <img v-if="channel.avatarUrl" class="mi-avatar channel-avatar-image" :src="channel.avatarUrl" alt="" />
+              <span v-else class="mi-avatar channel-avatar">{{ channel.name?.slice(0, 1) || '渠' }}</span>
+              <span class="mi-body">
+                <span class="mi-row"><strong class="mi-name">{{ channel.name }}</strong><i>›</i></span>
+                <span class="mi-last">{{ channel.brandName || '客服渠道' }}</span>
+              </span>
+            </button>
+          </div>
+          <div v-else class="msg-sider-empty">
+            <div class="mse-title">{{ channelSearch.trim() ? '没有找到匹配渠道' : '暂无授权渠道' }}</div>
+          </div>
+        </aside>
+        <main class="msg-main">
+          <div class="msg-welcome">
+            <div class="mw-title">选择授权渠道</div>
+            <div class="mw-desc">从左侧选择渠道查看对应会话</div>
+          </div>
+        </main>
+      </div>
+
+      <div v-else class="msg-desktop">
         <!-- 左栏：会话列表 -->
         <aside class="msg-sider">
           <div class="msg-sider-head">
-            <div class="msg-sider-title">
-              消息中心
+            <div class="channel-context-head">
+              <button class="channel-back" type="button" @click="returnToChannels">‹ 返回渠道</button>
               <span v-if="unreadCount > 0" class="msg-sider-badge">{{ unreadCount }}</span>
             </div>
+            <div class="msg-sider-title channel-current-title">{{ selectedChannel?.name || '渠道会话' }}</div>
             <div class="msg-sider-search">
-              <input v-model="search" type="search" placeholder="搜索客户、渠道或聊天内容..." />
+              <input v-model="search" type="search" :placeholder="selectedChannelId ? '搜索当前渠道的客户或聊天内容...' : '搜索全部渠道的客户或聊天内容...'" />
             </div>
             <div class="msg-sider-tabs">
               <button
@@ -192,33 +283,38 @@ onUnmounted(() => {
           </div>
 
           <div class="msg-sider-list" v-if="filteredConversations.length > 0">
-            <div
-              v-for="conv in filteredConversations"
-              :key="conv._id"
-              class="msg-item"
-              :class="{ active: selectedId === conv._id }"
-              @click="openSearchMatches(conv)"
-            >
-              <img v-if="conv.customer?.avatarUrl" class="mi-avatar" :src="conv.customer.avatarUrl" alt="客户QQ头像" />
-              <div v-else class="mi-avatar" :style="{ background: getAvatarColor(conv._id) }">
-                {{ conv.customer?.phone?.slice(-1) || '客' }}
-              </div>
-              <div class="mi-body">
-                <div class="mi-row">
-                  <span class="mi-name">
-                    {{ conv.customer?.qq ? `QQ ${conv.customer.qq}` : (conv.customer?.phone ? '*' + conv.customer.phone.slice(-4) : '访客') }}
-                    <span class="mi-status" :class="convStatusTag(conv.status).cls">{{ convStatusTag(conv.status).text }}</span>
-                  </span>
-                  <span class="mi-time">{{ formatTime(conv.lastMessageAt) }}</span>
+            <section v-for="group in groupedConversations" :key="group.key" class="msg-channel-group">
+              <header class="msg-channel-head">
+                <strong>{{ group.name }}</strong>
+                <span>{{ group.items.length }}<i v-if="group.unread">{{ group.unread }} 未读</i></span>
+              </header>
+              <div
+                v-for="conv in group.items"
+                :key="conv._id"
+                class="msg-item"
+                :class="{ active: selectedId === conv._id }"
+                @click="openSearchMatches(conv)"
+              >
+                <img v-if="conv.customer?.avatarUrl" class="mi-avatar" :src="conv.customer.avatarUrl" alt="客户QQ头像" />
+                <div v-else class="mi-avatar" :style="{ background: getAvatarColor(conv._id) }">
+                  {{ conv.customer?.phone?.slice(-1) || '客' }}
                 </div>
-                <div class="mi-row mi-row-2">
-                  <span class="mi-last">{{ conv.searchMatch ? latestMessageText(conv.searchMatch.message) : latestMessageText(conv.lastMessage) }}</span>
-                  <span v-if="conv.searchMatch" class="mi-match-count">{{ conv.searchMatch.count }}条相关</span>
-                  <span v-else-if="conv.agentUnreadCount > 0" class="mi-unread">{{ conv.agentUnreadCount }}</span>
+                <div class="mi-body">
+                  <div class="mi-row">
+                    <span class="mi-name">
+                      {{ conv.customer?.qq ? `QQ ${conv.customer.qq}` : (conv.customer?.phone ? '*' + conv.customer.phone.slice(-4) : '访客') }}
+                      <span class="mi-status" :class="convStatusTag(conv.status).cls">{{ convStatusTag(conv.status).text }}</span>
+                    </span>
+                    <span class="mi-time">{{ formatTime(conv.lastMessageAt) }}</span>
+                  </div>
+                  <div class="mi-row mi-row-2">
+                    <span class="mi-last">{{ conv.searchMatch ? latestMessageText(conv.searchMatch.message) : latestMessageText(conv.lastMessage) }}</span>
+                    <span v-if="conv.searchMatch" class="mi-match-count">{{ conv.searchMatch.count }}条相关</span>
+                    <span v-else-if="conv.agentUnreadCount > 0" class="mi-unread">{{ conv.agentUnreadCount }}</span>
+                  </div>
                 </div>
-                <div v-if="conv.channel?.name" class="mi-channel">📡 {{ conv.channel.name }}</div>
               </div>
-            </div>
+            </section>
           </div>
 
           <div v-else class="msg-sider-empty">
@@ -301,6 +397,18 @@ onUnmounted(() => {
 
 <style scoped>
 .msg-page { width: 100%; height: 100%; min-height: 0; overflow: hidden; background: #f1f5f9; }
+.channel-select-view .msg-sider-head { padding-bottom: 14px; }
+.channel-list { padding: 4px; }
+.channel-item { display: flex; width: 100%; align-items: center; gap: 10px; margin-bottom: 2px; padding: 10px; border: 0; border-radius: 10px; background: #fff; color: inherit; text-align: left; cursor: pointer; transition: background .12s; }
+.channel-item:hover { background: #f8fafc; }
+.channel-item .mi-row { margin-bottom: 4px; }
+.channel-item .mi-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.channel-item .mi-row i { color: #94a3b8; font-size: 20px; font-style: normal; }
+.channel-avatar { display: grid; place-items: center; border-radius: 12px; background: #dbeafe; color: #2563eb; }
+.channel-avatar-image { border-radius: 12px; }
+.channel-context-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px; }
+.channel-back { padding: 0; border: 0; background: transparent; color: #2563eb; font-size: 12px; cursor: pointer; }
+.channel-current-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ===== 桌面三栏 ===== */
 .msg-desktop {
@@ -323,11 +431,12 @@ onUnmounted(() => {
   background: #ef4444; color: #fff; font-size: 11px; font-weight: 600;
   padding: 1px 7px; border-radius: 10px;
 }
-.msg-sider-search input {
+.msg-sider-scope { margin-bottom: 8px; }
+.msg-sider-scope select, .msg-sider-search input {
   width: 100%; padding: 8px 12px; border: 1px solid #e2e8f0; border-radius: 8px;
   font-size: 13px; outline: none; box-sizing: border-box; background: #f8fafc;
 }
-.msg-sider-search input:focus { border-color: #2563eb; background: #fff; }
+.msg-sider-scope select:focus, .msg-sider-search input:focus { border-color: #2563eb; background: #fff; }
 .msg-sider-tabs { display: flex; gap: 4px; margin-top: 10px; }
 .msg-sider-tabs button {
   flex: 1; padding: 5px 0; border: none; background: #f1f5f9; color: #64748b;
@@ -336,6 +445,11 @@ onUnmounted(() => {
 .msg-sider-tabs button.active { background: #eff6ff; color: #2563eb; font-weight: 600; }
 
 .msg-sider-list { flex: 1; overflow-y: auto; padding: 4px; }
+.msg-channel-group + .msg-channel-group { margin-top: 6px; padding-top: 4px; border-top: 1px solid #e2e8f0; }
+.msg-channel-head { position: sticky; top: -4px; z-index: 2; display: flex; align-items: center; justify-content: space-between; padding: 7px 8px; background: rgba(248,250,252,.96); color: #334155; }
+.msg-channel-head strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.msg-channel-head span { display: flex; align-items: center; gap: 6px; color: #94a3b8; font-size: 10px; }
+.msg-channel-head i { padding: 1px 5px; border-radius: 999px; background: #fee2e2; color: #dc2626; font-style: normal; }
 .msg-item {
   display: flex; gap: 10px; padding: 10px; border-radius: 10px;
   cursor: pointer; transition: background .12s; margin-bottom: 2px;

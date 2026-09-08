@@ -48,29 +48,87 @@ async function refreshConversationSummary(conv) {
   };
 }
 
-function tenantChannelRoom(conv) {
-  return io.to(`tenant-${conv.tenantId}`).to(`channel-staff-${conv.channelId}`);
+function tenantConversationRoom(conv) {
+  let room = io.to(`tenant-${conv.tenantId}`);
+  if (conv.status === 'waiting') {
+    room = room.to(`channel-staff-${conv.channelId}`);
+  } else if (conv.assignedAgentId) {
+    room = room.to(`agent-${conv.assignedAgentId}`);
+  }
+  return room;
+}
+
+async function broadcastCustomerChannelSummary(conv, summary) {
+  if (!io) return;
+  const [customer, channel] = await Promise.all([
+    Customer.findOne({ _id: conv.customerId, tenantId: conv.tenantId, channelId: conv.channelId })
+      .select('accountId')
+      .lean(),
+    Channel.findOne({ _id: conv.channelId, tenantId: conv.tenantId })
+      .select('publicToken name brandName brandColor avatarUrl status')
+      .lean(),
+  ]);
+  if (!customer?.accountId || !channel) return;
+  const update = {
+    _id: channel._id,
+    bindingId: conv.customerId,
+    publicToken: channel.publicToken,
+    name: channel.name,
+    brandName: channel.brandName,
+    brandColor: channel.brandColor,
+    avatarUrl: channel.avatarUrl,
+    status: channel.status,
+    conversationId: conv._id,
+    lastMessage: summary.lastMessage || null,
+    lastMessageAt: summary.lastMessageAt || conv.createdAt,
+    unreadCount: summary.customerUnreadCount || 0,
+  };
+  const accountRoom = io.to(`customer-account-${customer.accountId}`);
+  accountRoom.emit('channel-history.updated', update);
+  if (update.lastMessage && ['agent', 'bot'].includes(update.lastMessage.senderType)) {
+    accountRoom.emit('message.new', {
+      ...update.lastMessage,
+      publicToken: channel.publicToken,
+      channelToken: channel.publicToken,
+    });
+  }
 }
 
 function broadcastMessageChange(conv, event, data, summaries) {
   if (!io) return;
-  tenantChannelRoom(conv).emit(event, data);
+  tenantConversationRoom(conv).emit(event, data);
   io.to(`customer-${conv.customerId}`).emit(event, data);
-  tenantChannelRoom(conv).emit('conversation.updated', summaries.agent);
+  tenantConversationRoom(conv).emit('conversation.updated', summaries.agent);
   io.to(`customer-${conv.customerId}`).emit('conversation.updated', summaries.customer);
+  broadcastCustomerChannelSummary(conv, summaries.customer).catch(() => {});
 }
 
 function broadcastSideDelete(conv, side, data, summaries) {
   if (!io) return;
   const room = side === 'agent'
-    ? tenantChannelRoom(conv)
+    ? tenantConversationRoom(conv)
     : io.to(`customer-${conv.customerId}`);
   room.emit('message.deleted', data);
   room.emit('conversation.updated', summaries[side]);
+  if (side === 'customer') {
+    broadcastCustomerChannelSummary(conv, summaries.customer).catch(() => {});
+  }
 }
 
 async function canAccessConversation(req, conv) {
   if (req.user.role !== 'agent') return true;
+  const channelAuthorized = await Channel.exists({
+    _id: conv.channelId,
+    tenantId: req.tenantId,
+    agentIds: req.user.id,
+  });
+  if (!channelAuthorized) return false;
+  return conv.status === 'waiting' || String(conv.assignedAgentId) === String(req.user.id);
+}
+
+async function canModifyConversation(req, conv) {
+  if (req.user.role !== 'agent') return true;
+  if (String(conv.assignedAgentId) !== String(req.user.id)) return false;
   return Boolean(await Channel.exists({
     _id: conv.channelId,
     tenantId: req.tenantId,
@@ -98,6 +156,12 @@ class ChatController {
         return ok(res, { items: [], total: 0, page, limit });
       }
       where.channelId = { $in: channelIds };
+      where.$and = [{
+        $or: [
+          { status: 'waiting' },
+          { status: { $in: ['active', 'closed'] }, assignedAgentId: user.id },
+        ],
+      }];
     }
     
     if (req.query.status) where.status = req.query.status;
@@ -176,7 +240,7 @@ class ChatController {
     // 附带客户简要信息和最后一条消息
     const customerIds = [...new Set(items.map(c => c.customerId))];
     const customers = customerIds.length
-      ? await Customer.find({ _id: { $in: customerIds } }).select('_id phone qq email nickname avatarUrl')
+      ? await Customer.find({ _id: { $in: customerIds }, tenantId }).select('_id phone qq email nickname avatarUrl')
       : [];
     const customerMap = Object.fromEntries(customers.map(c => [c._id.toString(), c]));
     
@@ -210,8 +274,12 @@ class ChatController {
     
     if (!await canAccessConversation(req, conv)) return error(res, '无权访问', 403);
     
-    const customer = await Customer.findById(conv.customerId);
-    const channel = await Channel.findById(conv.channelId);
+    const customer = await Customer.findOne({
+      _id: conv.customerId,
+      tenantId: req.tenantId,
+      channelId: conv.channelId,
+    });
+    const channel = await Channel.findOne({ _id: conv.channelId, tenantId: req.tenantId });
     
     return ok(res, {
       ...conv.toJSON(),
@@ -234,6 +302,8 @@ class ChatController {
       return error(res, '会话已结束');
     }
     
+    const waitingAudience = io ? tenantConversationRoom(conv) : null;
+
     // 原子更新：只有 waiting 才能被接
     const updated = await Conversation.findOneAndUpdate(
       { _id: conv._id, tenantId: req.tenantId, status: 'waiting' },
@@ -243,16 +313,16 @@ class ChatController {
     
     if (!updated) {
       // 可能被别人先接了
-      const current = await Conversation.findById(conv._id);
+      const current = await Conversation.findOne({ _id: conv._id, tenantId: req.tenantId });
       if (current && current.status === 'active') {
-        const agent = await TenantUser.findById(current.assignedAgentId);
+        const agent = await TenantUser.findOne({ _id: current.assignedAgentId, tenantId: req.tenantId });
         return error(res, `会话已被 ${agent?.displayName || '其他员工'} 接入`);
       }
       return error(res, '会话状态已变化，请刷新');
     }
     
     // 发送系统消息
-    const agent = await TenantUser.findById(req.user.id);
+    const agent = await TenantUser.findOne({ _id: req.user.id, tenantId: req.tenantId });
     const systemMsg = await Message.create({
       tenantId: req.tenantId,
       conversationId: conv._id,
@@ -260,19 +330,31 @@ class ChatController {
       messageType: 'system',
       content: `${agent?.displayName || '客服'} 已接入`,
     });
+    updated.lastMessageAt = systemMsg.createdAt;
+    await updated.save();
+    await broadcastCustomerChannelSummary(updated, {
+      lastMessage: systemMsg.toJSON(),
+      lastMessageAt: updated.lastMessageAt,
+      customerUnreadCount: updated.customerUnreadCount,
+    });
     
     // Socket 推送
     if (io) {
-      tenantChannelRoom(conv).emit('conversation.accepted', {
-        conversationId: conv._id,
+      const acceptedData = {
+        conversationId: updated._id,
+        status: 'active',
         agentId: req.user.id,
         agentName: agent?.displayName,
-      });
-      io.to(`customer-${conv.customerId}`).emit('message.new', {
-        ...systemMsg.toJSON(),
-      });
-      io.to(`customer-${conv.customerId}`).emit('conversation.updated', {
-        conversationId: conv._id,
+        assignedAgentId: req.user.id,
+        lastMessage: systemMsg.toJSON(),
+        lastMessageAt: updated.lastMessageAt,
+      };
+      waitingAudience.emit('conversation.accepted', acceptedData);
+      waitingAudience.emit('conversation.updated', acceptedData);
+      tenantConversationRoom(updated).emit('message.new', systemMsg.toJSON());
+      io.to(`customer-${updated.customerId}`).emit('message.new', systemMsg.toJSON());
+      io.to(`customer-${updated.customerId}`).emit('conversation.updated', {
+        conversationId: updated._id,
         status: 'active',
         agent: { id: req.user.id, name: agent?.displayName },
       });
@@ -371,13 +453,17 @@ class ChatController {
       .sort({ createdAt: -1 })
       .limit(limit);
     
-    // 标记已读
-    await Message.updateMany(
-      { conversationId: conv._id, tenantId: req.tenantId, readByAgent: false },
-      { $set: { readByAgent: true } }
-    );
-    conv.agentUnreadCount = 0;
-    await conv.save();
+    // waiting 会话可供授权坐席预览，但仅管理员或实际接待坐席可改变已读状态。
+    if (req.user.role !== 'agent' || String(conv.assignedAgentId) === String(req.user.id)) {
+      await Message.updateMany(
+        { conversationId: conv._id, tenantId: req.tenantId, readByAgent: false },
+        { $set: { readByAgent: true } }
+      );
+      await Conversation.updateOne(
+        { _id: conv._id, tenantId: req.tenantId },
+        { $set: { agentUnreadCount: 0 } }
+      );
+    }
     
     return ok(res, messages.reverse().map(message => {
       const obj = message.toJSON();
@@ -395,7 +481,7 @@ class ChatController {
   
   // POST /api/tenant/conversations/:id/messages
   async agentSendMessage(req, res) {
-    const conv = await Conversation.findOne({ _id: req.params.id, tenantId: req.tenantId });
+    let conv = await Conversation.findOne({ _id: req.params.id, tenantId: req.tenantId });
     if (!conv) return error(res, '会话不存在', 404);
     if (!await canAccessConversation(req, conv)) return error(res, '无权访问', 403);
     
@@ -425,6 +511,21 @@ class ChatController {
       }
     }
     
+    const messageAt = new Date();
+    // 先原子确认接待状态并推进摘要，关闭操作会以 lastMessageAt 拦截旧快照。
+    const currentConv = await Conversation.findOneAndUpdate(
+      {
+        _id: conv._id,
+        tenantId: req.tenantId,
+        status: 'active',
+        assignedAgentId: conv.assignedAgentId,
+      },
+      { $set: { lastMessageAt: messageAt }, $inc: { customerUnreadCount: 1 } },
+      { new: true }
+    );
+    if (!currentConv) return error(res, '会话状态已变化，请刷新');
+    conv = currentConv;
+
     const msg = await Message.create({
       tenantId: req.tenantId,
       conversationId: conv._id,
@@ -437,12 +538,8 @@ class ChatController {
       attachmentName: attachmentName || '',
       thumbnailUrl: effectiveType === 'video' ? (thumbnailUrl || '') : '',
       clientMessageId: clientMessageId || undefined,
+      createdAt: messageAt,
     });
-    
-    // 更新会话
-    conv.lastMessageAt = new Date();
-    conv.customerUnreadCount += 1;
-    await conv.save();
 
     const messageData = {
       ...msg.toJSON(),
@@ -452,6 +549,11 @@ class ChatController {
         avatarUrl: agent.avatarUrl || '',
       },
     };
+    await broadcastCustomerChannelSummary(conv, {
+      lastMessage: messageData,
+      lastMessageAt: conv.lastMessageAt,
+      customerUnreadCount: conv.customerUnreadCount,
+    });
     
     // Socket 推送
     if (io) {
@@ -461,8 +563,8 @@ class ChatController {
         lastMessage: messageData,
         lastMessageAt: conv.lastMessageAt,
       });
-      // 也推给租户管理员和渠道授权员工
-      tenantChannelRoom(conv).emit('conversation.updated', {
+      // active 会话只推给租户管理员和接待坐席
+      tenantConversationRoom(conv).emit('conversation.updated', {
         conversationId: conv._id,
         lastMessage: messageData,
         lastMessageAt: conv.lastMessageAt,
@@ -478,9 +580,13 @@ class ChatController {
   async updateCustomerSettings(req, res) {
     const conv = await Conversation.findOne({ _id: req.params.id, tenantId: req.tenantId });
     if (!conv) return error(res, '会话不存在', 4041, 404);
-    if (!await canAccessConversation(req, conv)) return error(res, '无权访问', 4031, 403);
+    if (!await canModifyConversation(req, conv)) return error(res, '无权操作', 4031, 403);
 
-    const customer = await Customer.findOne({ _id: conv.customerId, tenantId: req.tenantId });
+    const customer = await Customer.findOne({
+      _id: conv.customerId,
+      tenantId: req.tenantId,
+      channelId: conv.channelId,
+    });
     if (!customer) return error(res, '客户不存在', 4042, 404);
 
     if (typeof req.body.messageReceivingDisabled === 'boolean') {
@@ -499,7 +605,7 @@ class ChatController {
   async clearAgentMessages(req, res) {
     const conv = await Conversation.findOne({ _id: req.params.id, tenantId: req.tenantId });
     if (!conv) return error(res, '会话不存在', 4041, 404);
-    if (!await canAccessConversation(req, conv)) return error(res, '无权访问', 4031, 403);
+    if (!await canModifyConversation(req, conv)) return error(res, '无权操作', 4031, 403);
 
     await Message.updateMany(
       { conversationId: conv._id, tenantId: req.tenantId, deletedForAgentAt: null },
@@ -514,7 +620,7 @@ class ChatController {
   async recallMessage(req, res) {
     const conv = await Conversation.findOne({ _id: req.params.id, tenantId: req.tenantId });
     if (!conv) return error(res, '会话不存在', 4041, 404);
-    if (!await canAccessConversation(req, conv)) return error(res, '无权访问', 4031, 403);
+    if (!await canModifyConversation(req, conv)) return error(res, '无权操作', 4031, 403);
 
     const message = await Message.findOne({
       _id: req.params.messageId,
@@ -550,7 +656,7 @@ class ChatController {
   async deleteMessage(req, res) {
     const conv = await Conversation.findOne({ _id: req.params.id, tenantId: req.tenantId });
     if (!conv) return error(res, '会话不存在', 4041, 404);
-    if (!await canAccessConversation(req, conv)) return error(res, '无权访问', 4031, 403);
+    if (!await canModifyConversation(req, conv)) return error(res, '无权操作', 4031, 403);
 
     const message = await Message.findOne({
       _id: req.params.messageId,
@@ -577,39 +683,57 @@ class ChatController {
   async closeConversation(req, res) {
     const conv = await Conversation.findOne({ _id: req.params.id, tenantId: req.tenantId });
     if (!conv) return error(res, '会话不存在', 404);
-    if (!await canAccessConversation(req, conv)) return error(res, '无权访问', 403);
+    if (!await canModifyConversation(req, conv)) return error(res, '无权操作', 403);
     if (conv.status === 'closed') return ok(res, conv.toJSON(), '已关闭');
-    
-    conv.status = 'closed';
-    conv.closedAt = new Date();
-    await conv.save();
-    
+
+    const previousAudience = io ? tenantConversationRoom(conv) : null;
+    const closeWhere = {
+      _id: conv._id,
+      tenantId: req.tenantId,
+      status: conv.status,
+      assignedAgentId: conv.assignedAgentId,
+      lastMessageAt: conv.lastMessageAt,
+    };
+    const closedAt = new Date();
+    const closed = await Conversation.findOneAndUpdate(
+      closeWhere,
+      { $set: { status: 'closed', closedAt } },
+      { new: true }
+    );
+    if (!closed) return error(res, '会话状态已变化，请刷新');
+
     // 系统消息
     const closedMessage = await Message.create({
       tenantId: req.tenantId,
-      conversationId: conv._id,
+      conversationId: closed._id,
       senderType: 'system',
       messageType: 'system',
       content: '会话已结束',
     });
-    conv.lastMessageAt = closedMessage.createdAt;
-    await conv.save();
+    closed.lastMessageAt = closedMessage.createdAt;
+    await closed.save();
+    await broadcastCustomerChannelSummary(closed, {
+      lastMessage: closedMessage.toJSON(),
+      lastMessageAt: closed.lastMessageAt,
+      customerUnreadCount: closed.customerUnreadCount,
+    });
 
     if (io) {
       const closedData = {
-        conversationId: conv._id,
+        conversationId: closed._id,
         status: 'closed',
         lastMessage: closedMessage.toJSON(),
-        lastMessageAt: conv.lastMessageAt,
+        lastMessageAt: closed.lastMessageAt,
       };
-      io.to(`customer-${conv.customerId}`).emit('message.new', closedMessage.toJSON());
-      io.to(`customer-${conv.customerId}`).emit('conversation.closed', closedData);
-      io.to(`customer-${conv.customerId}`).emit('conversation.updated', closedData);
-      tenantChannelRoom(conv).emit('message.new', closedMessage.toJSON());
-      tenantChannelRoom(conv).emit('conversation.updated', closedData);
+      io.to(`customer-${closed.customerId}`).emit('message.new', closedMessage.toJSON());
+      io.to(`customer-${closed.customerId}`).emit('conversation.closed', closedData);
+      io.to(`customer-${closed.customerId}`).emit('conversation.updated', closedData);
+      previousAudience.emit('message.new', closedMessage.toJSON());
+      previousAudience.emit('conversation.closed', closedData);
+      previousAudience.emit('conversation.updated', closedData);
     }
     
-    return ok(res, conv.toJSON());
+    return ok(res, closed.toJSON());
   }
   
   // ============ 客户端 ============
@@ -672,6 +796,8 @@ class ChatController {
       );
       conv.customerUnreadCount = 0;
       await conv.save();
+      const summaries = await refreshConversationSummary(conv);
+      await broadcastCustomerChannelSummary(conv, summaries.customer);
     }
     
     return ok(res, messages.reverse().map(message => {
@@ -799,11 +925,23 @@ class ChatController {
         status: 'waiting',
       });
     } else if (conv.status === 'closed') {
-      // 重新打开
-      conv.status = 'waiting';
-      conv.assignedAgentId = null;
-      conv.acceptedAt = null;
-      conv.closedAt = null;
+      // closed 会话仅由客户消息原子重开，并清空原接待坐席
+      const reopened = await Conversation.findOneAndUpdate(
+        { _id: conv._id, tenantId: customer.tenantId, status: 'closed' },
+        {
+          $set: { status: 'waiting', assignedAgentId: null },
+          $unset: { acceptedAt: 1, closedAt: 1 },
+        },
+        { new: true }
+      );
+      conv = reopened || await Conversation.findOne({
+        _id: conv._id,
+        tenantId: customer.tenantId,
+        channelId: customer.channelId,
+        customerId: customer.id,
+        status: { $in: ['waiting', 'active'] },
+      });
+      if (!conv) return error(res, '会话状态已变化，请重试');
     }
     
     // 记录消息
@@ -821,9 +959,29 @@ class ChatController {
       clientMessageId: clientMessageId || undefined,
     });
     
-    conv.lastMessageAt = new Date();
-    conv.agentUnreadCount += 1;
-    await conv.save();
+    // 将“消息到达”作为最终状态更新；若与关闭并发，客户消息原子重开会话。
+    conv = await Conversation.findOneAndUpdate(
+      {
+        _id: conv._id,
+        tenantId: customer.tenantId,
+        channelId: customer.channelId,
+        customerId: customer.id,
+      },
+      [
+        {
+          $set: {
+            status: { $cond: [{ $eq: ['$status', 'closed'] }, 'waiting', '$status'] },
+            assignedAgentId: { $cond: [{ $eq: ['$status', 'closed'] }, null, '$assignedAgentId'] },
+            acceptedAt: { $cond: [{ $eq: ['$status', 'closed'] }, '$$REMOVE', '$acceptedAt'] },
+            closedAt: { $cond: [{ $eq: ['$status', 'closed'] }, '$$REMOVE', '$closedAt'] },
+            lastMessageAt: msg.createdAt,
+            agentUnreadCount: { $add: [{ $ifNull: ['$agentUnreadCount', 0] }, 1] },
+          },
+        },
+      ],
+      { new: true, updatePipeline: true }
+    );
+    if (!conv) return error(res, '会话状态已变化，请重试');
     
     // 关键词自动回复：仅匹配文本，同优先级时精确匹配优先
     let replyMsg = null;
@@ -862,26 +1020,34 @@ class ChatController {
             attachmentUrl: imageUrl,
             attachmentName: kr.imageName || '',
           });
-          conv.lastMessageAt = replyMsg.createdAt;
-          conv.customerUnreadCount += 1;
-          await conv.save();
+          conv = await Conversation.findOneAndUpdate(
+            { _id: conv._id, tenantId: customer.tenantId },
+            { $set: { lastMessageAt: replyMsg.createdAt }, $inc: { customerUnreadCount: 1 } },
+            { new: true }
+          );
           break;
         }
       }
     }
+
+    await broadcastCustomerChannelSummary(conv, {
+      lastMessage: (replyMsg || msg).toJSON(),
+      lastMessageAt: conv.lastMessageAt,
+      customerUnreadCount: conv.customerUnreadCount,
+    });
     
     // Socket 推送
     if (io) {
-      tenantChannelRoom(conv).emit('conversation.created', {
+      tenantConversationRoom(conv).emit('conversation.created', {
         conversationId: conv._id,
         status: conv.status,
         channelId: conv.channelId,
         customerId: customer.id,
       });
-      tenantChannelRoom(conv).emit('message.new', {
+      tenantConversationRoom(conv).emit('message.new', {
         ...msg.toJSON(),
       });
-      tenantChannelRoom(conv).emit('conversation.updated', {
+      tenantConversationRoom(conv).emit('conversation.updated', {
         conversationId: conv._id,
         status: conv.status,
         assignedAgentId: conv.assignedAgentId,
@@ -899,8 +1065,8 @@ class ChatController {
       if (replyMsg) {
         const replyData = replyMsg.toJSON();
         io.to(`customer-${customer.id}`).emit('message.new', replyData);
-        tenantChannelRoom(conv).emit('message.new', replyData);
-        tenantChannelRoom(conv).emit('conversation.updated', {
+        tenantConversationRoom(conv).emit('message.new', replyData);
+        tenantConversationRoom(conv).emit('conversation.updated', {
           conversationId: conv._id,
           lastMessage: replyData,
           lastMessageAt: conv.lastMessageAt,

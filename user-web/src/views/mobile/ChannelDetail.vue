@@ -8,7 +8,6 @@ import ConfirmDialog from '../../components/ConfirmDialog.vue'
 const props = defineProps({ channelId: String, embedded: Boolean })
 const emit = defineEmits(['close', 'saved'])
 const route = useRoute()
-const router = useRouter()
 const routePrefix = '/m'
 const currentChannelId = computed(() => props.channelId || route.params.id)
 const user = JSON.parse(sessionStorage.getItem('tenant_user') || localStorage.getItem('tenant_user') || 'null')
@@ -24,7 +23,7 @@ const deleteTarget = ref(null)
 
 // 基础信息表单
 const form = reactive({
-  brandName: '', brandColor: '#2563eb', avatarUrl: '', welcomeMessage: '', welcomeImageUrl: '', welcomeImageName: '', offlineMessage: '', status: 'online',
+  brandName: '', brandColor: '#2563eb', avatarUrl: '', welcomeMessage: '', welcomeImageUrl: '', welcomeImageName: '', offlineMessage: '',
 })
 const uploadingAvatar = ref(false)
 const uploadingReplyImage = ref(false)
@@ -149,7 +148,11 @@ async function uploadReplyImage(event, target) {
     data.append('file', file)
     const res = await api.upload('/upload/tenant', data)
     if (res.code !== 0) throw new Error(res.message || '上传失败')
-    if (target === 'welcome') return
+    if (isWelcome) {
+      form.welcomeImageUrl = res.data.url
+      form.welcomeImageName = res.data.name || file.name
+      return
+    }
     target.imageUrl = res.data.url
     target.imageName = res.data.name || file.name
   } catch (e) { alert(e?.message || '图片上传失败') }
@@ -240,34 +243,25 @@ onMounted(load)
     <router-link :to="`${routePrefix}/channels`">返回渠道列表</router-link>
   </div>
   <div v-else-if="channel" :class="['detail-page', { embedded }]">
-    <button v-if="embedded" type="button" class="inline-close" @click="emit('close')">← 返回渠道列表</button>
-    <router-link v-else class="back-link" :to="`${routePrefix}/channels`">← 返回渠道列表</router-link>
-    
-    <div class="detail-section">
-      <h3>基础配置</h3>
-      <div class="kv-row"><span class="label">渠道名称</span><span class="value">{{ channel.name }}</span></div>
-      <div class="kv-row"><span class="label">客服链接</span>
-        <span class="value">
-          <code style="background:#f3f4f6;padding:2px 6px;border-radius:4px;font-size:12px;">{{ channel.link }}</code>
-          <button class="action-btn" style="margin-left:10px;" @click="copyLink">复制链接</button>
-        </span>
-      </div>
-    </div>
-    
-    <div v-if="isAdmin" class="detail-section">
-      <h3>接待人</h3>
-      <div class="employee-options">
-        <label v-for="employee in employees" :key="employee._id">
-          <input v-model="selectedEmployeeIds" type="checkbox" :value="employee._id" />
-          {{ employee.displayName }}（{{ employee.username }}）{{ employee._id === user?._id ? '（我）' : '' }}
-        </label>
-        <span v-if="employees.length === 0">暂无可选接待人</span>
-      </div>
-      <button class="btn-primary" @click="saveEmployees">保存接待人</button>
-    </div>
+    <nav class="mobile-nav">
+      <button v-if="embedded" type="button" class="back-link" @click="emit('close')">返回</button>
+      <router-link v-else class="back-link" :to="`${routePrefix}/channels`">返回</router-link>
+      <strong>渠道配置</strong><span></span>
+    </nav>
 
-    <div class="detail-section">
-      <h3>品牌与消息</h3>
+    <header class="config-hero">
+      <div class="hero-avatar" :style="{ background: form.brandColor }"><img v-if="form.avatarUrl" :src="form.avatarUrl" alt="渠道头像" /><span v-else>{{ (form.brandName || channel.name || '渠').slice(0, 1) }}</span></div>
+      <div><span>授权渠道</span><h1>{{ channel.name }}</h1><p>{{ form.brandName || '未设置品牌名' }} · {{ channel.status === 'online' ? '在线服务' : '离线状态' }}</p></div>
+    </header>
+
+    <section class="detail-section overview-section">
+      <div class="section-heading"><span>01</span><div><h3>渠道概览</h3><p>渠道身份与客户访问入口</p></div></div>
+      <div class="info-item"><span>渠道名称</span><strong>{{ channel.name }}</strong></div>
+      <div class="link-item"><span>客服链接</span><code>{{ channel.link }}</code><button class="action-btn" @click="copyLink">复制</button></div>
+    </section>
+
+    <section class="detail-section brand-section">
+      <div class="section-heading"><span>02</span><div><h3>品牌与消息</h3><p>客户看到的品牌形象和提示内容</p></div></div>
       <div class="form-group"><label>品牌名</label><input v-model="form.brandName" /></div>
       <div class="form-group">
         <label>渠道头像</label>
@@ -292,14 +286,23 @@ onMounted(load)
         </div>
       </div>
       <div class="form-group"><label>离线提示</label><textarea v-model="form.offlineMessage"></textarea></div>
-      <button class="btn-primary" style="padding:8px 20px;border:none;border-radius:6px;cursor:pointer;" @click="saveBasic">保存</button>
-    </div>
-    
-    <div class="detail-section">
-      <h3 style="display:flex;justify-content:space-between;align-items:center;">
-        <span>关键词回复</span>
-        <button class="btn-primary" style="padding:6px 14px;border:none;border-radius:6px;cursor:pointer;font-size:13px;" @click="openKr()">+ 新增</button>
-      </h3>
+      <div class="section-actions"><button class="btn-primary" @click="saveBasic">保存品牌设置</button></div>
+    </section>
+
+    <section v-if="isAdmin" class="detail-section employee-section">
+      <div class="section-heading"><span>03</span><div><h3>接待人员</h3><p>选择可处理该渠道会话的员工</p></div></div>
+      <div class="employee-options">
+        <label v-for="employee in employees" :key="employee._id">
+          <input v-model="selectedEmployeeIds" type="checkbox" :value="employee._id" />
+          <span><strong>{{ employee.displayName }}</strong><small>{{ employee.username }}{{ employee._id === user?._id ? ' · 我' : '' }}</small></span>
+        </label>
+        <span v-if="employees.length === 0" class="empty-inline">暂无可选接待人</span>
+      </div>
+      <div class="section-actions"><button class="btn-primary" @click="saveEmployees">保存接待人员</button></div>
+    </section>
+
+    <section class="detail-section">
+      <div class="section-heading heading-actions"><span>{{ isAdmin ? '04' : '03' }}</span><div><h3>关键词回复</h3><p>客户消息命中关键词时自动响应</p></div><button class="btn-primary" @click="openKr()">新增</button></div>
       <div v-if="keywords.length" class="reply-list">
         <article v-for="kr in keywords" :key="kr._id" class="reply-card">
           <div class="reply-card-title">
@@ -312,13 +315,10 @@ onMounted(load)
         </article>
       </div>
       <div v-else class="empty-state">暂无关键词</div>
-    </div>
-    
-    <div class="detail-section">
-      <h3 style="display:flex;justify-content:space-between;align-items:center;">
-        <span>快捷回复（员工聊天时可快速插入）</span>
-        <button class="btn-primary" style="padding:6px 14px;border:none;border-radius:6px;cursor:pointer;font-size:13px;" @click="openQr()">+ 新增</button>
-      </h3>
+    </section>
+
+    <section class="detail-section">
+      <div class="section-heading heading-actions"><span>{{ isAdmin ? '05' : '04' }}</span><div><h3>快捷回复</h3><p>员工聊天时可快速插入常用内容</p></div><button class="btn-primary" @click="openQr()">新增</button></div>
       <div v-if="quickReplies.length" class="reply-list">
         <article v-for="qr in quickReplies" :key="qr._id" class="reply-card">
           <div class="reply-card-title">
@@ -335,7 +335,7 @@ onMounted(load)
         </article>
       </div>
       <div v-else class="empty-state">暂无快捷回复</div>
-    </div>
+    </section>
 
     <!-- 关键词弹窗 -->
     <div v-if="krModal.show" class="modal-overlay" @click.self="krModal.show = false">
@@ -388,22 +388,44 @@ onMounted(load)
 </template>
 
 <style scoped>
-.detail-page { min-width: 0; min-height: 100dvh; padding: max(12px, env(safe-area-inset-top)) 14px max(28px, env(safe-area-inset-bottom)); overflow-x: hidden; background: #f5f7fb; }
-.detail-page.embedded { padding: 14px; border: 1px solid #dbeafe; border-radius: 12px; }
-.back-link { position: sticky; top: 0; z-index: 5; display: block; width: 100%; padding: 12px 2px; color: #475569; background: rgba(245,247,251,.94); backdrop-filter: blur(12px); }
-.inline-close { border: 0; background: transparent; cursor: pointer; text-align: left; }
-.detail-section { min-width: 0; margin-bottom: 14px; padding: 16px; border: 1px solid #e6ebf2; border-radius: 16px; background: #fff; box-shadow: 0 7px 22px rgba(15, 23, 42, .04); }
-.detail-section h3 { margin-bottom: 16px; }
-.kv-row { align-items: flex-start; gap: 12px; }
-.kv-row .value, .kv-row code { min-width: 0; overflow-wrap: anywhere; }
-.kv-row .value { flex: 1; text-align: right; }
-.customer-link { display: block; padding: 7px; border-radius: 7px; background: #f3f4f6; font-size: 11px; }
+.detail-page { width: 100%; height: 100dvh; min-width: 0; min-height: 0; padding: 0 14px max(28px, env(safe-area-inset-bottom)); overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch; background: #f4f7fb; color: #172033; }
+.detail-page.embedded { border: 0; border-radius: 0; }
+.mobile-nav { position: sticky; top: 0; z-index: 6; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; margin: 0 -14px 14px; padding: max(12px, env(safe-area-inset-top)) 14px 11px; border-bottom: 1px solid #e6eaf0; background: rgba(255,255,255,.96); backdrop-filter: blur(14px); }
+.mobile-nav strong { font-size: 15px; text-align: center; }
+.back-link { width: max-content; padding: 4px 0; border: 0; color: #2563eb; background: transparent; font-size: 13px; text-decoration: none; cursor: pointer; }
+.config-hero { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; padding: 18px; overflow: hidden; border-radius: 18px; background: linear-gradient(135deg, #17366f 0%, #2563eb 72%, #60a5fa 100%); color: #fff; box-shadow: 0 12px 28px rgba(37, 99, 235, .18); }
+.hero-avatar { width: 52px; height: 52px; flex: 0 0 52px; display: grid; place-items: center; overflow: hidden; border: 2px solid rgba(255,255,255,.35); border-radius: 15px; font-weight: 700; }
+.hero-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.config-hero > div:last-child { min-width: 0; }
+.config-hero span { font-size: 10px; font-weight: 700; letter-spacing: .12em; opacity: .76; }
+.config-hero h1 { margin: 3px 0; overflow: hidden; font-size: 20px; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+.config-hero p { margin: 0; font-size: 11px; opacity: .8; }
+.detail-section { min-width: 0; margin-bottom: 14px; padding: 16px; border: 1px solid #e5eaf1; border-radius: 16px; background: #fff; box-shadow: 0 7px 20px rgba(15, 23, 42, .035); }
+.section-heading { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+.section-heading > span { display: grid; width: 32px; height: 32px; flex: 0 0 32px; place-items: center; border-radius: 9px; background: #eaf2ff; color: #2563eb; font-size: 11px; font-weight: 800; }
+.section-heading > div { min-width: 0; flex: 1; }
+.section-heading h3 { margin: 0; font-size: 15px; }
+.section-heading p { margin: 3px 0 0; color: #94a0b3; font-size: 10px; }
+.heading-actions .btn-primary { padding: 7px 11px; border: 0; border-radius: 8px; font-size: 12px; }
+.info-item, .link-item { min-width: 0; padding: 12px; border-radius: 11px; background: #f7f9fc; }
+.info-item { display: grid; gap: 4px; margin-bottom: 9px; }
+.info-item span, .link-item > span { color: #8b96a8; font-size: 10px; }
+.info-item strong { font-size: 13px; }
+.link-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 10px; align-items: center; }
+.link-item > span { grid-column: 1 / -1; }
+.link-item code { min-width: 0; overflow: hidden; color: #475569; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .avatar-upload { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.avatar-upload img, .avatar-upload > span { width: 52px; height: 52px; border-radius: 50%; object-fit: cover; display: flex; align-items: center; justify-content: center; background: #2563eb; color: #fff; font-weight: 600; }
+.avatar-upload img, .avatar-upload > span { width: 52px; height: 52px; border-radius: 14px; object-fit: cover; display: flex; align-items: center; justify-content: center; background: #2563eb; color: #fff; font-weight: 600; }
 .upload-button { cursor: pointer; }
 .upload-button input { display: none; }
-.employee-options { display: grid; gap: 10px; margin-bottom: 14px; }
-.employee-options label { padding: 10px; border: 1px solid #e2e8f0; border-radius: 9px; background: #fff; }
+.employee-options { display: grid; gap: 9px; }
+.employee-options label { display: flex; align-items: center; gap: 10px; padding: 11px; border: 1px solid #e5eaf1; border-radius: 10px; background: #f9fafc; }
+.employee-options label > span { min-width: 0; display: grid; gap: 2px; }
+.employee-options strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.employee-options small { overflow: hidden; color: #8b96a8; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.empty-inline { padding: 20px; color: #94a3b8; text-align: center; }
+.section-actions { display: flex; justify-content: flex-end; margin-top: 16px; padding-top: 14px; border-top: 1px solid #edf0f5; }
+.section-actions .btn-primary { padding: 9px 14px; border: 0; border-radius: 9px; }
 .reply-image-editor { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
 .reply-image-editor img { width: 96px; height: 72px; object-fit: cover; border: 1px solid #e2e8f0; border-radius: 8px; }
 .reply-list { display: grid; gap: 10px; }
@@ -415,6 +437,7 @@ onMounted(load)
 .status-label.active { color: #15803d; background: #dcfce7; }
 .status-label.disabled { color: #64748b; background: #eef2f6; }
 .reply-cell { display: flex; align-items: center; gap: 9px; min-width: 0; margin-top: 10px; color: #475569; font-size: 13px; line-height: 1.5; }
+.reply-cell span { min-width: 0; overflow-wrap: anywhere; }
 .reply-cell img { width: 48px; height: 48px; flex: 0 0 48px; object-fit: cover; border-radius: 7px; }
 .reply-card-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 11px; color: #94a3b8; font-size: 11px; }
 .reply-card-footer > div { display: flex; gap: 6px; }

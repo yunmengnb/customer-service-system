@@ -13,6 +13,7 @@ const SystemSettingController = require('../controllers/SystemSettingController'
 const VersionController = require('../controllers/VersionController');
 const AppController = require('../controllers/AppController');
 const CaptchaController = require('../controllers/CaptchaController');
+const ComplaintController = require('../controllers/ComplaintController');
 const { verifyCaptcha } = require('../middleware/captcha');
 
 // ===== 认证 =====
@@ -30,9 +31,12 @@ router.get('/customers', authAdmin, AdminCustomerController.list);
 router.get('/conversations', authAdmin, AdminConversationController.list);
 router.get('/conversations/:id/messages/search', authAdmin, AdminConversationController.searchMessages);
 router.get('/conversations/:id/messages', authAdmin, AdminConversationController.messages);
+router.get('/complaints', authAdmin, ComplaintController.adminList);
+router.get('/complaints/:id', authAdmin, ComplaintController.adminDetail);
 router.get('/announcements', authAdmin, AnnouncementController.adminList);
 router.get('/app/announcements', authAdmin, AppController.adminAnnouncementList);
 router.get('/app/android/versions', authAdmin, AppController.adminVersionList);
+router.get('/app/customer-center/android/versions', authAdmin, AppController.adminCustomerVersionList);
 router.get('/version', authAdmin, VersionController.get);
 
 // ===== 敏感写操作（需要超级管理员）=====
@@ -48,10 +52,15 @@ router.post('/app/android/versions', authAdmin, requireSuperAdmin, validators.ap
 router.put('/app/android/versions/:id', authAdmin, requireSuperAdmin, validators.appVersion, AppController.updateVersion);
 router.patch('/app/android/versions/:id/status', authAdmin, requireSuperAdmin, validators.updateAnnouncementStatus, AppController.updateVersionStatus);
 router.delete('/app/android/versions/:id', authAdmin, requireSuperAdmin, AppController.removeVersion);
+router.post('/app/customer-center/android/versions', authAdmin, requireSuperAdmin, validators.appVersion, AppController.createCustomerVersion);
+router.put('/app/customer-center/android/versions/:id', authAdmin, requireSuperAdmin, validators.appVersion, AppController.updateCustomerVersion);
+router.patch('/app/customer-center/android/versions/:id/status', authAdmin, requireSuperAdmin, validators.updateAnnouncementStatus, AppController.updateCustomerVersionStatus);
+router.delete('/app/customer-center/android/versions/:id', authAdmin, requireSuperAdmin, AppController.removeCustomerVersion);
 router.patch('/tenants/:id/status', authAdmin, requireSuperAdmin, TenantAdminController.updateStatus);
 router.patch('/tenants/:id/plan', authAdmin, requireSuperAdmin, TenantAdminController.updatePlan);
 router.get('/settings', authAdmin, requireSuperAdmin, SystemSettingController.get);
 router.put('/settings', authAdmin, requireSuperAdmin, SystemSettingController.update);
 router.post('/settings/test-email', authAdmin, requireSuperAdmin, SystemSettingController.testEmail);
+router.patch('/complaints/:id/status', authAdmin, requireSuperAdmin, ComplaintController.updateStatus);
 
 module.exports = router;

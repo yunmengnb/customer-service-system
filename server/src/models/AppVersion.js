@@ -8,6 +8,12 @@ const AppVersionSchema = new mongoose.Schema({
     default: 'android',
     index: true,
   },
+  appType: {
+    type: String,
+    enum: ['staff', 'customer'],
+    default: 'staff',
+    index: true,
+  },
   versionCode: {
     type: Number,
     required: true,
@@ -32,6 +38,15 @@ const AppVersionSchema = new mongoose.Schema({
     type: Boolean,
     default: false,
   },
+  downloadEnabled: {
+    type: Boolean,
+    default: true,
+  },
+  minSupportedVersionCode: {
+    type: Number,
+    default: 1,
+    min: 1,
+  },
   status: {
     type: String,
     enum: ['draft', 'published'],
@@ -48,7 +63,7 @@ const AppVersionSchema = new mongoose.Schema({
   versionKey: false,
 });
 
-AppVersionSchema.index({ platform: 1, versionCode: 1 }, { unique: true });
-AppVersionSchema.index({ platform: 1, status: 1, versionCode: -1 });
+AppVersionSchema.index({ platform: 1, appType: 1, versionCode: 1 }, { unique: true });
+AppVersionSchema.index({ platform: 1, appType: 1, status: 1, versionCode: -1 });
 
 module.exports = mongoose.model('AppVersion', AppVersionSchema, 'app_versions');

@@ -12,6 +12,7 @@ const routes = [
       { path: 'tenants', component: () => import('./views/Tenants.vue') },
       { path: 'customers', component: () => import('./views/Customers.vue') },
       { path: 'conversations', component: () => import('./views/Conversations.vue') },
+      { path: 'complaints', component: () => import('./views/Complaints.vue') },
       { path: 'announcements', component: () => import('./views/Announcements.vue') },
       { path: 'apps', component: () => import('./views/AppManagement.vue') },
       { path: 'settings', component: () => import('./views/Settings.vue') },

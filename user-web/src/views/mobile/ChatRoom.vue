@@ -7,7 +7,11 @@ const route = useRoute()
 const router = useRouter()
 const conversationId = computed(() => route.params.id)
 const targetMessageId = computed(() => String(route.query.message || '') || null)
-function back() { router.push('/m/messages') }
+function back() {
+  const query = { ...route.query }
+  delete query.message
+  router.push({ path: '/m/messages', query })
+}
 </script>
 <template><main class="mobile-chat-room"><ChatPanel :conversation-id="conversationId" :target-message-id="targetMessageId" @back="back" /></main></template>
 <style scoped>.mobile-chat-room{position:fixed;inset:0;overflow:hidden;background:#f8fafc}</style>

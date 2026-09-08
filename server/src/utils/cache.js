@@ -39,6 +39,26 @@ async function setJson(key, value, ttlSeconds) {
   memoryCache.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1000 });
 }
 
+async function consumeJson(key) {
+  const redis = getRedis();
+  if (redis) {
+    try {
+      const value = await redis.sendCommand([
+        'EVAL',
+        "local value = redis.call('GET', KEYS[1]); if value then redis.call('DEL', KEYS[1]); end; return value",
+        '1',
+        key,
+      ]);
+      return value ? JSON.parse(value) : null;
+    } catch (err) {
+      console.warn('[Cache] Redis 消费失败，使用内存缓存:', err.message);
+    }
+  }
+  const value = readMemory(key);
+  memoryCache.delete(key);
+  return value;
+}
+
 async function remove(...keys) {
   const filtered = keys.filter(Boolean);
   if (!filtered.length) return;
@@ -53,4 +73,4 @@ async function remove(...keys) {
   }
 }
 
-module.exports = { getJson, setJson, remove };
+module.exports = { getJson, setJson, consumeJson, remove };

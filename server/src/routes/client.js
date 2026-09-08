@@ -9,8 +9,14 @@ const ChatController = require('../controllers/ChatController');
 const CaptchaController = require('../controllers/CaptchaController');
 const { verifyCaptcha } = require('../middleware/captcha');
 const SystemSettingController = require('../controllers/SystemSettingController');
+const ComplaintController = require('../controllers/ComplaintController');
 
 router.get('/public-settings', SystemSettingController.getPublic);
+
+// 客户投诉
+router.get('/complaints/captcha', authCustomer, CaptchaController.create);
+router.post('/complaints/email-code', authCustomer, ComplaintController.sendEmailCode);
+router.post('/complaints', authCustomer, verifyCaptcha, ComplaintController.create);
 
 // 全局客户中心认证（无需渠道 Token）
 router.get('/auth/captcha', CaptchaController.create);

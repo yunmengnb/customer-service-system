@@ -40,10 +40,11 @@ async function verifyCaptcha(req, res, next) {
   if (settings.captcha.provider === 'geetest') {
     const geetestId = settings.captcha.geetestId;
     const geetestKey = settings.captcha.geetestKey;
-    const challenge = req.body?.geetest_challenge;
-    const validate = req.body?.geetest_validate;
-    const seccode = req.body?.geetest_seccode;
-    if (!geetestId || !geetestKey || !challenge || !validate || !seccode) {
+    const challenge = String(req.body?.geetest_challenge || '');
+    const validate = String(req.body?.geetest_validate || '');
+    const seccode = String(req.body?.geetest_seccode || '');
+    if (!geetestId || !geetestKey || !challenge || !validate || !seccode
+      || challenge.length > 128 || validate.length > 512 || seccode.length > 512) {
       return error(res, '极验验证码参数不完整', 4004, 400);
     }
     const captcha = new Geetest({ geetest_id: geetestId, geetest_key: geetestKey, protocol: 'https://' });
