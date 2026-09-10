@@ -1,7 +1,8 @@
 // 忆梦云团队开发
+const mongoose = require('mongoose');
 const Tenant = require('../models/Tenant');
 const TenantUser = require('../models/TenantUser');
-const { ok, error, hashPassword, comparePassword, signToken } = require('../utils');
+const { ok, error, hashPassword, comparePassword, signToken, passwordVersion } = require('../utils');
 const { getSystemSettings } = require('../utils/systemSettings');
 const { normalizeEmail, sendEmailCode, verifyEmailCode } = require('../utils/emailVerification');
 const { recordLogin, recordOperation } = require('../services/auditLogService');
@@ -14,6 +15,7 @@ function ownerToken(user) {
     username: user.username,
     displayName: user.displayName,
     role: user.role,
+    pv: passwordVersion(user.password),
   });
 }
 
@@ -63,36 +65,51 @@ class TenantAuthController {
 
   async login(req, res) {
     const { username, password } = req.body;
+    const tenantIdentifier = String(req.body.tenant || '').trim();
     const settings = await getSystemSettings();
     if (!settings.loginEnabled) return error(res, '系统暂时关闭登录', 4034, 403);
-    const tenant = await Tenant.findOne({ username });
-    if (tenant && tenant.status !== 'active') {
-      recordLogin({ req, tenantId: tenant._id, user: { username, displayName: tenant.name, role: 'owner' }, result: 'failure', detail: '账号已被禁用' });
-      return error(res, '账号已被禁用', 403, 403);
+
+    let specifiedTenant = null;
+    if (tenantIdentifier) {
+      const tenantQuery = [{ username: tenantIdentifier }];
+      if (mongoose.isValidObjectId(tenantIdentifier)) tenantQuery.push({ _id: tenantIdentifier });
+      specifiedTenant = await Tenant.findOne({ $or: tenantQuery });
+      if (!specifiedTenant) return error(res, '租户账号或标识不存在', 4041, 404);
     }
 
-    if (tenant && comparePassword(password, tenant.password)) {
-      tenant.lastLoginAt = new Date();
-      await tenant.save();
-      let owner = await TenantUser.findOne({ tenantId: tenant._id, role: 'owner' });
-      if (!owner) owner = await TenantUser.create({ tenantId: tenant._id, username: tenant.username, password: tenant.password, displayName: tenant.name, role: 'owner', status: 'active' });
+    const ownerTenant = specifiedTenant || await Tenant.findOne({ username });
+    if (ownerTenant && ownerTenant.username === username && comparePassword(password, ownerTenant.password)) {
+      if (ownerTenant.status !== 'active') {
+        recordLogin({ req, tenantId: ownerTenant._id, user: { username, displayName: ownerTenant.name, role: 'owner' }, result: 'failure', detail: '账号已被禁用' });
+        return error(res, '账号已被禁用', 403, 403);
+      }
+      ownerTenant.lastLoginAt = new Date();
+      await ownerTenant.save();
+      let owner = await TenantUser.findOne({ tenantId: ownerTenant._id, role: 'owner' });
+      if (!owner) owner = await TenantUser.create({ tenantId: ownerTenant._id, username: ownerTenant.username, password: ownerTenant.password, displayName: ownerTenant.name, role: 'owner', status: 'active' });
       if (owner.status !== 'active') return error(res, '账号已被禁用', 403, 403);
       owner.lastLoginAt = new Date();
       await owner.save();
-      recordLogin({ req, tenantId: tenant._id, user: owner, result: 'success', detail: '登录成功' });
-      return ok(res, { token: ownerToken(owner), tenant: tenant.toJSON(), user: owner.toJSON() });
+      recordLogin({ req, tenantId: ownerTenant._id, user: owner, result: 'success', detail: '登录成功' });
+      return ok(res, { token: ownerToken(owner), tenant: ownerTenant.toJSON(), user: owner.toJSON() });
     }
 
-    const user = await TenantUser.findOne({ username });
+    const userQuery = { username };
+    if (specifiedTenant) userQuery.tenantId = specifiedTenant._id;
+    const users = await TenantUser.find(userQuery).limit(2);
+    if (!specifiedTenant && users.length > 1) {
+      return error(res, '该用户名属于多个租户，请提供租户账号或标识', 4092, 409);
+    }
+    const user = users[0];
     if (!user || !comparePassword(password, user.password)) {
-      recordLogin({ req, tenantId: user ? user.tenantId : (tenant ? tenant._id : null), user: user || { username }, result: 'failure', detail: '账号或密码错误' });
+      recordLogin({ req, tenantId: user ? user.tenantId : (ownerTenant ? ownerTenant._id : null), user: user || { username }, result: 'failure', detail: '账号或密码错误' });
       return error(res, '账号或密码错误', 401, 401);
     }
     if (user.status !== 'active') {
       recordLogin({ req, tenantId: user.tenantId, user, result: 'failure', detail: '账号已被禁用' });
       return error(res, '账号已被禁用', 403, 403);
     }
-    const tenantObj = await Tenant.findById(user.tenantId);
+    const tenantObj = specifiedTenant || await Tenant.findById(user.tenantId);
     if (!tenantObj || tenantObj.status !== 'active') {
       recordLogin({ req, tenantId: user.tenantId, user, result: 'failure', detail: '所属租户已被禁用' });
       return error(res, '所属租户已被禁用', 403, 403);
@@ -172,6 +189,8 @@ class TenantAuthController {
     tenant.password = password;
     await tenant.save();
     await TenantUser.updateOne({ tenantId: tenant._id, role: 'owner' }, { $set: { password } });
+    // 修改密码后断开所有者现有连接，旧凭证将无法继续接收实时消息
+    req.app.get('io')?.in(`agent-${req.user.id}`).disconnectSockets(true);
     recordOperation({ req, tenantId: req.tenantId, user: req.user, action: 'update_password', detail: '修改登录密码' });
     return ok(res, null, '密码修改成功，请使用新密码登录');
   }

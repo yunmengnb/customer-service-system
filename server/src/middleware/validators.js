@@ -112,6 +112,7 @@ const tenantPassword = [
 const tenantLogin = [
   body('username').trim().notEmpty().withMessage('用户名不能为空'),
   body('password').notEmpty().withMessage('密码不能为空'),
+  body('tenant').optional({ checkFalsy: true }).trim().isLength({ max: 100 }).withMessage('租户标识格式不正确'),
   validate,
 ];
 
@@ -159,6 +160,7 @@ const customerRegister = [
   }),
   body('emailCode').trim().matches(/^\d{6}$/).withMessage('请输入6位邮箱验证码'),
   body('fingerprint').optional().isString(),
+  body('agreementAccepted').custom(value => value === true).withMessage('请先阅读并同意免责协议和使用协议'),
   validate,
 ];
 

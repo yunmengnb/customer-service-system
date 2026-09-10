@@ -19,6 +19,9 @@ const form = reactive({ title: '', content: '', status: 'published' })
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / limit)))
 const isEditing = computed(() => Boolean(editingAnnouncement.value))
+const isSuper = computed(() => {
+  try { return JSON.parse(localStorage.getItem('admin_info') || '{}').role === 'super' } catch { return false }
+})
 
 function showNotice(type, message) {
   notice.value = { type, message }
@@ -148,7 +151,7 @@ onMounted(() => loadAnnouncements())
       <h1>公告管理</h1>
       <p class="desc">管理面向租户发布的系统公告，共 {{ total }} 条</p>
     </div>
-    <button class="btn btn-primary" type="button" @click="openCreateModal">新增公告</button>
+    <button v-if="isSuper" class="btn btn-primary" type="button" @click="openCreateModal">新增公告</button>
   </div>
 
   <div v-if="notice" class="announcement-notice" :class="notice.type" role="status">{{ notice.message }}</div>
@@ -168,7 +171,7 @@ onMounted(() => loadAnnouncements())
 
   <div class="table-wrap">
     <table class="table">
-      <thead><tr><th>公告标题</th><th>内容摘要</th><th>状态</th><th>发布时间</th><th>创建时间</th><th class="action-heading">操作</th></tr></thead>
+      <thead><tr><th>公告标题</th><th>内容摘要</th><th>状态</th><th>发布时间</th><th>创建时间</th><th v-if="isSuper" class="action-heading">操作</th></tr></thead>
       <tbody>
         <tr v-for="item in announcements" :key="item._id">
           <td data-label="公告标题">
@@ -179,7 +182,7 @@ onMounted(() => loadAnnouncements())
           <td data-label="状态"><span class="tag" :class="item.status === 'published' ? 'tag-green' : 'tag-gray'">{{ item.status === 'published' ? '已上架' : '已下架' }}</span></td>
           <td data-label="发布时间">{{ formatDate(item.publishedAt) }}</td>
           <td data-label="创建时间">{{ formatDate(item.createdAt) }}</td>
-          <td data-label="操作" class="action-cell">
+          <td data-label="操作" v-if="isSuper" class="action-cell">
             <div class="action-list">
               <button class="btn-link" type="button" :disabled="Boolean(operatingId)" @click="openEditModal(item)">编辑</button>
               <button class="btn-link" :class="{ danger: item.status === 'published' }" type="button" :disabled="Boolean(operatingId)" @click="toggleStatus(item)">{{ item.status === 'published' ? '下架' : '上架' }}</button>
@@ -187,8 +190,8 @@ onMounted(() => loadAnnouncements())
             </div>
           </td>
         </tr>
-        <tr v-if="loading"><td colspan="6" class="empty-cell">正在加载...</td></tr>
-        <tr v-else-if="!announcements.length"><td colspan="6" class="empty-cell">暂无公告数据</td></tr>
+        <tr v-if="loading"><td :colspan="isSuper ? 6 : 5" class="empty-cell">正在加载...</td></tr>
+        <tr v-else-if="!announcements.length"><td :colspan="isSuper ? 6 : 5" class="empty-cell">暂无公告数据</td></tr>
       </tbody>
     </table>
   </div>

@@ -1,5 +1,5 @@
 // 忆梦云团队开发
-const { verifyToken, error } = require('../utils');
+const { verifyToken, error, passwordVersion } = require('../utils');
 const PlatformAdmin = require('../models/PlatformAdmin');
 const Tenant = require('../models/Tenant');
 const TenantUser = require('../models/TenantUser');
@@ -32,6 +32,9 @@ async function authAdmin(req, res, next) {
     }
     if (admin.status !== 'active') {
       return error(res, '账号已被禁用', 4032, 403);
+    }
+    if (payload.pv && passwordVersion(admin.password) !== payload.pv) {
+      return error(res, '令牌已失效，请重新登录', 4012, 401);
     }
     // 用数据库最新数据覆盖 payload，防止 role 变更后 token 内信息过期
     req.admin = { ...payload, role: admin.role, status: admin.status };
@@ -75,6 +78,9 @@ async function authTenantUser(req, res, next) {
     const user = await TenantUser.findOne({ _id: payload.id, tenantId: payload.tenantId });
     if (!user) return error(res, '账号不存在', 4012, 401);
     if (user.status !== 'active') return error(res, '账号已被禁用', 4032, 403);
+    if (payload.pv && passwordVersion(user.password) !== payload.pv) {
+      return error(res, '令牌已失效，请重新登录', 4012, 401);
+    }
 
     const tenant = await Tenant.findById(user.tenantId);
     if (!tenant || tenant.status !== 'active') {
@@ -136,8 +142,11 @@ async function authCustomer(req, res, next) {
     }
     const legacyBinding = !payload.accountId && payload.id ? await Customer.findById(payload.id).select('accountId') : null;
     const accountId = payload.accountId || legacyBinding?.accountId;
-    const account = await CustomerAccount.findOne({ _id: accountId, status: 'active' }).select('_id');
+    const account = await CustomerAccount.findOne({ _id: accountId, status: 'active' }).select('_id password');
     if (!account) return error(res, '账号已被禁用或不存在', 4032, 403);
+    if (payload.pv && passwordVersion(account.password) !== payload.pv) {
+      return error(res, '令牌已失效，请重新登录', 4012, 401);
+    }
     if (payload.id) {
       const binding = await Customer.findOne({
         _id: payload.id,

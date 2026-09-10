@@ -339,6 +339,10 @@
             <div class="form-item"><label>密码</label><input v-model="registerForm.password" type="password" autocomplete="new-password" placeholder="请输入6-72位密码" /></div>
             <div class="form-item"><label>确认密码</label><input v-model="registerForm.confirmPassword" type="password" autocomplete="new-password" placeholder="请再次输入密码" @keyup.enter="doRegister" /></div>
           </div>
+          <label class="agreement-check">
+            <input v-model="agreed" type="checkbox" />
+            <span>我已阅读并同意<router-link to="/agreements/disclaimer" target="_blank">《免责协议》</router-link>和<router-link to="/agreements/terms" target="_blank">《使用协议》</router-link></span>
+          </label>
         </template>
         <template v-else-if="authTab === 'login'">
           <div class="modal-desc">使用手机号或邮箱登录</div>
@@ -501,6 +505,7 @@ const appDownloadError = ref('')
 const authTab = ref('register')
 const loginForm = ref({ identifier: '', password: '' })
 const registerForm = ref({ phone: '', qq: '', email: '', emailCode: '', password: '', confirmPassword: '' })
+const agreed = ref(false)
 const resetForm = ref({ phone: '', email: '', emailCode: '', newPassword: '', confirmPassword: '' })
 const loginLoading = ref(false)
 const loginErr = ref('')
@@ -967,11 +972,16 @@ async function doRegister() {
     loginErr.value = '两次输入的密码不一致'
     return
   }
+  if (!agreed.value) {
+    loginErr.value = '请先阅读并同意免责协议和使用协议'
+    return
+  }
   loginLoading.value = true
   try {
     const captchaPayload = await getCaptchaPayload()
     const res = await api.post(`/client/channels/${token.value}/auth/register`, {
       ...form,
+      agreementAccepted: agreed.value,
       fingerprint: generateFingerprint(),
       ...captchaPayload,
     })
@@ -1262,12 +1272,18 @@ async function syncLatestMessages() {
   if (!customer.value || messageSyncInFlight) return
   messageSyncInFlight = true
   try {
-    const res = await api.get('/client/conversation/messages', { params: { limit: 50 } })
-    if (res.code === 0) {
-      const previousLength = messages.value.length
-      ;(res.data || []).forEach(mergeMessage)
-      if (messages.value.length > previousLength) scheduleScroll(false)
+    let cursor = [...messages.value].reverse().find(message => message._id && !String(message._id).startsWith('temp_'))?._id
+    if (!cursor) return await loadMessages()
+    const previousLength = messages.value.length
+    while (customer.value) {
+      const res = await api.get('/client/conversation/messages', { params: { limit: 50, after: cursor } })
+      if (res.code !== 0) break
+      const page = res.data || []
+      page.forEach(mergeMessage)
+      if (page.length < 50) break
+      cursor = page[page.length - 1]._id
     }
+    if (messages.value.length > previousLength) scheduleScroll(false)
   } catch {}
   finally { messageSyncInFlight = false }
 }

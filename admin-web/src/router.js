@@ -23,10 +23,16 @@ const routes = [
 ]
 
 const router = createRouter({ history: createWebHistory(), routes })
+
+function isSuperAdmin() {
+  try { return JSON.parse(localStorage.getItem('admin_info') || '{}').role === 'super' } catch { return false }
+}
+
 router.beforeEach((to, from, next) => {
   const token = localStorage.getItem('admin_token')
   if (to.path !== '/login' && !token) next('/login')
   else if (to.path === '/login' && token) next('/dashboard')
+  else if (to.path === '/settings' && !isSuperAdmin()) next('/dashboard')
   else next()
 })
 

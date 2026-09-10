@@ -5,7 +5,8 @@ let tenantSocket = null
 let tenantSocketToken = ''
 
 function getTenantToken() {
-  return sessionStorage.getItem('tenant_token') || localStorage.getItem('tenant_token') || ''
+  const impersonating = sessionStorage.getItem('tenant_impersonation') === '1'
+  return sessionStorage.getItem('tenant_token') || (!impersonating ? localStorage.getItem('tenant_token') : '') || ''
 }
 
 export function getTenantSocket() {

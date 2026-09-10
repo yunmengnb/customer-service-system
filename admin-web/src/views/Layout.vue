@@ -20,18 +20,25 @@ function handleProfileUpdated(event) {
 onMounted(() => window.addEventListener('admin-profile-updated', handleProfileUpdated))
 onUnmounted(() => window.removeEventListener('admin-profile-updated', handleProfileUpdated))
 
-const navItems = computed(() => [
-  { path: '/dashboard', icon: '▦', label: '仪表盘' },
-  { path: '/tenants', icon: '▣', label: '租户管理' },
-  { path: '/customers', icon: '♙', label: '客户管理' },
-  { path: '/conversations', icon: '▤', label: '系统会话' },
-  { path: '/complaints', icon: '◇', label: '投诉管理' },
-  { path: '/announcements', icon: '◈', label: '公告管理' },
-  { path: '/apps', icon: '▣', label: 'APP 管理' },
-  { path: '/settings', icon: '⚙', label: '系统设置' },
-  { path: '/version', icon: '▤', label: '版本信息' },
-  { path: '/profile', icon: '♙', label: '个人资料' },
-])
+const isSuper = computed(() => adminInfo.value.role === 'super')
+
+const navItems = computed(() => {
+  const items = [
+    { path: '/dashboard', icon: '▦', label: '仪表盘' },
+    { path: '/tenants', icon: '▣', label: '租户管理' },
+    { path: '/customers', icon: '♙', label: '客户管理' },
+    { path: '/conversations', icon: '▤', label: '系统会话' },
+    { path: '/complaints', icon: '◇', label: '投诉管理' },
+    { path: '/announcements', icon: '◈', label: '公告管理' },
+    { path: '/apps', icon: '▣', label: 'APP 管理' },
+    { path: '/version', icon: '▤', label: '版本信息' },
+    { path: '/profile', icon: '♙', label: '个人资料' },
+  ]
+  if (isSuper.value) {
+    items.splice(7, 0, { path: '/settings', icon: '⚙', label: '系统设置' })
+  }
+  return items
+})
 
 function navClick(path) {
   router.push(path)

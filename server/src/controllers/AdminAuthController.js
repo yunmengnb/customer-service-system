@@ -1,6 +1,6 @@
 // 忆梦云团队开发
 const PlatformAdmin = require('../models/PlatformAdmin');
-const { ok, error, hashPassword, comparePassword, signToken } = require('../utils');
+const { ok, error, hashPassword, comparePassword, signToken, passwordVersion } = require('../utils');
 
 class AdminAuthController {
   // POST /api/admin/auth/login
@@ -41,6 +41,7 @@ class AdminAuthController {
       id: admin._id.toString(),
       username: admin.username,
       role: admin.role,
+      pv: passwordVersion(admin.password),
     });
     
     return ok(res, {
@@ -78,7 +79,7 @@ class AdminAuthController {
     await admin.save();
 
     const token = signToken({
-      type: 'admin', id: admin._id.toString(), username: admin.username, role: admin.role,
+      type: 'admin', id: admin._id.toString(), username: admin.username, role: admin.role, pv: passwordVersion(admin.password),
     });
     return ok(res, { token, admin: admin.toJSON() }, '资料已更新');
   }

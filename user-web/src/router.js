@@ -36,6 +36,7 @@ const routes = [
 
       localStorage.removeItem(key)
       const data = JSON.parse(raw)
+      sessionStorage.setItem('tenant_impersonation', '1')
       sessionStorage.setItem('tenant_token', data.token)
       sessionStorage.setItem('tenant_user', JSON.stringify(data.user))
       sessionStorage.setItem('tenant_info', JSON.stringify(data.tenant))
@@ -100,7 +101,8 @@ const router = createRouter({ history: createWebHistory(), routes })
 
 router.beforeEach((to) => {
   const isPublic = publicPaths.has(to.path) || to.matched.some((record) => record.meta.public)
-  const token = sessionStorage.getItem('tenant_token') || localStorage.getItem('tenant_token')
+  const impersonating = sessionStorage.getItem('tenant_impersonation') === '1'
+  const token = sessionStorage.getItem('tenant_token') || (!impersonating ? localStorage.getItem('tenant_token') : '')
   if (!isPublic && !token) return { path: '/login', query: { redirect: to.fullPath } }
   if (isPublic) return true
 

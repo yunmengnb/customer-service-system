@@ -355,7 +355,7 @@ async function submitRegister() {
   if (form.password !== form.confirmPassword) return authMessage.value = '两次输入的密码不一致'
   if (!agreed.value) return authMessage.value = '请先阅读并同意免责协议和使用协议'
   authLoading.value = true
-  try { await finishAuth(await api.post('/client/auth/register', { ...form, fingerprint: navigator.userAgent, ...await getCaptchaPayload() })) }
+  try { await finishAuth(await api.post('/client/auth/register', { ...form, agreementAccepted: agreed.value, fingerprint: navigator.userAgent, ...await getCaptchaPayload() })) }
   catch (error) { authMessage.value = error?.message || '注册失败'; await loadCaptcha(); geetestInstance?.reset?.() } finally { authLoading.value = false }
 }
 async function sendPasswordCode() {

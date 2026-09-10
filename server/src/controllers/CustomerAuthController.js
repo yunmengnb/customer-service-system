@@ -11,7 +11,7 @@ const { sendMail } = require('../utils/mailer');
 const { normalizeEmail, sendEmailCode, verifyEmailCode } = require('../utils/emailVerification');
 const presence = require('../utils/presence');
 const { getSystemSettings } = require('../utils/systemSettings');
-const { ok, error, hashPassword, comparePassword, signToken, verifyToken, normalizePhone, qqAvatarUrl, customerAvatarUrl, hashFingerprint, getClientIp } = require('../utils');
+const { ok, error, hashPassword, comparePassword, signToken, verifyToken, normalizePhone, qqAvatarUrl, customerAvatarUrl, hashFingerprint, getClientIp, passwordVersion } = require('../utils');
 
 async function getChannelByToken(publicToken) {
   const key = `config:channel:token:${publicToken}`;
@@ -130,7 +130,7 @@ function channelJson(channel) {
 }
 
 function createAccountSession(res, account, isNew = false) {
-  const token = signToken({ type: 'customer', accountId: account._id.toString() }, config.jwt.customerExpiresIn);
+  const token = signToken({ type: 'customer', accountId: account._id.toString(), pv: passwordVersion(account.password) }, config.jwt.customerExpiresIn);
   return ok(res, { token, isNew, profileRequired: !account.qq, customer: accountJson(account) });
 }
 
@@ -340,6 +340,7 @@ class CustomerAuthController {
   async accountRegister(req, res) {
     const settings = await getSystemSettings();
     if (!settings.registerEnabled) return error(res, '系统暂未开放注册', 4034, 403);
+    if (req.body.agreementAccepted !== true) return error(res, '请先阅读并同意免责协议和使用协议', 4001, 400);
     const phone = normalizePhone(req.body.phone);
     const email = String(req.body.email).trim().toLowerCase();
     if (await CustomerAccount.exists({ phone })) return error(res, '手机号已被注册');
@@ -461,6 +462,7 @@ class CustomerAuthController {
     if (!channel) return error(res, '客服链接无效或已过期', 404, 404);
     const settings = await getSystemSettings();
     if (!settings.registerEnabled) return error(res, '系统暂未开放注册', 4034, 403);
+    if (req.body.agreementAccepted !== true) return error(res, '请先阅读并同意免责协议和使用协议', 4001, 400);
 
     const phone = normalizePhone(req.body.phone);
     const email = String(req.body.email).trim().toLowerCase();
@@ -537,6 +539,7 @@ class CustomerAuthController {
       tenantId: channel.tenantId.toString(),
       channelId: channel._id.toString(),
       conversationId: conversation._id.toString(),
+      pv: passwordVersion(account.password),
     }, config.jwt.customerExpiresIn);
     return ok(res, {
       token: jwt,
@@ -603,6 +606,7 @@ class CustomerAuthController {
       tenantId: channel.tenantId.toString(),
       channelId: channel._id.toString(),
       conversationId: conversation._id.toString(),
+      pv: passwordVersion(account.password),
     }, config.jwt.customerExpiresIn);
     return ok(res, { token: jwt });
   }

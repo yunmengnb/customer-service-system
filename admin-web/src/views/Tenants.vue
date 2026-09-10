@@ -15,6 +15,10 @@ const saving = ref(false)
 const plan = ref({ agentLimit: 10, channelLimit: 5 })
 const editForm = ref({ name: '', username: '', email: '', qq: '', password: '' })
 
+const isSuper = computed(() => {
+  try { return JSON.parse(localStorage.getItem('admin_info') || '{}').role === 'super' } catch { return false }
+})
+
 // 轻量 Toast 工具
 const toast = (() => ({
   show(type, msg, title) {
@@ -162,7 +166,7 @@ onMounted(load)
           <th>套餐</th>
           <th>状态</th>
           <th>注册时间</th>
-          <th style="text-align:right;">操作</th>
+          <th v-if="isSuper" style="text-align:right;">操作</th>
         </tr>
       </thead>
       <tbody>
@@ -189,7 +193,7 @@ onMounted(load)
             <div style="font-size:12px;color:#475569;">{{ new Date(t.createdAt).toLocaleDateString('zh-CN') }}</div>
             <div style="font-size:11px;color:#94a3b8;">{{ new Date(t.createdAt).toTimeString().slice(0, 5) }}</div>
           </td>
-          <td data-label="操作" style="text-align:right;">
+          <td data-label="操作" v-if="isSuper" style="text-align:right;">
             <div style="display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap;">
               <button class="btn-link" @click="openEditModal(t)">编辑</button>
               <button class="btn-link" @click="openPlanModal(t)">套餐</button>
@@ -200,7 +204,7 @@ onMounted(load)
           </td>
         </tr>
         <tr v-if="!list.length && !loading">
-          <td colspan="7" style="text-align:center;padding:48px;color:#94a3b8;">
+          <td :colspan="isSuper ? 7 : 6" style="text-align:center;padding:48px;color:#94a3b8;">
             <div style="font-size:42px;margin-bottom:12px;">📭</div>
             暂无租户数据
           </td>

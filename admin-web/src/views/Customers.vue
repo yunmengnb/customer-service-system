@@ -17,6 +17,10 @@ const editingCustomer = ref(null)
 const saving = ref(false)
 const editForm = ref({ phone: '', nickname: '', qq: '', email: '', password: '' })
 
+const isSuper = computed(() => {
+  try { return JSON.parse(localStorage.getItem('admin_info') || '{}').role === 'super' } catch { return false }
+})
+
 const totalPages = computed(() => Math.max(Math.ceil(total.value / limit), 1))
 const rangeStart = computed(() => total.value ? (page.value - 1) * limit + 1 : 0)
 const rangeEnd = computed(() => Math.min(page.value * limit, total.value))
@@ -155,7 +159,7 @@ onMounted(load)
           <th>状态</th>
           <th>最近登录</th>
           <th>注册时间</th>
-          <th style="text-align:right;">操作</th>
+          <th v-if="isSuper" style="text-align:right;">操作</th>
         </tr>
       </thead>
       <tbody>
@@ -181,7 +185,7 @@ onMounted(load)
           </td>
           <td data-label="最近登录" class="date-cell">{{ formatDate(customer.lastLoginAt) }}</td>
           <td data-label="注册时间" class="date-cell">{{ formatDate(customer.createdAt) }}</td>
-          <td data-label="操作" style="text-align:right;">
+          <td data-label="操作" v-if="isSuper" style="text-align:right;">
             <div class="customer-actions">
               <button class="btn-link" @click="openEditModal(customer)">编辑</button>
               <button class="btn-link" :class="{ danger: customer.status === 'active' }" @click="toggleStatus(customer)">{{ customer.status === 'active' ? '禁用' : '启用' }}</button>
@@ -189,13 +193,13 @@ onMounted(load)
           </td>
         </tr>
         <tr v-if="loading">
-          <td colspan="8" class="empty-cell">正在加载...</td>
+          <td :colspan="isSuper ? 8 : 7" class="empty-cell">正在加载...</td>
         </tr>
         <tr v-else-if="errorMessage">
-          <td colspan="8" class="empty-cell error-text">{{ errorMessage }}</td>
+          <td :colspan="isSuper ? 8 : 7" class="empty-cell error-text">{{ errorMessage }}</td>
         </tr>
         <tr v-else-if="!list.length">
-          <td colspan="8" class="empty-cell">暂无客户数据</td>
+          <td :colspan="isSuper ? 8 : 7" class="empty-cell">暂无客户数据</td>
         </tr>
       </tbody>
     </table>

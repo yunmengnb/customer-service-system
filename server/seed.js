@@ -11,6 +11,19 @@ const Channel = require('./src/models/Channel');
 
 async function seed() {
   await connectDB();
+
+  // 生产环境初始化禁止使用空密码或弱口令，避免创建公开默认凭据的账号
+  const weakPasswords = new Set(['admin123', 'demo123', 'admin', 'demo', 'password', '123456', '12345678']);
+  if (config.nodeEnv === 'production') {
+    for (const [label, value] of [
+      ['管理员', config.defaults.admin.password],
+      ['租户', config.defaults.tenant.password],
+    ]) {
+      if (!value || String(value).length < 8 || weakPasswords.has(String(value).toLowerCase())) {
+        throw new Error(`生产环境初始化必须配置强${label}密码，长度至少 8 位且不能使用弱口令`);
+      }
+    }
+  }
   
   // ===== 默认管理员 =====
   let admin = await PlatformAdmin.findOne({ username: config.defaults.admin.username });

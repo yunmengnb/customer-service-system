@@ -1,7 +1,7 @@
 // 忆梦云团队开发
 const TenantUser = require('../models/TenantUser');
 const Tenant = require('../models/Tenant');
-const { ok, error, hashPassword, signToken } = require('../utils');
+const { ok, error, hashPassword, signToken, passwordVersion } = require('../utils');
 const { recordOperation } = require('../services/auditLogService');
 
 class AgentController {
@@ -67,6 +67,10 @@ class AgentController {
     if (req.body.avatarUrl !== undefined) user.avatarUrl = req.body.avatarUrl;
     
     await user.save();
+    // 禁用员工后立即断开其连接，重连时会因状态非 active 而被拒绝
+    if (user.status === 'disabled') {
+      req.app.get('io')?.in(`agent-${user._id}`).disconnectSockets(true);
+    }
     recordOperation({ req, tenantId, user: req.user, action: 'employee_update', detail: `修改员工「${user.displayName || user.username}」` });
     return ok(res, user.toJSON());
   }
@@ -86,6 +90,8 @@ class AgentController {
     }
     
     await TenantUser.deleteOne({ _id: id });
+    // 删除员工后立即断开其连接，避免旧 Socket 继续接收消息
+    req.app.get('io')?.in(`agent-${id}`).disconnectSockets(true);
     recordOperation({ req, tenantId, user: req.user, action: 'employee_delete', detail: `删除员工「${user.displayName || user.username}」` });
     return ok(res, null, '已删除');
   }
@@ -106,6 +112,8 @@ class AgentController {
     
     user.password = hashPassword(password);
     await user.save();
+    // 重置密码后立即断开其连接，使旧凭证对应的 Socket 会话失效
+    req.app.get('io')?.in(`agent-${user._id}`).disconnectSockets(true);
     recordOperation({ req, tenantId, user: req.user, action: 'employee_reset_password', detail: `重置员工「${user.displayName || user.username}」密码` });
     return ok(res, null, '已重置');
   }
@@ -132,6 +140,7 @@ class AgentController {
       username: employee.username,
       displayName: employee.displayName,
       role: employee.role,
+      pv: passwordVersion(employee.password),
     });
 
     return ok(res, {

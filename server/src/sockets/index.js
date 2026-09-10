@@ -1,6 +1,6 @@
 // 忆梦云团队开发
 const { createAdapter } = require('@socket.io/redis-adapter');
-const { verifyToken } = require('../utils');
+const { verifyToken, passwordVersion } = require('../utils');
 const { getRedis, createRedisDuplicate } = require('../config/redis');
 const presence = require('../utils/presence');
 const Channel = require('../models/Channel');
@@ -56,6 +56,9 @@ async function setupSocketIO(io) {
         if (!user || user.status !== 'active' || !tenant || tenant.status !== 'active') {
           return next(new Error('User not found or disabled'));
         }
+        if (payload.pv && passwordVersion(user.password) !== payload.pv) {
+          return next(new Error('Token invalidated'));
+        }
         socket.user = {
           ...payload,
           role: user.role,
@@ -73,12 +76,15 @@ async function setupSocketIO(io) {
             blocked: false,
           }).select('accountId tenantId channelId identityType');
           const [account, tenant, channel] = binding ? await Promise.all([
-            isGuest ? Promise.resolve(true) : CustomerAccount.findOne({ _id: binding.accountId, status: 'active' }).select('_id'),
+            isGuest ? Promise.resolve(true) : CustomerAccount.findOne({ _id: binding.accountId, status: 'active' }).select('_id password'),
             Tenant.findOne({ _id: binding.tenantId, status: 'active' }).select('_id'),
             Channel.findOne({ _id: binding.channelId, tenantId: binding.tenantId }).select('_id'),
           ]) : [];
           if (!binding || !account || !tenant || !channel) {
             return next(new Error('Customer context is invalid'));
+          }
+          if (!isGuest && payload.pv && passwordVersion(account.password) !== payload.pv) {
+            return next(new Error('Token invalidated'));
           }
           socket.user = {
             ...payload,
@@ -95,6 +101,9 @@ async function setupSocketIO(io) {
       } else if (payload.type === 'admin') {
         const admin = await PlatformAdmin.findOne({ _id: payload.id, status: 'active' });
         if (!admin) return next(new Error('Admin not found or disabled'));
+        if (payload.pv && passwordVersion(admin.password) !== payload.pv) {
+          return next(new Error('Token invalidated'));
+        }
         socket.user = { ...payload, role: admin.role };
       } else {
         return next(new Error('Invalid user type'));

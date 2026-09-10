@@ -85,6 +85,15 @@ function getClientIp(req) {
 }
 
 /**
+ * 密码版本指纹：用于让旧 JWT 在密码修改/重置后失效。
+ * bcrypt 哈希尾段对同一密码固定、对不同密码变化，足以作为会话版本比较依据。
+ */
+function passwordVersion(passwordHash) {
+  const hash = String(passwordHash || '');
+  return hash ? hash.slice(-16) : '';
+}
+
+/**
  * 统一响应工具
  */
 function ok(res, data = null, message = 'success') {
@@ -106,6 +115,7 @@ module.exports = {
   customerAvatarUrl,
   hashFingerprint,
   getClientIp,
+  passwordVersion,
   ok,
   error,
 };

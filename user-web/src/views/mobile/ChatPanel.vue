@@ -183,9 +183,15 @@ async function syncLatestMessages() {
   if (!conversationId || messageSyncInFlight) return
   messageSyncInFlight = true
   try {
-    const res = await api.get(`/tenant/conversations/${conversationId}/messages`, { params: { limit: 50 } })
-    if (res.code === 0 && String(conversationId) === String(props.conversationId)) {
-      ;(res.data || []).forEach(mergeMessage)
+    let cursor = [...messages.value].reverse().find(message => message._id && !String(message._id).startsWith('temp_'))?._id
+    if (!cursor) return await loadMessages()
+    while (String(conversationId) === String(props.conversationId)) {
+      const res = await api.get(`/tenant/conversations/${conversationId}/messages`, { params: { limit: 50, after: cursor } })
+      if (res.code !== 0) break
+      const page = res.data || []
+      page.forEach(mergeMessage)
+      if (page.length < 50) break
+      cursor = page[page.length - 1]._id
     }
   } catch {}
   finally { messageSyncInFlight = false }

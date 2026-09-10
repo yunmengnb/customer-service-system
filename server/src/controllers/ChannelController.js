@@ -173,8 +173,21 @@ class ChannelController {
       status: 'active',
     }).select('_id');
     
+    const newAgentIds = validAgents.map(a => a._id.toString());
+    const previousAgentIds = (channel.agentIds || []).map(id => id.toString());
+    const removedAgentIds = previousAgentIds.filter(id => !newAgentIds.includes(id));
+    
     channel.agentIds = validAgents.map(a => a._id);
     await channel.save();
+    
+    // 撤销坐席后立即断开其连接，重连时会重新校验渠道授权，避免旧 Socket 继续收到渠道消息
+    const io = req.app.get('io');
+    if (io && removedAgentIds.length) {
+      for (const agentId of removedAgentIds) {
+        io.in(`agent-${agentId}`).disconnectSockets(true);
+      }
+    }
+    
     recordOperation({ req, tenantId: req.tenantId, user: req.user, action: 'channel_set_agents', detail: `调整渠道「${channel.name}」授权坐席` });
     return ok(res, channel.toJSON());
   }

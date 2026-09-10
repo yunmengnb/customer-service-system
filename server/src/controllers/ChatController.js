@@ -26,6 +26,13 @@ const RECALL_WINDOW_MS = 2 * 60 * 1000;
 
 function customerJson(binding, account = null) {
   const data = binding.toJSON ? binding.toJSON() : { ...binding };
+  // 会话详情无需向客服暴露客户 IP、设备信息与指纹等隐私字段
+  delete data.password;
+  delete data.registerFingerprintHash;
+  delete data.registerIp;
+  delete data.registerUserAgent;
+  delete data.lastLoginIp;
+  delete data.lastLoginAt;
   if (!data.accountId || data.identityType === 'guest' || !account) {
     data.avatarUrl = '';
     return data;
@@ -428,8 +435,32 @@ class ChatController {
     if (!await canAccessConversation(req, conv)) return error(res, '无权访问', 403);
     
     const beforeId = req.query.before;
+    const afterId = req.query.after;
     const aroundId = req.query.around;
     const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+
+    if (afterId) {
+      if (!mongoose.isValidObjectId(afterId)) return error(res, '无效的分页参数', 4001, 400);
+      const cursor = await Message.findOne({ _id: afterId, conversationId: conv._id, tenantId: req.tenantId });
+      if (!cursor) return error(res, '消息游标不属于当前会话', 4001, 400);
+      const messages = await Message.find({
+        conversationId: conv._id,
+        tenantId: req.tenantId,
+        deletedForAgentAt: null,
+        $or: [
+          { createdAt: { $gt: cursor.createdAt } },
+          { createdAt: cursor.createdAt, _id: { $gt: cursor._id } },
+        ],
+      }).populate({ path: 'senderId', select: 'displayName avatarUrl' }).sort({ createdAt: 1, _id: 1 }).limit(limit);
+      return ok(res, messages.map(message => {
+        const obj = message.toJSON();
+        if (message.senderType === 'agent' && message.senderId) {
+          obj.sender = { id: message.senderId._id, displayName: message.senderId.displayName, avatarUrl: message.senderId.avatarUrl || '' };
+          obj.senderId = message.senderId._id;
+        }
+        return obj;
+      }));
+    }
 
     if (aroundId) {
       if (!mongoose.isValidObjectId(aroundId)) return error(res, '无效的消息定位参数', 4001, 400);
@@ -495,7 +526,8 @@ class ChatController {
       );
     }
     
-    return ok(res, messages.reverse().map(message => {
+    const orderedMessages = afterId ? messages : messages.reverse();
+    return ok(res, orderedMessages.map(message => {
       const obj = message.toJSON();
       if (message.senderType === 'agent' && message.senderId) {
         obj.sender = {
@@ -844,19 +876,28 @@ class ChatController {
     if (!conv) return ok(res, []);
     
     const beforeId = req.query.before;
+    const afterId = req.query.after;
     const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 50);
     const query = {
       conversationId: conv._id,
       tenantId: customer.tenantId,
       deletedForCustomerAt: null,
     };
-    if (beforeId) {
+    if (afterId) {
+      if (!mongoose.isValidObjectId(afterId)) return error(res, '无效的分页参数', 4001, 400);
+      const cursor = await Message.findOne({ _id: afterId, conversationId: conv._id, tenantId: customer.tenantId });
+      if (!cursor) return error(res, '消息游标不属于当前会话', 4001, 400);
+      query.$or = [
+        { createdAt: { $gt: cursor.createdAt } },
+        { createdAt: cursor.createdAt, _id: { $gt: cursor._id } },
+      ];
+    } else if (beforeId) {
       if (!mongoose.isValidObjectId(beforeId)) return error(res, '无效的分页参数', 4001, 400);
       query._id = { $lt: new mongoose.Types.ObjectId(beforeId) };
     }
     const messages = await Message.find(query)
       .populate({ path: 'senderId', select: 'displayName avatarUrl' })
-      .sort({ createdAt: -1 })
+      .sort(afterId ? { createdAt: 1, _id: 1 } : { createdAt: -1, _id: -1 })
       .limit(limit);
     
     // 仅有未读消息时写入数据库，避免每次进入都执行无效更新。
@@ -871,7 +912,8 @@ class ChatController {
       await broadcastCustomerChannelSummary(conv, summaries.customer);
     }
     
-    return ok(res, messages.reverse().map(message => {
+    const orderedMessages = afterId ? messages : messages.reverse();
+    return ok(res, orderedMessages.map(message => {
       const obj = message.toJSON();
       if (message.senderType === 'agent' && message.senderId) {
         obj.sender = {

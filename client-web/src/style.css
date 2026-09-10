@@ -605,6 +605,9 @@
 .auth-tabs button { flex: 1; padding: 10px; border: 0; border-radius: 8px; background: transparent; color: #64748b; font-weight: 700; cursor: pointer; }
 .auth-tabs button.active { background: #fff; color: #2563eb; box-shadow: 0 3px 10px rgba(15,23,42,.08); }
 .auth-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.agreement-check { display: flex; align-items: flex-start; gap: 8px; margin: 4px 0 0; font-size: 13px; color: #64748b; text-align: left; line-height: 1.5; }
+.agreement-check input { flex: none; margin-top: 2px; }
+.agreement-check a { color: #2563eb; text-decoration: none; }
 .email-code-row { display: flex; gap: 10px; }
 .email-code-row input { min-width: 0; flex: 1; }
 .email-code-row button { flex: 0 0 116px; border: 1px solid #bfdbfe; border-radius: 8px; background: #eff6ff; color: #1d4ed8; font-weight: 700; cursor: pointer; }
