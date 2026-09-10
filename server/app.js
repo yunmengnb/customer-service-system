@@ -25,6 +25,7 @@ const uploadRoutes = require('./src/routes/upload');
 const complaintUploadRoutes = require('./src/routes/complaintUpload');
 const fileRoutes = require('./src/routes/files');
 const attachmentCleanupService = require('./src/services/attachmentCleanupService');
+const { ensureDefaultAgreements } = require('./src/utils/systemSettings');
 
 // Socket
 const setupSocketIO = require('./src/sockets');
@@ -136,6 +137,7 @@ async function start() {
   
   server.listen(config.port, () => {
     attachmentCleanupService.start(io);
+    ensureDefaultAgreements().catch(err => console.error('[Server] 默认协议初始化失败:', err));
     console.log(`[Server] 运行中: http://localhost:${config.port}`);
     console.log(`[Server] 环境: ${config.nodeEnv}`);
   });

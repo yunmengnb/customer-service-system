@@ -48,9 +48,27 @@ function buildCustomerServiceLink(setting, publicToken) {
   return setting.customerServiceDomain ? `${setting.customerServiceDomain}${path}` : path;
 }
 
+// 存量数据补齐：协议内容为空时写入默认协议，不覆盖管理员已配置的内容
+async function ensureDefaultAgreements() {
+  const setting = await SystemSetting.getSingleton();
+  if (!setting.agreements) setting.agreements = {};
+  let changed = false;
+  for (const key of ['disclaimer', 'terms']) {
+    if (!String(setting.agreements[key] || '').trim()) {
+      setting.agreements[key] = agreementDefaults[key];
+      changed = true;
+    }
+  }
+  if (!changed) return false;
+  await setting.save();
+  clearSystemSettingsCache();
+  return true;
+}
+
 module.exports = {
   getSystemSettings,
   clearSystemSettingsCache,
+  ensureDefaultAgreements,
   publicSettings,
   publicWebsiteSettings,
   buildCustomerServiceLink,

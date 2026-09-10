@@ -15,8 +15,8 @@ const SystemSettingSchema = new mongoose.Schema({
     default: [],
   },
   agreements: {
-    disclaimer: { type: String, default: '', maxlength: 20000 },
-    terms: { type: String, default: '', maxlength: 20000 },
+    disclaimer: { type: String, default: agreementDefaults.disclaimer, maxlength: 20000 },
+    terms: { type: String, default: agreementDefaults.terms, maxlength: 20000 },
   },
   upload: {
     allowedTypes: {
