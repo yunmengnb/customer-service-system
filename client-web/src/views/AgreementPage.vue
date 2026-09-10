@@ -52,11 +52,11 @@ onMounted(load)
 </template>
 
 <style scoped>
-.agreement-page { min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; background: #f5f6f8; font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif; }
-.agreement-header { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 12px; height: 52px; padding: 0 16px; background: #fff; border-bottom: 1px solid #eceff1; }
+.agreement-page { height: 100vh; height: 100dvh; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: #f5f6f8; font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif; }
+.agreement-header { position: relative; z-index: 10; display: flex; flex: none; align-items: center; gap: 12px; height: 52px; padding: 0 16px; background: #fff; border-bottom: 1px solid #eceff1; }
 .agreement-back { border: none; background: transparent; color: #2563eb; font-size: 14px; font-weight: 600; cursor: pointer; }
 .agreement-header h1 { flex: 1; margin: 0; font-size: 17px; font-weight: 600; color: #0f172a; text-align: center; }
-.agreement-body { flex: 1; padding: 16px; }
+.agreement-body { flex: 1; min-height: 0; padding: 16px; overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch; }
 .agreement-content { padding: 18px; border-radius: 14px; background: #fff; box-shadow: 0 2px 8px rgba(15,23,42,.04); color: #334155; font-size: 14px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }
 .agreement-state { padding: 60px 20px; text-align: center; color: #64748b; }
 .agreement-error { color: #b91c1c; }
