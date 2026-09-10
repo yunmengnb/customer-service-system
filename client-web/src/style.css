@@ -634,6 +634,8 @@
 .account-section-title h2 { font-size: 19px; }
 .account-section-title p { margin-top: 5px; color: #64748b; font-size: 13px; }
 .account-section-title > span { padding: 5px 9px; border-radius: 999px; background: #eff6ff; color: #2563eb; font-size: 12px; font-weight: 700; }
+.channel-title-actions { display: flex; align-items: center; gap: 10px; }
+.channel-title-actions > span { padding: 5px 9px; border-radius: 999px; background: #eff6ff; color: #2563eb; font-size: 12px; font-weight: 700; }
 .channel-history-list { display: flex; flex-direction: column; gap: 10px; }
 .channel-history-item { width: 100%; display: flex; align-items: center; gap: 14px; padding: 14px; border: 1px solid #e2e8f0; border-radius: 14px; background: #fff; color: inherit; text-align: left; cursor: pointer; transition: border-color .16s, transform .16s, box-shadow .16s; }
 .channel-history-item:hover:not(:disabled) { border-color: #93c5fd; transform: translateY(-1px); box-shadow: 0 8px 20px rgba(37,99,235,.08); }

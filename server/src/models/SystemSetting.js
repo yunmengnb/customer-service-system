@@ -1,5 +1,6 @@
 // 忆梦云团队开发
 const mongoose = require('mongoose');
+const agreementDefaults = require('../utils/agreementDefaults');
 
 const SystemSettingSchema = new mongoose.Schema({
   singletonKey: { type: String, default: 'platform', unique: true, immutable: true },

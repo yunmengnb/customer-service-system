@@ -1,5 +1,6 @@
 // 忆梦云团队开发
 const SystemSetting = require('../models/SystemSetting');
+const agreementDefaults = require('./agreementDefaults');
 
 let cached = null;
 let expiresAt = 0;

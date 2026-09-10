@@ -70,6 +70,8 @@ router.post('/settings/test-email', authAdmin, requireSuperAdmin, SystemSettingC
 router.post('/storage/conversation-files/estimate', authAdmin, requireSuperAdmin, StorageController.estimate);
 router.post('/storage/conversation-files/cleanup', authAdmin, requireSuperAdmin, StorageController.cleanup);
 router.get('/storage/conversation-files/status', authAdmin, requireSuperAdmin, StorageController.status);
+router.post('/data/cleanup', authAdmin, requireSuperAdmin, DataManagementController.cleanup);
+router.get('/data/export', authAdmin, requireSuperAdmin, DataManagementController.exportData);
 router.patch('/complaints/:id/status', authAdmin, requireSuperAdmin, ComplaintController.updateStatus);
 
 module.exports = router;

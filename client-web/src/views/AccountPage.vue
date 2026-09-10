@@ -34,6 +34,10 @@
             <div class="form-item"><label>密码</label><input v-model="registerForm.password" type="password" autocomplete="new-password" placeholder="请输入6-72位密码" /></div>
             <div class="form-item"><label>确认密码</label><input v-model="registerForm.confirmPassword" type="password" autocomplete="new-password" placeholder="请再次输入密码" @keyup.enter="submitRegister" /></div>
           </div>
+          <label class="agreement-check">
+            <input v-model="agreed" type="checkbox" />
+            <span>我已阅读并同意<router-link to="/agreements/disclaimer" target="_blank">《免责协议》</router-link>和<router-link to="/agreements/terms" target="_blank">《使用协议》</router-link></span>
+          </label>
         </template>
         <template v-else>
           <div class="form-item"><label>手机号</label><input v-model.trim="resetForm.phone" inputmode="tel" autocomplete="tel" placeholder="请输入注册手机号" /></div>
@@ -66,7 +70,14 @@
         <div v-if="loading" class="account-state">正在加载...</div>
         <div v-else-if="errorMessage" class="account-state account-error"><p>{{ errorMessage }}</p><button type="button" @click="loadAccount">重新加载</button></div>
         <section v-else-if="activeTab === 'channels'" class="account-card">
-          <div class="account-section-title"><div><h2>历史渠道</h2><p>你使用此账号访问过的客服渠道</p></div><span>{{ channels.length }} 个</span></div>
+          <div class="account-section-title">
+            <div><h2>历史渠道</h2><p>你使用此账号访问过的客服渠道</p></div>
+            <div class="channel-title-actions">
+              <span>{{ channels.length }} 个</span>
+              <button class="channel-refresh" type="button" :disabled="refreshingChannels" @click="refreshChannels">{{ refreshingChannels ? '刷新中...' : '刷新' }}</button>
+            </div>
+          </div>
+          <p v-if="channelRefreshMessage" class="channel-refresh-message">{{ channelRefreshMessage }}</p>
           <div v-if="channels.length" class="channel-history-list">
             <button v-for="item in channels" :key="item.bindingId || item._id" type="button" class="channel-history-item" :disabled="item.status !== 'online'" @click="openChannel(item)">
               <img v-if="item.avatarUrl" :src="item.avatarUrl" alt="渠道头像" />
@@ -144,6 +155,9 @@ const resetForm = ref({ phone: '', email: '', emailCode: '', newPassword: '', co
 const authLoading = ref(false)
 const authMessage = ref('')
 const authSuccess = ref(false)
+const agreed = ref(false)
+const refreshingChannels = ref(false)
+const channelRefreshMessage = ref('')
 const codeLoading = ref(false)
 const codeCountdown = ref(0)
 const resetCodeLoading = ref(false)
@@ -217,7 +231,31 @@ async function loadAccount() {
   } finally { loading.value = false }
 }
 
+async function refreshChannels() {
+  if (refreshingChannels.value) return
+  refreshingChannels.value = true
+  channelRefreshMessage.value = ''
+  try {
+    const historyRes = await api.get('/client/channels/history')
+    if (historyRes.code !== 0) throw new Error(historyRes.message || '历史渠道刷新失败')
+    channels.value = historyRes.data || []
+    const current = channels.value.find(item => item.current)
+    if (current?.publicToken) {
+      channelToken.value = current.publicToken
+      localStorage.setItem('client_channel_token', current.publicToken)
+    }
+    const scope = clientCacheScope(customer.value)
+    initializeChatCache(scope)
+    await cacheConversations(scope, channels.value)
+  } catch (error) {
+    channelRefreshMessage.value = error?.message || '历史渠道刷新失败'
+  } finally {
+    refreshingChannels.value = false
+  }
+}
+
 function switchAuthTab(tab) { authTab.value = tab; authMessage.value = ''; authSuccess.value = false; captchaCode.value = ''; geetestInstance?.reset?.() }
+
 function submitAuth() {
   if (authTab.value === 'login') return submitLogin()
   if (authTab.value === 'register') return submitRegister()

@@ -374,6 +374,7 @@ async function testEmail() {
 onMounted(() => {
   loadSettings()
   loadCleanupStatus()
+  loadOverview()
 })
 </script>
 
