@@ -852,7 +852,7 @@ async function completeAuth(res) {
   customer.value = res.data.customer
   conversationStatus.value = res.data.conversation.status
   showLogin.value = false
-  await loadMessages()
+  await Promise.all([loadConversation(), loadMessages()])
   setupSocket()
   if (res.data.profileRequired) showQQModal.value = true
   requestInstallGuide()

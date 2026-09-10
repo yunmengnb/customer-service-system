@@ -83,7 +83,7 @@ async function authTenantUser(req, res, next) {
     }
 
     const tenant = await Tenant.findById(user.tenantId);
-    if (!tenant || tenant.status !== 'active') {
+    if (!tenant || !['active', 'trial'].includes(tenant.status)) {
       return error(res, '所属租户已被禁用', 4032, 403);
     }
 

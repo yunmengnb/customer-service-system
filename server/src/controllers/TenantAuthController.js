@@ -110,7 +110,7 @@ class TenantAuthController {
       return error(res, '账号已被禁用', 403, 403);
     }
     const tenantObj = specifiedTenant || await Tenant.findById(user.tenantId);
-    if (!tenantObj || tenantObj.status !== 'active') {
+    if (!tenantObj || !['active', 'trial'].includes(tenantObj.status)) {
       recordLogin({ req, tenantId: user.tenantId, user, result: 'failure', detail: '所属租户已被禁用' });
       return error(res, '所属租户已被禁用', 403, 403);
     }

@@ -77,7 +77,7 @@ async function setupSocketIO(io) {
           }).select('accountId tenantId channelId identityType');
           const [account, tenant, channel] = binding ? await Promise.all([
             isGuest ? Promise.resolve(true) : CustomerAccount.findOne({ _id: binding.accountId, status: 'active' }).select('_id password'),
-            Tenant.findOne({ _id: binding.tenantId, status: 'active' }).select('_id'),
+            Tenant.findOne({ _id: binding.tenantId, status: { $in: ['active', 'trial'] } }).select('_id'),
             Channel.findOne({ _id: binding.channelId, tenantId: binding.tenantId }).select('_id'),
           ]) : [];
           if (!binding || !account || !tenant || !channel) {

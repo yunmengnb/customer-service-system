@@ -515,16 +515,7 @@ class ChatController {
       .limit(limit);
     
     // waiting 会话可供授权坐席预览，但仅管理员或实际接待坐席可改变已读状态。
-    if (req.user.role !== 'agent' || String(conv.assignedAgentId) === String(req.user.id)) {
-      await Message.updateMany(
-        { conversationId: conv._id, tenantId: req.tenantId, readByAgent: false },
-        { $set: { readByAgent: true } }
-      );
-      await Conversation.updateOne(
-        { _id: conv._id, tenantId: req.tenantId },
-        { $set: { agentUnreadCount: 0 } }
-      );
-    }
+    await markAgentConversationRead(req, conv);
     
     const orderedMessages = afterId ? messages : messages.reverse();
     return ok(res, orderedMessages.map(message => {

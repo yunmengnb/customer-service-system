@@ -748,6 +748,7 @@ class CustomerAuthController {
   async updatePassword(req, res) {
     try {
       const { currentPassword, newPassword, confirmPassword, emailCode } = req.body;
+      if (req.customer.identity === 'guest') return error(res, '访客不能修改密码，请先绑定客户账号', 4036, 403);
       if (newPassword !== confirmPassword) return error(res, '两次输入的新密码不一致', 4003, 400);
       const account = await resolveAccount(req.customer);
       if (!account) return error(res, '账号不存在', 4041, 404);
