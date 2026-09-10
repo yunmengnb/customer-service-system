@@ -14,12 +14,21 @@ const SystemSettingSchema = new mongoose.Schema({
     type: [String],
     default: [],
   },
+  agreements: {
+    disclaimer: { type: String, default: '', maxlength: 20000 },
+    terms: { type: String, default: '', maxlength: 20000 },
+  },
   upload: {
     allowedTypes: {
       type: [String],
       default: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'pdf', 'docx', 'xlsx', 'zip', 'txt', 'mp3', 'wav', 'mp4', 'webm'],
     },
     maxFileSizeMB: { type: Number, default: 10, min: 1, max: 1024 },
+  },
+  storage: {
+    conversationAttachmentRetentionDays: { type: Number, default: 2, min: 1, max: 365 },
+    pendingAttachmentHours: { type: Number, default: 24, min: 1, max: 168 },
+    cleanupBatchSize: { type: Number, default: 100, min: 1, max: 100 },
   },
   captcha: {
     enabled: { type: Boolean, default: false },

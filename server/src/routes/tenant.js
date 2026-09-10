@@ -9,8 +9,14 @@ const AgentController = require('../controllers/AgentController');
 const ChannelController = require('../controllers/ChannelController');
 const ChatController = require('../controllers/ChatController');
 const AnnouncementController = require('../controllers/AnnouncementController');
+const ConversationAttachmentController = require('../controllers/ConversationAttachmentController');
 const CaptchaController = require('../controllers/CaptchaController');
+const LogController = require('../controllers/LogController');
+const SystemSettingController = require('../controllers/SystemSettingController');
 const { verifyCaptcha } = require('../middleware/captcha');
+
+// ===== 公开设置（注册页读取协议等）=====
+router.get('/public-settings', SystemSettingController.getPublic);
 
 // ===== 认证 =====
 router.get('/auth/captcha', CaptchaController.create);
@@ -25,6 +31,10 @@ router.patch('/auth/profile', authTenantUser, TenantAuthController.updateProfile
 router.post('/auth/profile/email-code', authTenantUser, validators.tenantProfileCode, TenantAuthController.sendProfileEmailCode);
 router.patch('/auth/profile/email', authTenantUser, validators.tenantEmail, TenantAuthController.updateEmail);
 router.patch('/auth/profile/password', authTenantUser, validators.tenantPassword, TenantAuthController.updatePassword);
+
+// ===== 日志 =====
+router.get('/logs/login', authTenantUser, LogController.listLogin);
+router.get('/logs/operation', authTenantUser, LogController.listOperation);
 
 // ===== 公告（只读）=====
 router.get('/announcements', authTenantUser, AnnouncementController.list);
@@ -65,6 +75,7 @@ router.get('/conversations/:id', authTenantUser, ChatController.conversationDeta
 router.post('/conversations/:id/accept', authTenantUser, ChatController.acceptConversation);
 router.get('/conversations/:id/messages/search', authTenantUser, ChatController.searchConversationMessages);
 router.get('/conversations/:id/messages', authTenantUser, ChatController.getMessages);
+router.post('/conversations/:conversationId/attachments', authTenantUser, ConversationAttachmentController.uploadTenant);
 router.post('/conversations/:id/messages', authTenantUser, ChatController.agentSendMessage);
 router.patch('/conversations/:id/customer-settings', authTenantUser, ChatController.updateCustomerSettings);
 router.delete('/conversations/:id/messages', authTenantUser, ChatController.clearAgentMessages);

@@ -25,6 +25,7 @@ const routes = [
   { path: '/login', component: () => import('./views/Login.vue'), meta: { public: true } },
   { path: '/register', component: () => import('./views/Register.vue'), meta: { public: true } },
   { path: '/forgot-password', component: () => import('./views/ForgotPassword.vue'), meta: { public: true } },
+  { path: '/agreements/:type', component: () => import('./views/AgreementPage.vue'), meta: { public: true } },
   {
     path: '/employee-login',
     component: { template: '<div></div>' },
@@ -54,6 +55,7 @@ const routes = [
       { path: 'announcements/:id', component: () => import('./views/AnnouncementDetail.vue') },
       { path: 'employees', component: () => import('./views/desktop/Agents.vue'), meta: { adminOnly: true } },
       { path: 'profile', component: () => import('./views/desktop/Profile.vue') },
+      { path: 'logs', component: () => import('./views/desktop/Logs.vue') },
     ],
   },
   { path: `${desktopPrefix}/messages/:id`, component: () => import('./views/desktop/ChatRoom.vue'), meta: { device: 'desktop', standalone: true } },
@@ -72,6 +74,7 @@ const routes = [
       { path: 'profile', component: () => import('./views/mobile/Profile.vue') },
       { path: 'profile/about', component: () => import('./views/mobile/About.vue') },
       { path: 'employees', component: () => import('./views/mobile/Agents.vue'), meta: { adminOnly: true } },
+      { path: 'logs', component: () => import('./views/mobile/Logs.vue') },
     ],
   },
   { path: `${mobilePrefix}/messages/:id`, component: () => import('./views/mobile/ChatRoom.vue'), meta: { device: 'mobile', standalone: true } },
@@ -96,7 +99,7 @@ const routes = [
 const router = createRouter({ history: createWebHistory(), routes })
 
 router.beforeEach((to) => {
-  const isPublic = publicPaths.has(to.path)
+  const isPublic = publicPaths.has(to.path) || to.matched.some((record) => record.meta.public)
   const token = sessionStorage.getItem('tenant_token') || localStorage.getItem('tenant_token')
   if (!isPublic && !token) return { path: '/login', query: { redirect: to.fullPath } }
   if (isPublic) return true

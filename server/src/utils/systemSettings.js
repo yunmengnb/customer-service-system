@@ -36,6 +36,10 @@ function publicWebsiteSettings(setting) {
     siteKeywords: setting.siteKeywords || '',
     siteDescription: setting.siteDescription || '',
     tenantRegisterEmailVerificationEnabled: Boolean(setting.tenantRegisterEmailVerificationEnabled),
+    agreements: {
+      disclaimer: setting.agreements?.disclaimer || '',
+      terms: setting.agreements?.terms || '',
+    },
   };
 }
 

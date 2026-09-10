@@ -2,6 +2,7 @@
 const TenantUser = require('../models/TenantUser');
 const Tenant = require('../models/Tenant');
 const { ok, error, hashPassword, signToken } = require('../utils');
+const { recordOperation } = require('../services/auditLogService');
 
 class AgentController {
   // GET /api/tenant/employees
@@ -40,6 +41,7 @@ class AgentController {
       status: 'active',
     });
     
+    recordOperation({ req, tenantId, user: req.user, action: 'employee_create', detail: `新增员工「${displayName || username}」` });
     return ok(res, user.toJSON());
   }
   
@@ -65,6 +67,7 @@ class AgentController {
     if (req.body.avatarUrl !== undefined) user.avatarUrl = req.body.avatarUrl;
     
     await user.save();
+    recordOperation({ req, tenantId, user: req.user, action: 'employee_update', detail: `修改员工「${user.displayName || user.username}」` });
     return ok(res, user.toJSON());
   }
   
@@ -83,6 +86,7 @@ class AgentController {
     }
     
     await TenantUser.deleteOne({ _id: id });
+    recordOperation({ req, tenantId, user: req.user, action: 'employee_delete', detail: `删除员工「${user.displayName || user.username}」` });
     return ok(res, null, '已删除');
   }
   
@@ -102,6 +106,7 @@ class AgentController {
     
     user.password = hashPassword(password);
     await user.save();
+    recordOperation({ req, tenantId, user: req.user, action: 'employee_reset_password', detail: `重置员工「${user.displayName || user.username}」密码` });
     return ok(res, null, '已重置');
   }
 

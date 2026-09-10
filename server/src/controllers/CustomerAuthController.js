@@ -11,7 +11,7 @@ const { sendMail } = require('../utils/mailer');
 const { normalizeEmail, sendEmailCode, verifyEmailCode } = require('../utils/emailVerification');
 const presence = require('../utils/presence');
 const { getSystemSettings } = require('../utils/systemSettings');
-const { ok, error, hashPassword, comparePassword, signToken, verifyToken, normalizePhone, hashFingerprint, getClientIp } = require('../utils');
+const { ok, error, hashPassword, comparePassword, signToken, verifyToken, normalizePhone, qqAvatarUrl, customerAvatarUrl, hashFingerprint, getClientIp } = require('../utils');
 
 async function getChannelByToken(publicToken) {
   const key = `config:channel:token:${publicToken}`;
@@ -91,6 +91,7 @@ function accountJson(account, binding = null) {
   const data = account.toJSON();
   data.accountId = data._id;
   data.identityType = 'customer';
+  data.avatarUrl = customerAvatarUrl(data);
   if (binding) {
     data._id = binding._id;
     data.bindingId = binding._id;
@@ -109,6 +110,7 @@ function guestJson(binding) {
   delete data.phone;
   delete data.email;
   delete data.qq;
+  data.avatarUrl = '';
   return data;
 }
 
@@ -296,21 +298,40 @@ class CustomerAuthController {
 
   // POST /api/client/auth/register-code
   async sendAccountRegisterCode(req, res) {
+    // #region debug-point E:account-entry
+    const reportRegisterDebug = (msg, data) => fetch('http://email-debug:7777/event', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessionId: 'email-verification', runId: 'pre-fix', hypothesisId: 'E', location: 'server/src/controllers/CustomerAuthController.js:sendAccountRegisterCode', msg: `[DEBUG] ${msg}`, data, ts: Date.now() }) }).catch(() => {});
+    reportRegisterDebug('register-code-entry', { entryType: 'account' });
+    // #endregion
     const settings = await getSystemSettings();
-    if (!settings.registerEnabled) return error(res, '系统暂未开放注册', 4034, 403);
+    if (!settings.registerEnabled) {
+      reportRegisterDebug('register-code-result', { entryType: 'account', resultStatus: 'registration-disabled', httpCode: 403, cacheHitCategory: 'not-checked' });
+      return error(res, '系统暂未开放注册', 4034, 403);
+    }
     const email = String(req.body.email).trim().toLowerCase();
-    if (await CustomerAccount.exists({ email })) return error(res, '邮箱已被注册');
+    if (await CustomerAccount.exists({ email })) {
+      reportRegisterDebug('register-code-result', { entryType: 'account', resultStatus: 'already-registered', httpCode: 400, cacheHitCategory: 'not-checked' });
+      return error(res, '邮箱已被注册');
+    }
     const key = `customer:register-code:${crypto.createHash('sha256').update(email).digest('hex')}`;
     const existing = await cache.getJson(key);
-    if (existing?.sentAt && Date.now() - existing.sentAt < 60000) return error(res, '验证码发送过于频繁，请稍后再试', 4290, 429);
+    if (existing?.sentAt && Date.now() - existing.sentAt < 60000) {
+      reportRegisterDebug('register-code-result', { entryType: 'account', resultStatus: 'rate-limited', httpCode: 429, cacheHitCategory: 'fresh' });
+      return error(res, '验证码发送过于频繁，请稍后再试', 4290, 429);
+    }
+    const cacheHitCategory = existing ? 'stale' : 'miss';
     const code = String(crypto.randomInt(100000, 1000000));
     const codeHash = crypto.createHmac('sha256', config.jwt.secret).update(`${email}:${code}`).digest('hex');
     try {
       const sent = await sendMail({ to: email, subject: '客户注册邮箱验证码', text: `您的注册验证码是 ${code}，10分钟内有效。如非本人操作，请忽略本邮件。` });
-      if (!sent) return error(res, '邮箱服务暂不可用', 5031, 503);
+      if (!sent) {
+        reportRegisterDebug('register-code-result', { entryType: 'account', resultStatus: 'mail-unavailable', httpCode: 503, cacheHitCategory });
+        return error(res, '邮箱服务暂不可用', 5031, 503);
+      }
       await cache.setJson(key, { codeHash, sentAt: Date.now() }, 600);
+      reportRegisterDebug('register-code-result', { entryType: 'account', resultStatus: 'success', httpCode: 200, cacheHitCategory });
       return ok(res, null, '验证码已发送');
     } catch (_) {
+      reportRegisterDebug('register-code-result', { entryType: 'account', resultStatus: 'send-failed', httpCode: 500, cacheHitCategory });
       return error(res, '验证码发送失败，请稍后重试', 5001, 500);
     }
   }
@@ -330,7 +351,7 @@ class CustomerAuthController {
     const ip = getClientIp(req);
     let account;
     try {
-      account = await CustomerAccount.create({ phone, qq: req.body.qq, email, password: hashPassword(req.body.password), avatarUrl: `https://q1.qlogo.cn/g?b=qq&nk=${req.body.qq}&s=100`, registerIp: ip, registerUserAgent: req.headers['user-agent'] || '', registerFingerprintHash: hashFingerprint(req.body.fingerprint), lastLoginIp: ip, lastLoginAt: new Date() });
+      account = await CustomerAccount.create({ phone, qq: req.body.qq, email, password: hashPassword(req.body.password), registerIp: ip, registerUserAgent: req.headers['user-agent'] || '', registerFingerprintHash: hashFingerprint(req.body.fingerprint), lastLoginIp: ip, lastLoginAt: new Date() });
     } catch (err) {
       if (err?.code === 11000) return error(res, '手机号或邮箱已被注册');
       throw err;
@@ -385,16 +406,33 @@ class CustomerAuthController {
 
   // POST /api/client/channels/:token/auth/register-code
   async sendRegisterCode(req, res) {
+    // #region debug-point E:channel-entry
+    const reportRegisterDebug = (msg, data) => fetch('http://email-debug:7777/event', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessionId: 'email-verification', runId: 'pre-fix', hypothesisId: 'E', location: 'server/src/controllers/CustomerAuthController.js:sendRegisterCode', msg: `[DEBUG] ${msg}`, data, ts: Date.now() }) }).catch(() => {});
+    reportRegisterDebug('register-code-entry', { entryType: 'channel' });
+    // #endregion
     const channel = await getChannelByToken(req.params.token);
-    if (!channel) return error(res, '客服链接无效或已过期', 404, 404);
+    if (!channel) {
+      reportRegisterDebug('register-code-result', { entryType: 'channel', resultStatus: 'channel-not-found', httpCode: 404, cacheHitCategory: 'not-checked' });
+      return error(res, '客服链接无效或已过期', 404, 404);
+    }
     const settings = await getSystemSettings();
-    if (!settings.registerEnabled) return error(res, '系统暂未开放注册', 4034, 403);
+    if (!settings.registerEnabled) {
+      reportRegisterDebug('register-code-result', { entryType: 'channel', resultStatus: 'registration-disabled', httpCode: 403, cacheHitCategory: 'not-checked' });
+      return error(res, '系统暂未开放注册', 4034, 403);
+    }
 
     const email = String(req.body.email).trim().toLowerCase();
-    if (await CustomerAccount.exists({ email })) return error(res, '邮箱已被注册');
+    if (await CustomerAccount.exists({ email })) {
+      reportRegisterDebug('register-code-result', { entryType: 'channel', resultStatus: 'already-registered', httpCode: 400, cacheHitCategory: 'not-checked' });
+      return error(res, '邮箱已被注册');
+    }
     const key = `customer:register-code:${crypto.createHash('sha256').update(email).digest('hex')}`;
     const existing = await cache.getJson(key);
-    if (existing?.sentAt && Date.now() - existing.sentAt < 60000) return error(res, '验证码发送过于频繁，请稍后再试', 4290, 429);
+    if (existing?.sentAt && Date.now() - existing.sentAt < 60000) {
+      reportRegisterDebug('register-code-result', { entryType: 'channel', resultStatus: 'rate-limited', httpCode: 429, cacheHitCategory: 'fresh' });
+      return error(res, '验证码发送过于频繁，请稍后再试', 4290, 429);
+    }
+    const cacheHitCategory = existing ? 'stale' : 'miss';
 
     const code = String(crypto.randomInt(100000, 1000000));
     const codeHash = crypto.createHmac('sha256', config.jwt.secret).update(`${email}:${code}`).digest('hex');
@@ -404,10 +442,15 @@ class CustomerAuthController {
         subject: '客户注册邮箱验证码',
         text: `您的注册验证码是 ${code}，10分钟内有效。如非本人操作，请忽略本邮件。`,
       });
-      if (!sent) return error(res, '邮箱服务暂不可用', 5031, 503);
+      if (!sent) {
+        reportRegisterDebug('register-code-result', { entryType: 'channel', resultStatus: 'mail-unavailable', httpCode: 503, cacheHitCategory });
+        return error(res, '邮箱服务暂不可用', 5031, 503);
+      }
       await cache.setJson(key, { codeHash, sentAt: Date.now() }, 600);
+      reportRegisterDebug('register-code-result', { entryType: 'channel', resultStatus: 'success', httpCode: 200, cacheHitCategory });
       return ok(res, null, '验证码已发送');
     } catch (_) {
+      reportRegisterDebug('register-code-result', { entryType: 'channel', resultStatus: 'send-failed', httpCode: 500, cacheHitCategory });
       return error(res, '验证码发送失败，请稍后重试', 5001, 500);
     }
   }
@@ -439,7 +482,6 @@ class CustomerAuthController {
         qq: req.body.qq,
         email,
         password: hashPassword(req.body.password),
-        avatarUrl: `https://q1.qlogo.cn/g?b=qq&nk=${req.body.qq}&s=100`,
         registerIp: ip,
         registerUserAgent: req.headers['user-agent'] || '',
         registerFingerprintHash: hashFingerprint(req.body.fingerprint),
@@ -593,8 +635,9 @@ class CustomerAuthController {
     const binding = await Customer.findById(req.customer.id);
     if (!account || !binding) return error(res, '账号不存在', 404);
     const { qq } = req.body;
+    const previousQQAvatar = qqAvatarUrl(account.qq);
     account.qq = qq;
-    account.avatarUrl = `https://q1.qlogo.cn/g?b=qq&nk=${qq}&s=100`;
+    if (!account.avatarUrl || account.avatarUrl === previousQQAvatar) account.avatarUrl = '';
     await account.save();
     await Customer.updateMany(
       { accountId: account._id },

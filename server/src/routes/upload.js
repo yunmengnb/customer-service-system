@@ -8,6 +8,7 @@ const multer = require('multer');
 const { authAdmin, requireSuperAdmin, authTenantUser, authCustomer } = require('../middleware/auth');
 const { ok, error } = require('../utils');
 const { getSystemSettings } = require('../utils/systemSettings');
+const ConversationAttachmentController = require('../controllers/ConversationAttachmentController');
 
 const router = express.Router();
 const UPLOAD_DIR = path.resolve(__dirname, '..', '..', 'uploads');
@@ -155,6 +156,7 @@ function apkUpload(subDir) {
 
 router.post('/admin/app-apk', authAdmin, requireSuperAdmin, apkUpload('app/staff'));
 router.post('/admin/customer-app-apk', authAdmin, requireSuperAdmin, apkUpload('app/customer'));
+router.post('/tenant/conversation/:conversationId', authTenantUser, ConversationAttachmentController.uploadTenant);
 router.post('/admin', authAdmin, configuredUpload('admin'));
 router.post('/tenant', authTenantUser, configuredUpload('tenant'));
 router.post('/client', authCustomer, configuredUpload('customer'));

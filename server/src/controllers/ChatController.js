@@ -3,19 +3,45 @@ const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const KeywordReply = require('../models/KeywordReply');
 const Customer = require('../models/Customer');
+const CustomerAccount = require('../models/CustomerAccount');
 const TenantUser = require('../models/TenantUser');
 const Channel = require('../models/Channel');
 const mongoose = require('mongoose');
 const config = require('../config');
 const cache = require('../utils/cache');
 const { getSystemSettings } = require('../utils/systemSettings');
-const { ok, error, generateToken } = require('../utils');
+const { ok, error, generateToken, customerAvatarUrl } = require('../utils');
+const {
+  validatePendingAttachment,
+  createMessageWithAttachment,
+  discardUnpublishedMessage,
+  recallAttachment,
+} = require('../services/conversationAttachmentService');
 
 // 关联 socket.io（在 app.js 中注入）
 let io = null;
 function setIO(_io) { io = _io; }
 
 const RECALL_WINDOW_MS = 2 * 60 * 1000;
+
+function customerJson(binding, account = null) {
+  const data = binding.toJSON ? binding.toJSON() : { ...binding };
+  if (!data.accountId || data.identityType === 'guest' || !account) {
+    data.avatarUrl = '';
+    return data;
+  }
+  data.qq = account.qq || '';
+  data.nickname = account.nickname || data.nickname;
+  data.avatarUrl = customerAvatarUrl(account);
+  return data;
+}
+
+async function customerAccounts(customers) {
+  const accountIds = [...new Set(customers.filter(customer => customer.accountId).map(customer => String(customer.accountId)))];
+  if (!accountIds.length) return {};
+  const accounts = await CustomerAccount.find({ _id: { $in: accountIds } }).select('_id qq nickname avatarUrl').lean();
+  return Object.fromEntries(accounts.map(account => [String(account._id), account]));
+}
 
 async function refreshConversationSummary(conv) {
   const messageScope = { tenantId: conv.tenantId, conversationId: conv._id };
@@ -240,9 +266,10 @@ class ChatController {
     // 附带客户简要信息和最后一条消息
     const customerIds = [...new Set(items.map(c => c.customerId))];
     const customers = customerIds.length
-      ? await Customer.find({ _id: { $in: customerIds }, tenantId }).select('_id phone qq email nickname avatarUrl')
+      ? await Customer.find({ _id: { $in: customerIds }, tenantId }).select('_id accountId identityType phone qq email nickname avatarUrl')
       : [];
-    const customerMap = Object.fromEntries(customers.map(c => [c._id.toString(), c]));
+    const accountMap = await customerAccounts(customers);
+    const customerMap = Object.fromEntries(customers.map(c => [c._id.toString(), customerJson(c, accountMap[String(c.accountId)] || null)]));
     
     const convIds = items.map(c => c._id);
     const lastMsgs = convIds.length
@@ -257,7 +284,7 @@ class ChatController {
     const result = items.map(c => {
       const obj = c.toJSON();
       const cust = customerMap[c.customerId.toString()];
-      obj.customer = cust ? cust.toJSON() : null;
+      obj.customer = cust || null;
       obj.lastMessage = lastMsgMap[c._id.toString()] || null;
       const searchMatch = searchMessageMap[c._id.toString()];
       obj.searchMatch = searchMatch || null;
@@ -280,10 +307,13 @@ class ChatController {
       channelId: conv.channelId,
     });
     const channel = await Channel.findOne({ _id: conv.channelId, tenantId: req.tenantId });
+    const account = customer?.accountId
+      ? await CustomerAccount.findById(customer.accountId).select('_id qq nickname avatarUrl').lean()
+      : null;
     
     return ok(res, {
       ...conv.toJSON(),
-      customer: customer ? customer.toJSON() : null,
+      customer: customer ? customerJson(customer, account) : null,
       channel: channel ? { id: channel._id, name: channel.name, avatarUrl: channel.avatarUrl || '' } : null,
     });
   }
@@ -492,15 +522,39 @@ class ChatController {
     
     const agent = await TenantUser.findById(req.user.id);
     
-    const { content, clientMessageId, messageType, attachmentUrl, attachmentName, thumbnailUrl } = req.body;
+    const { content, messageType, attachmentId, attachmentUrl, attachmentName, thumbnailUrl } = req.body;
+    const clientMessageId = String(req.body.clientMessageId || '').trim();
     const effectiveType = ['image', 'video', 'file'].includes(messageType) ? messageType : 'text';
-    
-    // text 类型必须有 content；附件类型 content 可选（显示用附件链接代替）
+
+    if (!clientMessageId || clientMessageId.length > 128) {
+      return error(res, 'clientMessageId 必须为1到128个字符');
+    }
     if (effectiveType === 'text' && (!content || !content.trim())) {
       return error(res, '消息内容不能为空');
     }
-    if (['image', 'video', 'file'].includes(effectiveType) && !attachmentUrl) {
-      return error(res, '附件 URL 不能为空');
+    if (['image', 'video', 'file'].includes(effectiveType) && !attachmentId) {
+      return error(res, '附件 ID 不能为空');
+    }
+    if (clientMessageId) {
+      const duplicate = await Message.findOne({
+        tenantId: req.tenantId,
+        conversationId: conv._id,
+        clientMessageId,
+        senderType: 'agent',
+        senderId: req.user.id,
+      });
+      if (duplicate) return ok(res, duplicate.toJSON(), '消息已发送');
+    }
+    let attachment = null;
+    if (attachmentId) {
+      try {
+        attachment = await validatePendingAttachment({
+          attachmentId, tenantId: req.tenantId, channelId: conv.channelId, conversationId: conv._id,
+          uploaderType: 'agent', uploaderId: req.user.id, messageType: effectiveType,
+        });
+      } catch (err) {
+        return error(res, err.message);
+      }
     }
 
     const normalizedContent = String(content || '').trim().toLowerCase();
@@ -512,34 +566,50 @@ class ChatController {
     }
     
     const messageAt = new Date();
-    // 先原子确认接待状态并推进摘要，关闭操作会以 lastMessageAt 拦截旧快照。
-    const currentConv = await Conversation.findOneAndUpdate(
+    let msg;
+    try {
+      msg = await createMessageWithAttachment({
+        tenantId: req.tenantId,
+        conversationId: conv._id,
+        senderType: 'agent',
+        senderId: agent._id,
+        senderTypeModel: 'TenantUser',
+        messageType: effectiveType,
+        content: attachment ? '' : (content || '').trim(),
+        attachmentUrl: attachment ? '' : (attachmentUrl || ''),
+        attachmentName: attachment ? attachment.originalName : (attachmentName || ''),
+        thumbnailUrl: attachment ? '' : (effectiveType === 'video' ? (thumbnailUrl || '') : ''),
+        clientMessageId: clientMessageId || undefined,
+        createdAt: messageAt,
+      }, attachment);
+    } catch (err) {
+      if (err?.code === 11000 && clientMessageId) {
+        const duplicate = await Message.findOne({
+          tenantId: req.tenantId,
+          conversationId: conv._id,
+          clientMessageId,
+          senderType: 'agent',
+          senderId: req.user.id,
+        });
+        if (duplicate) return ok(res, duplicate.toJSON(), '消息已发送');
+      }
+      throw err;
+    }
+
+    conv = await Conversation.findOneAndUpdate(
       {
         _id: conv._id,
         tenantId: req.tenantId,
         status: 'active',
         assignedAgentId: conv.assignedAgentId,
       },
-      { $set: { lastMessageAt: messageAt }, $inc: { customerUnreadCount: 1 } },
+      { $set: { lastMessageAt: msg.createdAt }, $inc: { customerUnreadCount: 1 } },
       { new: true }
     );
-    if (!currentConv) return error(res, '会话状态已变化，请刷新');
-    conv = currentConv;
-
-    const msg = await Message.create({
-      tenantId: req.tenantId,
-      conversationId: conv._id,
-      senderType: 'agent',
-      senderId: agent._id,
-      senderTypeModel: 'TenantUser',
-      messageType: effectiveType,
-      content: (content || '').trim(),
-      attachmentUrl: attachmentUrl || '',
-      attachmentName: attachmentName || '',
-      thumbnailUrl: effectiveType === 'video' ? (thumbnailUrl || '') : '',
-      clientMessageId: clientMessageId || undefined,
-      createdAt: messageAt,
-    });
+    if (!conv) {
+      await discardUnpublishedMessage(msg, attachment);
+      return error(res, '会话状态已变化，请刷新');
+    }
 
     const messageData = {
       ...msg.toJSON(),
@@ -640,6 +710,7 @@ class ChatController {
     }
 
     message.recalledAt = new Date();
+    await recallAttachment(message, message.recalledAt);
     message.content = '';
     message.attachmentUrl = '';
     message.attachmentName = '';
@@ -842,6 +913,7 @@ class ChatController {
     }
 
     message.recalledAt = new Date();
+    await recallAttachment(message, message.recalledAt);
     message.content = '';
     message.attachmentUrl = '';
     message.attachmentName = '';
@@ -888,8 +960,12 @@ class ChatController {
   // POST /api/client/conversation/messages
   async customerSendMessage(req, res) {
     const { customer } = req;
-    const { content, clientMessageId, messageType, attachmentUrl, attachmentName, thumbnailUrl } = req.body;
-    
+    const { content, messageType, attachmentId, attachmentUrl, attachmentName, thumbnailUrl } = req.body;
+    const clientMessageId = String(req.body.clientMessageId || '').trim();
+
+    if (!clientMessageId || clientMessageId.length > 128) {
+      return error(res, 'clientMessageId 必须为1到128个字符');
+    }
     const currentCustomer = await Customer.findOne({
       _id: customer.id,
       tenantId: customer.tenantId,
@@ -905,8 +981,8 @@ class ChatController {
     if (effectiveType === 'text' && (!content || !content.trim())) {
       return error(res, '消息内容不能为空');
     }
-    if (['image', 'video', 'file'].includes(effectiveType) && !attachmentUrl) {
-      return error(res, '附件 URL 不能为空');
+    if (['image', 'video', 'file'].includes(effectiveType) && !attachmentId) {
+      return error(res, '附件 ID 不能为空');
     }
     
     let conv = await Conversation.findOne({
@@ -916,6 +992,17 @@ class ChatController {
       status: { $in: ['waiting', 'active', 'closed'] },
     }).sort({ lastMessageAt: -1 });
     
+    if (conv && clientMessageId) {
+      const duplicate = await Message.findOne({
+        tenantId: customer.tenantId,
+        conversationId: conv._id,
+        clientMessageId,
+        senderType: 'customer',
+        senderId: customer.id,
+      });
+      if (duplicate) return ok(res, { message: duplicate.toJSON(), botReply: null }, '消息已发送');
+    }
+
     // 无会话时创建新会话
     if (!conv) {
       conv = await Conversation.create({
@@ -924,40 +1011,49 @@ class ChatController {
         customerId: customer.id,
         status: 'waiting',
       });
-    } else if (conv.status === 'closed') {
-      // closed 会话仅由客户消息原子重开，并清空原接待坐席
-      const reopened = await Conversation.findOneAndUpdate(
-        { _id: conv._id, tenantId: customer.tenantId, status: 'closed' },
-        {
-          $set: { status: 'waiting', assignedAgentId: null },
-          $unset: { acceptedAt: 1, closedAt: 1 },
-        },
-        { new: true }
-      );
-      conv = reopened || await Conversation.findOne({
-        _id: conv._id,
-        tenantId: customer.tenantId,
-        channelId: customer.channelId,
-        customerId: customer.id,
-        status: { $in: ['waiting', 'active'] },
-      });
-      if (!conv) return error(res, '会话状态已变化，请重试');
     }
     
+    let attachment = null;
+    if (attachmentId) {
+      try {
+        attachment = await validatePendingAttachment({
+          attachmentId, tenantId: customer.tenantId, channelId: conv.channelId, conversationId: conv._id,
+          uploaderType: 'customer', uploaderId: customer.id, messageType: effectiveType,
+        });
+      } catch (err) {
+        return error(res, err.message);
+      }
+    }
+
     // 记录消息
-    const msg = await Message.create({
-      tenantId: customer.tenantId,
-      conversationId: conv._id,
-      senderType: 'customer',
-      senderId: customer.id,
-      senderTypeModel: 'Customer',
-      messageType: effectiveType,
-      content: (content || '').trim(),
-      attachmentUrl: attachmentUrl || '',
-      attachmentName: attachmentName || '',
-      thumbnailUrl: effectiveType === 'video' ? (thumbnailUrl || '') : '',
-      clientMessageId: clientMessageId || undefined,
-    });
+    let msg;
+    try {
+      msg = await createMessageWithAttachment({
+        tenantId: customer.tenantId,
+        conversationId: conv._id,
+        senderType: 'customer',
+        senderId: customer.id,
+        senderTypeModel: 'Customer',
+        messageType: effectiveType,
+        content: attachment ? '' : (content || '').trim(),
+        attachmentUrl: attachment ? '' : (attachmentUrl || ''),
+        attachmentName: attachment ? attachment.originalName : (attachmentName || ''),
+        thumbnailUrl: attachment ? '' : (effectiveType === 'video' ? (thumbnailUrl || '') : ''),
+        clientMessageId: clientMessageId || undefined,
+      }, attachment);
+    } catch (err) {
+      if (err?.code === 11000 && clientMessageId) {
+        const duplicate = await Message.findOne({
+          tenantId: customer.tenantId,
+          conversationId: conv._id,
+          clientMessageId,
+          senderType: 'customer',
+          senderId: customer.id,
+        });
+        if (duplicate) return ok(res, { message: duplicate.toJSON(), botReply: null }, '消息已发送');
+      }
+      throw err;
+    }
     
     // 将“消息到达”作为最终状态更新；若与关闭并发，客户消息原子重开会话。
     conv = await Conversation.findOneAndUpdate(
@@ -981,7 +1077,10 @@ class ChatController {
       ],
       { new: true, updatePipeline: true }
     );
-    if (!conv) return error(res, '会话状态已变化，请重试');
+    if (!conv) {
+      await discardUnpublishedMessage(msg, attachment);
+      return error(res, '会话状态已变化，请重试');
+    }
     
     // 关键词自动回复：仅匹配文本，同优先级时精确匹配优先
     let replyMsg = null;

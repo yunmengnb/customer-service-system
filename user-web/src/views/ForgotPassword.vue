@@ -51,7 +51,7 @@ async function resetPassword() {
   <div class="simple-page">
     <form class="simple-box" @submit.prevent="resetPassword">
       <h1>找回密码</h1>
-      <div class="sub">通过租户注册邮箱验证身份并设置新密码</div>
+      <div class="sub">通过客服后台注册邮箱验证身份并设置新密码</div>
       <input v-model.trim="form.email" type="email" autocomplete="email" placeholder="注册邮箱" />
       <div class="code-row">
         <input v-model.trim="form.emailCode" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="6位邮箱验证码" />

@@ -8,6 +8,7 @@ import AuthCaptcha from '../components/AuthCaptcha.vue'
 const router = useRouter()
 const form = ref({ name: '', username: '', email: '', emailCode: '', password: '', confirmPassword: '' })
 const captcha = ref(null)
+const agreed = ref(false)
 const err = ref('')
 const loading = ref(false)
 const sendingCode = ref(false)
@@ -52,6 +53,7 @@ async function doRegister() {
   if (!/^\d{6}$/.test(f.emailCode)) { err.value = '请输入6位邮箱验证码'; return }
   if (f.password.length < 6 || f.password.length > 72) { err.value = '密码须为6-72位'; return }
   if (f.password !== f.confirmPassword) { err.value = '两次输入的密码不一致'; return }
+  if (!agreed.value) { err.value = '请先阅读并同意免责协议和使用协议'; return }
   loading.value = true
   try {
     const captchaPayload = await captcha.value.verify()
@@ -76,7 +78,7 @@ async function doRegister() {
       <div v-if="toast.message" class="top-toast" :class="toast.type" role="status">{{ toast.message }}</div>
     </Transition>
     <div class="simple-box">
-      <h1>注册租户</h1>
+      <h1>注册客服后台</h1>
       <div class="sub">加入客服系统，开始与客户沟通</div>
       <input v-model.trim="form.name" autocomplete="organization" placeholder="企业名称" />
       <input v-model.trim="form.username" autocomplete="username" placeholder="登录用户名" />
@@ -88,6 +90,10 @@ async function doRegister() {
       <input v-model="form.password" type="password" autocomplete="new-password" placeholder="密码（6-72位）" />
       <input v-model="form.confirmPassword" type="password" autocomplete="new-password" placeholder="请再次输入密码" @keyup.enter="doRegister" />
       <AuthCaptcha ref="captcha" @submit="doRegister" />
+      <label class="agreement-check">
+        <input v-model="agreed" type="checkbox" />
+        <span>我已阅读并同意<router-link to="/agreements/disclaimer" target="_blank">《免责协议》</router-link>和<router-link to="/agreements/terms" target="_blank">《使用协议》</router-link></span>
+      </label>
       <div v-if="err" class="err">{{ err }}</div>
       <button type="button" @click="doRegister" :disabled="loading">
         {{ loading ? '注册中...' : '注册' }}
@@ -119,4 +125,8 @@ async function doRegister() {
 .top-toast.error { background: #dc2626; }
 .toast-enter-active,.toast-leave-active { transition: opacity .2s ease, transform .2s ease; }
 .toast-enter-from,.toast-leave-to { opacity: 0; transform: translate(-50%, -10px); }
+.agreement-check { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 12px; font-size: 12px; color: #6b7280; line-height: 1.5; text-align: left; }
+.agreement-check input[type="checkbox"] { width: 15px; height: 15px; padding: 0; margin: 2px 0 0; border: 1px solid #d1d5db; border-radius: 3px; flex-shrink: 0; }
+.agreement-check a { color: #2563eb; text-decoration: none; }
+
 </style>

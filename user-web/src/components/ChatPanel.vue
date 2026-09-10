@@ -23,6 +23,9 @@ const transferTargetId = ref('')
 const transferReason = ref('')
 const agents = ref([])
 const uploading = ref(false)
+const preview = ref(null)
+const mediaUrls = ref({})
+const mediaRequests = new Map()
 const showInfo = ref(false)
 const showMore = ref(false)
 const showCloseConfirm = ref(false)
@@ -114,13 +117,12 @@ async function handleUpload(ev) {
   uploading.value = true
   const fd = new FormData(); fd.append('file', file)
   try {
-    const res = await api.upload('/upload/tenant', fd)
+    const res = await api.upload(`/upload/tenant/conversation/${props.conversationId}`, fd)
     if (res.code === 0) {
       const fi = res.data
       const body = {
-        messageType: fi.isImage ? 'image' : 'file',
-        content: fi.isImage ? fi.url : '',
-        attachmentUrl: fi.url, attachmentName: fi.name,
+        attachmentId: fi.attachmentId,
+        messageType: ['image', 'video'].includes(fi.category) ? fi.category : 'file',
         clientMessageId: 'up_' + Date.now(),
       }
       const sr = await api.post(`/tenant/conversations/${props.conversationId}/messages`, body)
@@ -146,6 +148,12 @@ async function submitTransfer() {
   } catch (e) { alert(e?.message || '转接失败') }
 }
 
+function applyRecall(data) {
+  const messageId = data.messageId || data._id
+  const msg = messages.value.find(item => String(item._id) === String(messageId))
+  if (msg) Object.assign(msg, data, { recalledAt: data.recalledAt || new Date().toISOString() })
+}
+
 function setupSocket() {
   socket?.disconnect()
   const token = localStorage.getItem('tenant_token')
@@ -154,6 +162,7 @@ function setupSocket() {
   socket.on('message.new', (msg) => {
     if (msg.conversationId === props.conversationId) { messages.value.push(msg); nextTick(scrollToBottom) }
   })
+  socket.on('message.recalled', applyRecall)
   socket.on('conversation.updated', (data) => {
     if (data.conversationId === props.conversationId) {
       if (data.assignedAgentId) conversation.value.assignedAgentId = data.assignedAgentId
@@ -180,10 +189,80 @@ watch(() => props.conversationId, (id) => {
   else { conversation.value = null; messages.value = [] }
 }, { immediate: true })
 
-onUnmounted(() => socket?.disconnect())
+onUnmounted(() => {
+  socket?.disconnect()
+  Object.values(mediaUrls.value).forEach(url => URL.revokeObjectURL(url))
+})
 
 function scrollToBottom() {
   if (msgContainer.value) msgContainer.value.scrollTop = msgContainer.value.scrollHeight
+}
+function attachmentUrl(msg) { return msg.attachmentId ? `/api/files/${msg.attachmentId}` : msg.attachmentUrl }
+function thumbnailUrl(msg) { return msg.attachmentId ? `/api/files/${msg.attachmentId}/thumbnail` : msg.thumbnailUrl }
+function attachmentExpired(msg) { return ['expired', 'deleted'].includes(msg.attachmentStatus) }
+function mediaKey(msg, thumbnail = false) { return `${msg._id || msg.clientMessageId}:${thumbnail ? 'thumbnail' : 'original'}` }
+function loadMedia(msg, thumbnail = false) {
+  if (!msg.attachmentId) return Promise.resolve(thumbnail ? thumbnailUrl(msg) : attachmentUrl(msg))
+  if (attachmentExpired(msg)) return Promise.resolve('')
+  const key = mediaKey(msg, thumbnail)
+  if (mediaUrls.value[key]) return Promise.resolve(mediaUrls.value[key])
+  if (!mediaRequests.has(key)) {
+    const request = api.get(thumbnail ? thumbnailUrl(msg) : attachmentUrl(msg), { baseURL: '', responseType: 'blob' })
+      .then(blob => {
+        const url = URL.createObjectURL(blob)
+        mediaUrls.value[key] = url
+        return url
+      })
+      .catch(error => {
+        if (error?.httpStatus === 410) msg.attachmentStatus = 'expired'
+        return ''
+      })
+      .finally(() => mediaRequests.delete(key))
+    mediaRequests.set(key, request)
+  }
+  return mediaRequests.get(key)
+}
+function mediaSrc(msg, thumbnail = false) {
+  if (!msg.attachmentId) return thumbnail ? thumbnailUrl(msg) : attachmentUrl(msg)
+  return mediaUrls.value[mediaKey(msg, thumbnail)] || ''
+}
+const vLazyMedia = {
+  mounted(el, binding) {
+    const { msg, thumbnail = false } = binding.value
+    if (!msg.attachmentId) return
+    const load = () => loadMedia(msg, thumbnail).then(url => { if (url) el.src = url })
+    if (!('IntersectionObserver' in window)) { load(); return }
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) {
+        observer.disconnect()
+        load()
+      }
+    }, { rootMargin: '160px' })
+    el._attachmentObserver = observer
+    observer.observe(el)
+  },
+  unmounted(el) { el._attachmentObserver?.disconnect() },
+}
+async function openPreview(msg) {
+  if (attachmentExpired(msg)) return
+  const url = await loadMedia(msg)
+  if (url && !attachmentExpired(msg)) preview.value = { url, type: msg.messageType, name: msg.attachmentName, msg }
+}
+function closePreview() { preview.value = null }
+async function downloadFile(msg) {
+  if (attachmentExpired(msg)) return
+  try {
+    const blob = await api.get(attachmentUrl(msg), { baseURL: '', responseType: 'blob' })
+    const objectUrl = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = objectUrl
+    link.download = msg.attachmentName || '下载文件'
+    link.click()
+    URL.revokeObjectURL(objectUrl)
+  } catch (error) {
+    if (error?.httpStatus === 410) msg.attachmentStatus = 'expired'
+    else alert('下载失败')
+  }
 }
 function useQuickReply(text) { input.value = text; showMore.value = false }
 function formatTime(iso) { return iso ? new Date(iso).toTimeString().slice(0, 5) : '' }
@@ -241,7 +320,10 @@ defineExpose({ reload: init })
         </div>
 
         <template v-for="(msg, idx) in messages" :key="msg._id">
-          <div v-if="msg.senderType === 'system'" class="cp-system-msg">
+          <div v-if="msg.recalledAt" class="cp-system-msg">
+            <span>{{ msg.senderType === 'customer' ? '客户撤回一条消息' : '客服撤回一条消息' }}</span>
+          </div>
+          <div v-else-if="msg.senderType === 'system'" class="cp-system-msg">
             <span>{{ msg.content }}</span>
           </div>
 
@@ -250,12 +332,17 @@ defineExpose({ reload: init })
               <div class="cp-bubble-avatar" :style="{ background: `linear-gradient(135deg,#f59e0b,#d97706)` }">{{ avatarChar() }}</div>
               <div class="cp-bubble-wrap">
                 <div class="cp-bubble cp-bubble-customer">
-                  <template v-if="msg.messageType === 'image' && msg.attachmentUrl">
-                    <img :src="msg.attachmentUrl" class="cp-bubble-img" @click="window.open(msg.attachmentUrl)" />
+                  <span v-if="attachmentExpired(msg)">该文件已过期并自动清理</span>
+                  <template v-else-if="msg.messageType === 'image' && (msg.attachmentId || msg.attachmentUrl)">
+                    <img :src="mediaSrc(msg)" v-lazy-media="{ msg }" class="cp-bubble-img" loading="lazy" decoding="async" @click="openPreview(msg)" />
                   </template>
-                  <a v-else-if="msg.messageType === 'file' && msg.attachmentUrl" :href="msg.attachmentUrl" target="_blank" class="cp-bubble-file">
+                  <template v-else-if="msg.messageType === 'video' && (msg.attachmentId || msg.attachmentUrl)">
+                    <img v-if="msg.attachmentId || msg.thumbnailUrl" :src="mediaSrc(msg, true)" v-lazy-media="{ msg, thumbnail: true }" class="cp-bubble-img" loading="lazy" decoding="async" @click="openPreview(msg)" />
+                    <button v-else type="button" class="cp-bubble-img" @click="openPreview(msg)">视频</button>
+                  </template>
+                  <button v-else-if="msg.messageType === 'file' && (msg.attachmentId || msg.attachmentUrl)" class="cp-bubble-file" @click="downloadFile(msg)">
                     📎 {{ msg.attachmentName || '文件' }}
-                  </a>
+                  </button>
                   <template v-else>{{ msg.content }}</template>
                 </div>
                 <div class="cp-bubble-time">{{ formatTime(msg.createdAt) }}</div>
@@ -265,12 +352,17 @@ defineExpose({ reload: init })
             <template v-else>
               <div class="cp-bubble-wrap">
                 <div class="cp-bubble">
-                  <template v-if="msg.messageType === 'image' && msg.attachmentUrl">
-                    <img :src="msg.attachmentUrl" class="cp-bubble-img" @click="window.open(msg.attachmentUrl)" />
+                  <span v-if="attachmentExpired(msg)">该文件已过期并自动清理</span>
+                  <template v-else-if="msg.messageType === 'image' && (msg.attachmentId || msg.attachmentUrl)">
+                    <img :src="mediaSrc(msg)" v-lazy-media="{ msg }" class="cp-bubble-img" loading="lazy" decoding="async" @click="openPreview(msg)" />
                   </template>
-                  <a v-else-if="msg.messageType === 'file' && msg.attachmentUrl" :href="msg.attachmentUrl" target="_blank" class="cp-bubble-file">
+                  <template v-else-if="msg.messageType === 'video' && (msg.attachmentId || msg.attachmentUrl)">
+                    <img v-if="msg.attachmentId || msg.thumbnailUrl" :src="mediaSrc(msg, true)" v-lazy-media="{ msg, thumbnail: true }" class="cp-bubble-img" loading="lazy" decoding="async" @click="openPreview(msg)" />
+                    <button v-else type="button" class="cp-bubble-img" @click="openPreview(msg)">视频</button>
+                  </template>
+                  <button v-else-if="msg.messageType === 'file' && (msg.attachmentId || msg.attachmentUrl)" class="cp-bubble-file" @click="downloadFile(msg)">
                     📎 {{ msg.attachmentName || '文件' }}
-                  </a>
+                  </button>
                   <template v-else>{{ msg.content }}</template>
                 </div>
                 <div class="cp-bubble-time">{{ formatTime(msg.createdAt) }}</div>
@@ -337,6 +429,12 @@ defineExpose({ reload: init })
       </div>
     </div>
 
+    <div v-if="preview" class="cp-preview" @click.self="closePreview">
+      <button type="button" class="cp-preview-close" @click="closePreview">×</button>
+      <img v-if="preview.type === 'image'" :src="preview.url" :alt="preview.name || '图片预览'" />
+      <video v-else :src="preview.url" controls autoplay preload="metadata" playsinline></video>
+    </div>
+
     <!-- 转接弹窗 -->
     <div v-if="showTransfer" class="cp-modal-mask" @click.self="showTransfer = false">
       <div class="cp-modal">
@@ -378,6 +476,15 @@ defineExpose({ reload: init })
 </template>
 
 <style scoped>
+.cp-preview {
+  position: fixed; inset: 0; z-index: 1200; display: flex; align-items: center; justify-content: center;
+  padding: 48px 20px 20px; background: rgba(15, 23, 42, .88);
+}
+.cp-preview img, .cp-preview video { max-width: 92vw; max-height: 86vh; object-fit: contain; }
+.cp-preview-close {
+  position: absolute; top: 16px; right: 20px; border: 0; background: transparent;
+  color: #fff; font-size: 32px; cursor: pointer;
+}
 .cp-panel {
   display: flex; flex: 1 1 auto; flex-direction: column;
   width: 100%; height: 100%; min-width: 0; min-height: 0;

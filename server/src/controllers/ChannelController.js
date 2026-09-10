@@ -8,6 +8,7 @@ const config = require('../config');
 const cache = require('../utils/cache');
 const { ok, error, generateToken } = require('../utils');
 const { getSystemSettings, buildCustomerServiceLink } = require('../utils/systemSettings');
+const { recordOperation } = require('../services/auditLogService');
 
 function invalidateChannelConfig(...tokens) {
   return cache.remove(...tokens.map(token => token && `config:channel:token:${token}`));
@@ -83,6 +84,7 @@ class ChannelController {
       createdBy: user.id,
     });
     
+    recordOperation({ req, tenantId, user, action: 'channel_create', detail: `新增渠道「${name}」` });
     return ok(res, channel.toJSON());
   }
   
@@ -115,6 +117,7 @@ class ChannelController {
     }
     await channel.save();
     await invalidateChannelConfig(channel.publicToken);
+    recordOperation({ req, tenantId: req.tenantId, user: req.user, action: 'channel_update', detail: `修改渠道「${channel.name}」` });
     return ok(res, channel.toJSON());
   }
   
@@ -131,6 +134,7 @@ class ChannelController {
     const obj = channel.toJSON();
     const settings = await getSystemSettings();
     obj.link = buildCustomerServiceLink(settings, channel.publicToken);
+    recordOperation({ req, tenantId: req.tenantId, user: req.user, action: 'channel_rotate_token', detail: `更换渠道「${channel.name}」客服链接` });
     return ok(res, obj);
   }
   
@@ -149,6 +153,7 @@ class ChannelController {
     await KeywordReply.deleteMany({ channelId: channel._id });
     await QuickReply.deleteMany({ channelId: channel._id });
     
+    recordOperation({ req, tenantId: req.tenantId, user: req.user, action: 'channel_delete', detail: `删除渠道「${channel.name}」` });
     return ok(res, null, '已删除');
   }
   
@@ -170,6 +175,7 @@ class ChannelController {
     
     channel.agentIds = validAgents.map(a => a._id);
     await channel.save();
+    recordOperation({ req, tenantId: req.tenantId, user: req.user, action: 'channel_set_agents', detail: `调整渠道「${channel.name}」授权坐席` });
     return ok(res, channel.toJSON());
   }
   

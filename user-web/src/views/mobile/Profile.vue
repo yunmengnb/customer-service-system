@@ -3,13 +3,14 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../../api'
+import { clearIdentityCache, tenantIdentityScope } from '../../chatCache'
 
 const router = useRouter()
 const user = ref(JSON.parse(sessionStorage.getItem('tenant_user') || localStorage.getItem('tenant_user') || 'null'))
 const tenant = ref(JSON.parse(sessionStorage.getItem('tenant_info') || localStorage.getItem('tenant_info') || 'null'))
 const showLogoutConfirm = ref(false)
 
-const roleLabel = computed(() => ({ owner: '租户所有者', admin: '管理员', agent: '客服' }[user.value?.role] || user.value?.role))
+const roleLabel = computed(() => ({ owner: '客服后台所有者', admin: '管理员', agent: '客服' }[user.value?.role] || user.value?.role))
 
 async function refreshUser() {
   try {
@@ -40,9 +41,15 @@ function goAbout() {
   router.push('/m/profile/about')
 }
 
-function doLogout() {
+function goLogs() {
+  router.push('/m/logs')
+}
+
+async function doLogout() {
   showLogoutConfirm.value = false
+  const identityScope = tenantIdentityScope()
   const storage = sessionStorage.getItem('tenant_token') ? sessionStorage : localStorage
+  await clearIdentityCache(identityScope)
   storage.removeItem('tenant_token')
   storage.removeItem('tenant_user')
   storage.removeItem('tenant_info')
@@ -77,6 +84,11 @@ function doLogout() {
       <button class="me-menu-item" @click="goAnnouncements">
         <span class="me-menu-icon">📢</span>
         <span class="me-menu-label">系统公告</span>
+        <span class="me-menu-arrow">›</span>
+      </button>
+      <button class="me-menu-item" @click="goLogs">
+        <span class="me-menu-icon">🕓</span>
+        <span class="me-menu-label">操作日志</span>
         <span class="me-menu-arrow">›</span>
       </button>
       <button class="me-menu-item" @click="goAbout">

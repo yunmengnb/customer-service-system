@@ -4,6 +4,7 @@ import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '../../api'
 import { getTenantSocket } from '../../socket'
+import { cacheConversations, getCachedConversations, initializeChatCache, loadCachedAvatar, tenantCacheScope } from '../../chatCache'
 
 const route = useRoute()
 const router = useRouter()
@@ -24,6 +25,41 @@ let requestSequence = 0
 let activeRequestKey = ''
 let activeRequest = null
 let socket = null
+const avatarUrls = ref({})
+const failedAvatarUrls = ref({})
+const avatarRequests = new Map()
+
+function avatarSrc(url) {
+  return avatarUrls.value[url] || url
+}
+
+function avatarVisible(url) { return Boolean(url && !failedAvatarUrls.value[url]) }
+function handleAvatarError(url) {
+  if (!url) return
+  failedAvatarUrls.value = { ...failedAvatarUrls.value, [url]: true }
+}
+
+function loadAvatar(el, url) {
+  if (!url || avatarUrls.value[url]) return
+  if (!avatarRequests.has(url)) {
+    avatarRequests.set(url, loadCachedAvatar(
+      tenantCacheScope(selectedChannelId.value),
+      url,
+      () => api.get(url, { baseURL: '', responseType: 'blob' }),
+    ).then(blob => {
+      if (!blob) return
+      avatarUrls.value[url] = URL.createObjectURL(blob)
+      el.src = avatarUrls.value[url]
+    }).catch(() => {}).finally(() => avatarRequests.delete(url)))
+  }
+}
+
+const vCachedAvatar = {
+  mounted(el, binding) { loadAvatar(el, binding.value) },
+  updated(el, binding) {
+    if (binding.value !== binding.oldValue) loadAvatar(el, binding.value)
+  },
+}
 
 const filteredConversations = computed(() => {
   let list = conversations.value
@@ -52,12 +88,17 @@ const groupedConversations = computed(() => {
 })
 
 async function loadConversations() {
+  const scope = tenantCacheScope(selectedChannelId.value)
   if (!selectedChannelId.value) {
     conversations.value = []
     loading.value = false
     return
   }
   const keyword = search.value.trim()
+  if (!keyword) {
+    const cached = await getCachedConversations(scope)
+    if (cached.length) conversations.value = cached
+  }
   const params = {
     limit: 100,
     status: filter.value === 'all' ? undefined : filter.value,
@@ -72,7 +113,10 @@ async function loadConversations() {
   activeRequest = api.get('/tenant/conversations', { params })
   try {
     const res = await activeRequest
-    if (sequence === requestSequence && res.code === 0) conversations.value = res.data.items
+    if (sequence === requestSequence && res.code === 0) {
+      conversations.value = res.data.items
+      if (!keyword && filter.value === 'all') cacheConversations(scope, conversations.value)
+    }
   } catch (error) {
     console.error(error)
   } finally {
@@ -242,6 +286,7 @@ function avatarColor(id) {
 }
 
 onMounted(async () => {
+  initializeChatCache(tenantCacheScope())
   const channelRes = await api.get('/tenant/channels').catch(() => null)
   if (channelRes?.code === 0) channels.value = channelRes.data || []
   if (selectedChannelId.value && !selectedChannel.value) selectedChannelId.value = ''
@@ -256,6 +301,7 @@ onUnmounted(() => {
   socket?.off('conversation.accepted', handleConversationUpdated)
   socket?.off('conversation.updated', handleConversationUpdated)
   socket?.off('message.new', handleNewMessage)
+  Object.values(avatarUrls.value).forEach(url => URL.revokeObjectURL(url))
 })
 </script>
 
@@ -268,7 +314,7 @@ onUnmounted(() => {
       </div>
       <div v-if="filteredChannels.length" class="mobile-channel-list">
         <button v-for="channel in filteredChannels" :key="channel._id" @click="openChannel(channel)">
-          <img v-if="channel.avatarUrl" :src="channel.avatarUrl" loading="lazy" decoding="async" alt="" />
+          <img v-if="channel.avatarUrl" v-cached-avatar="channel.avatarUrl" :src="avatarSrc(channel.avatarUrl)" loading="lazy" decoding="async" alt="" />
           <span v-else class="mobile-channel-avatar">{{ channel.name?.slice(0, 1) || '渠' }}</span>
           <span><strong>{{ channel.name }}</strong><small>{{ channel.brandName || '客服渠道' }}</small></span>
           <i>›</i>
@@ -303,7 +349,7 @@ onUnmounted(() => {
           class="mobile-item"
           @click="openConversation(conversation)"
         >
-          <img v-if="conversation.customer?.avatarUrl" class="mobile-avatar" :src="conversation.customer.avatarUrl" loading="lazy" decoding="async" alt="客户QQ头像" />
+          <img v-if="avatarVisible(conversation.customer?.avatarUrl)" v-cached-avatar="conversation.customer.avatarUrl" class="mobile-avatar" :src="avatarSrc(conversation.customer.avatarUrl)" loading="lazy" decoding="async" alt="客户头像" @error="handleAvatarError(conversation.customer.avatarUrl)" />
           <span v-else class="mobile-avatar" :style="{ background: avatarColor(conversation._id) }">
             {{ conversation.customer?.phone?.slice(-1) || '客' }}
           </span>

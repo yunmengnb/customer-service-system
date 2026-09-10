@@ -13,6 +13,11 @@ const routes = [
     component: () => import('./views/AccountPage.vue'),
   },
   {
+    path: '/agreements/:type',
+    name: 'agreement',
+    component: () => import('./views/AgreementPage.vue'),
+  },
+  {
     path: '/',
     redirect: () => localStorage.getItem('client_token') ? '/account' : '/c/default',
   },

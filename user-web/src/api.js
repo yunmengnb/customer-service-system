@@ -13,7 +13,9 @@ api.interceptors.response.use(
       const storage = sessionStorage.getItem('tenant_token') ? sessionStorage : localStorage
       storage.removeItem('tenant_token')
     }
-    return Promise.reject(err.response?.data || err)
+    const reason = err.response?.data || err
+    if (reason && typeof reason === 'object') reason.httpStatus = err.response?.status
+    return Promise.reject(reason)
   }
 )
 

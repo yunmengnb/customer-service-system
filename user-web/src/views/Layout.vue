@@ -3,6 +3,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import { clearIdentityCache, tenantIdentityScope } from '../chatCache'
 
 const router = useRouter()
 const route = useRoute()
@@ -22,6 +23,7 @@ const navItems = computed(() => [
   ...(['owner', 'admin'].includes(user.value?.role)
     ? [{ path: '/desktop/employees', icon: '👥', label: '员工管理' }]
     : []),
+  { path: '/desktop/logs', icon: '🕓', label: '操作日志' },
   { path: '/desktop/profile', icon: '♙', label: '个人资料' },
 ])
 
@@ -29,9 +31,11 @@ function active(path) {
   return route.path === path || route.path.startsWith(path + '/')
 }
 
-function logout() {
+async function logout() {
   showLogoutConfirm.value = false
+  const identityScope = tenantIdentityScope()
   const storage = sessionStorage.getItem('tenant_token') ? sessionStorage : localStorage
+  await clearIdentityCache(identityScope)
   storage.removeItem('tenant_token')
   storage.removeItem('tenant_user')
   storage.removeItem('tenant_info')
@@ -64,7 +68,7 @@ onUnmounted(() => window.removeEventListener('tenant-profile-updated', handlePro
         <div class="dsk-logo-icon">Y</div>
         <div>
           <div class="dsk-brand-name">忆梦云客服</div>
-          <div class="dsk-brand-sub">租户工作台</div>
+          <div class="dsk-brand-sub">客服后台</div>
         </div>
       </div>
 

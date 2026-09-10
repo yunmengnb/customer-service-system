@@ -56,10 +56,12 @@
         </template>
         <template v-else>
           <img
-            v-if="msg.senderType === 'customer' && customer?.avatarUrl"
+            v-if="msg.senderType === 'customer' && customerAvatarVisible()"
             class="msg-avatar"
-            :src="customer.avatarUrl"
+            v-cached-avatar="customer.avatarUrl"
+            :src="avatarSrc(customer.avatarUrl)"
             alt="我的头像"
+            @error="handleAvatarError(customer.avatarUrl)"
           />
           <img
             v-else-if="msg.senderType !== 'customer' && (msg.sender?.avatarUrl || channel.avatarUrl)"
@@ -75,7 +77,7 @@
               <span v-if="msg.sendFailed" class="message-send-error" title="消息发送失败">!</span>
             <div
               class="msg-bubble"
-              :class="{ 'media-message-bubble': ['image', 'video', 'file'].includes(msg.messageType) && msg.attachmentUrl, 'message-menu-active': contextMenu?.msg === msg }"
+              :class="{ 'media-message-bubble': ['image', 'video', 'file'].includes(msg.messageType) && (msg.attachmentId || msg.attachmentUrl), 'message-menu-active': contextMenu?.msg === msg }"
               @contextmenu="showContextMenu($event, msg)"
               @touchstart="startLongPress($event, msg)"
               @touchend="finishLongPress"
@@ -84,15 +86,16 @@
               @click.capture="handleBubbleClick"
             >
               <span v-if="msg.recalledAt" class="message-recalled">消息已撤回</span>
-              <template v-else-if="msg.messageType === 'image' && msg.attachmentUrl"><img class="message-image" :src="msg.attachmentUrl" :alt="msg.attachmentName || '图片'" loading="lazy" decoding="async" @load="scheduleScroll(false)" @click="openPreview(msg)" /><div v-if="imageCaption(msg)" class="message-caption">{{ imageCaption(msg) }}</div></template>
-              <template v-else-if="msg.messageType === 'video' && msg.attachmentUrl">
+              <span v-else-if="attachmentExpired(msg)">该文件已过期并自动清理</span>
+              <template v-else-if="msg.messageType === 'image' && (msg.attachmentId || msg.attachmentUrl)"><img class="message-image" :src="mediaSrc(msg)" v-lazy-media="{ msg }" :alt="msg.attachmentName || '图片'" loading="lazy" decoding="async" @load="scheduleScroll(false)" @click="openPreview(msg)" /><div v-if="imageCaption(msg)" class="message-caption">{{ imageCaption(msg) }}</div></template>
+              <template v-else-if="msg.messageType === 'video' && (msg.attachmentId || msg.attachmentUrl)">
                 <button type="button" class="message-video-wrap" :aria-label="`播放${msg.attachmentName || '视频'}`" @click="openPreview(msg)">
                   <span class="video-thumbnail-placeholder">视频</span>
-                  <img class="message-image message-video" :src="videoPosterUrl(msg)" :alt="msg.attachmentName || '视频封面'" loading="lazy" decoding="async" @load="handleVideoThumbnailLoad" @error="handleVideoThumbnailError" />
+                  <img class="message-image message-video" :src="videoPosterUrl(msg)" v-lazy-media="{ msg, thumbnail: true }" :alt="msg.attachmentName || '视频封面'" loading="lazy" decoding="async" @load="handleVideoThumbnailLoad" @error="handleVideoThumbnailError" />
                   <span class="video-play-icon" aria-hidden="true">▶</span>
                 </button>
               </template>
-              <button v-else-if="msg.messageType === 'file' && msg.attachmentUrl" type="button" class="message-file" @click="downloadFile(msg.attachmentUrl, msg.attachmentName)">
+              <button v-else-if="msg.messageType === 'file' && (msg.attachmentId || msg.attachmentUrl)" type="button" class="message-file" @click="downloadFile(msg)">
                 <span class="message-file-icon">▤</span>
                 <span>{{ msg.attachmentName || '下载文件' }}</span>
               </button>
@@ -165,7 +168,7 @@
 
     <div v-if="preview" class="media-preview" @click.self="closePreview" @dblclick="closePreview">
       <div class="media-preview-actions">
-        <button type="button" @click.stop="downloadFile(preview.url, preview.name || (preview.type === 'video' ? '视频' : '图片'))">保存</button>
+        <button type="button" @click.stop="downloadFile(preview.msg || preview.url, preview.name || (preview.type === 'video' ? '视频' : '图片'))">保存</button>
         <button type="button" class="media-preview-close" aria-label="关闭预览" @click.stop="closePreview">×</button>
       </div>
       <img v-if="preview.type === 'image'" :src="preview.url" :alt="preview.name || '图片预览'" />
@@ -430,6 +433,18 @@
 import { ref, onMounted, onUnmounted, nextTick, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, getSocket } from '../api'
+import {
+  cacheMessages,
+  cleanupChatCache,
+  clearIdentityCache,
+  clientCacheScope,
+  clientIdentityScope,
+  getCachedMessages,
+  initializeChatCache,
+  invalidateAttachment,
+  loadCachedAvatar,
+  loadCachedMedia,
+} from '../chatCache'
 
 const route = useRoute()
 const router = useRouter()
@@ -447,6 +462,9 @@ const conversationStatus = ref('waiting')
 const assignedAgentId = ref('')
 const agentOnline = ref(false)
 const messages = ref([])
+const cacheScope = computed(() => clientCacheScope(customer.value, channel.value?.id || channel.value?._id || customer.value?.channelId || token.value))
+const conversationCacheId = computed(() => conversation.value?._id || conversation.value?.id || customer.value?.conversationId || token.value)
+const persistMessages = () => cacheMessages(cacheScope.value, conversationCacheId.value, messages.value)
 const inputText = ref('')
 const sending = ref(false)
 const uploading = ref(false)
@@ -458,6 +476,11 @@ const msgContainer = ref(null)
 const loadingHistory = ref(false)
 const hasMoreMessages = ref(true)
 const preview = ref(null)
+const mediaUrls = ref({})
+const mediaRequests = new Map()
+const avatarUrls = ref({})
+const failedAvatarUrls = ref({})
+const avatarRequests = new Map()
 const contextMenu = ref(null)
 const downloadProgress = ref(null)
 const toast = ref('')
@@ -771,6 +794,7 @@ async function loadMe() {
       if (!customer.value.qq) showQQModal.value = true
     }
   } catch (e) {
+    await clearIdentityCache(clientIdentityScope(customer.value))
     localStorage.removeItem('client_token')
   }
 }
@@ -1220,11 +1244,15 @@ async function loadConversation() {
 }
 
 async function loadMessages() {
+  const cached = await getCachedMessages(cacheScope.value, conversationCacheId.value)
+  if (cached.length) messages.value = cached
+  cleanupChatCache(cacheScope.value)
   try {
     const res = await api.get('/client/conversation/messages', { params: { limit: 50 } })
     if (res.code === 0) {
       messages.value = res.data || []
       hasMoreMessages.value = messages.value.length === 50
+      persistMessages()
       await scrollToBottom()
     }
   } catch {}
@@ -1339,16 +1367,112 @@ function parseMessageContent(content = '') {
   return parts.length ? parts : [{ type: 'text', text: content }]
 }
 
-function openPreview(msg) {
-  preview.value = { url: msg.attachmentUrl, type: msg.messageType, name: msg.attachmentName }
+function attachmentUrl(msg) { return msg.attachmentId ? `/api/files/${msg.attachmentId}` : msg.attachmentUrl }
+function thumbnailUrl(msg) { return msg.attachmentId ? `/api/files/${msg.attachmentId}/thumbnail` : msg.thumbnailUrl }
+function attachmentExpired(msg) { return ['expired', 'deleted'].includes(msg.attachmentStatus) }
+function releaseAttachmentUrls(msg) {
+  if (!msg) return
+  for (const thumbnail of [false, true]) {
+    const key = mediaKey(msg, thumbnail)
+    if (mediaUrls.value[key]) URL.revokeObjectURL(mediaUrls.value[key])
+    delete mediaUrls.value[key]
+    mediaRequests.delete(key)
+  }
+  if (preview.value?.msg === msg) closePreview()
+}
+function markAttachmentExpired(msg) {
+  if (!msg) return
+  msg.attachmentStatus = 'expired'
+  releaseAttachmentUrls(msg)
+  invalidateAttachment(cacheScope.value, msg.attachmentId)
+  persistMessages()
+}
+function avatarSrc(url) { return avatarUrls.value[url] || url }
+function customerAvatarVisible() { return Boolean(customer.value?.avatarUrl && !failedAvatarUrls.value[customer.value.avatarUrl]) }
+function handleAvatarError(url) {
+  if (!url) return
+  failedAvatarUrls.value = { ...failedAvatarUrls.value, [url]: true }
+}
+function loadAvatar(el, url) {
+  if (!url || avatarUrls.value[url]) return
+  if (!avatarRequests.has(url)) {
+    avatarRequests.set(url, loadCachedAvatar(cacheScope.value, url, () => api.get(url, { baseURL: '', responseType: 'blob' }))
+      .then(blob => {
+        if (!blob) return
+        avatarUrls.value[url] = URL.createObjectURL(blob)
+        el.src = avatarUrls.value[url]
+      })
+      .catch(() => {})
+      .finally(() => avatarRequests.delete(url)))
+  }
+}
+const vCachedAvatar = { mounted(el, binding) { loadAvatar(el, binding.value) }, updated(el, binding) { if (binding.value !== binding.oldValue) loadAvatar(el, binding.value) } }
+function mediaKey(msg, thumbnail = false) { return `${msg._id || msg.clientMessageId}:${thumbnail ? 'thumbnail' : 'original'}` }
+function loadMedia(msg, thumbnail = false) {
+  if (!msg.attachmentId) return Promise.resolve(thumbnail ? thumbnailUrl(msg) : attachmentUrl(msg))
+  if (attachmentExpired(msg)) return Promise.resolve('')
+  const key = mediaKey(msg, thumbnail)
+  if (mediaUrls.value[key]) return Promise.resolve(mediaUrls.value[key])
+  if (!mediaRequests.has(key)) {
+    const request = loadCachedMedia(
+      cacheScope.value,
+      msg,
+      thumbnail,
+      () => api.get(thumbnail ? thumbnailUrl(msg) : attachmentUrl(msg), { baseURL: '', responseType: 'blob' }),
+    ).then(blob => {
+      if (!blob) return ''
+      const url = URL.createObjectURL(blob)
+      if (msg.messageType !== 'video' || thumbnail) mediaUrls.value[key] = url
+      return url
+    })
+      .catch(error => {
+        if (error?.httpStatus === 410) markAttachmentExpired(msg)
+        return ''
+      })
+      .finally(() => mediaRequests.delete(key))
+    mediaRequests.set(key, request)
+  }
+  return mediaRequests.get(key)
+}
+function mediaSrc(msg, thumbnail = false) {
+  if (!msg.attachmentId) return thumbnail ? thumbnailUrl(msg) : attachmentUrl(msg)
+  return mediaUrls.value[mediaKey(msg, thumbnail)] || ''
+}
+const vLazyMedia = {
+  mounted(el, binding) {
+    const { msg, thumbnail = false } = binding.value
+    if (!msg.attachmentId) return
+    const load = () => loadMedia(msg, thumbnail).then(url => { if (url) el.src = url })
+    if (!('IntersectionObserver' in window)) { load(); return }
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) {
+        observer.disconnect()
+        load()
+      }
+    }, { rootMargin: '160px' })
+    el._attachmentObserver = observer
+    observer.observe(el)
+  },
+  unmounted(el) { el._attachmentObserver?.disconnect() },
+}
+
+async function openPreview(msg) {
+  if (attachmentExpired(msg)) return
+  const url = await loadMedia(msg)
+  if (url && !attachmentExpired(msg)) preview.value = { url, type: msg.messageType, name: msg.attachmentName, msg }
 }
 
 function closePreview() {
+  if (preview.value?.type === 'video') URL.revokeObjectURL(preview.value.url)
   preview.value = null
 }
 
-async function downloadFile(url, name = '下载文件') {
+async function downloadFile(msgOrUrl, name = '下载文件') {
   contextMenu.value = null
+  const msg = typeof msgOrUrl === 'object' ? msgOrUrl : null
+  if (attachmentExpired(msg)) return
+  const url = msg ? attachmentUrl(msg) : msgOrUrl
+  const fileName = msg?.attachmentName || name
   downloadProgress.value = 0
   try {
     const blob = await api.get(url, {
@@ -1361,15 +1485,16 @@ async function downloadFile(url, name = '下载文件') {
     const objectUrl = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = objectUrl
-    link.download = name || '下载文件'
+    link.download = fileName || '下载文件'
     document.body.appendChild(link)
     link.click()
     link.remove()
     URL.revokeObjectURL(objectUrl)
     downloadProgress.value = 100
     showToast('文件已保存')
-  } catch {
-    showToast('下载失败')
+  } catch (error) {
+    if (error?.httpStatus === 410) markAttachmentExpired(msg)
+    showToast(error?.httpStatus === 410 ? '该文件已过期并自动清理' : '下载失败')
   } finally {
     setTimeout(() => { downloadProgress.value = null }, 500)
   }
@@ -1431,6 +1556,7 @@ function canRecallMessage(msg) {
 }
 
 function videoPosterUrl(msg) {
+  if (msg.attachmentId) return mediaSrc(msg, true)
   if (msg.thumbnailUrl) return msg.thumbnailUrl
   if (!msg.attachmentUrl) return ''
   return msg.attachmentUrl.replace(/\.[^./?#]+(?:[?#].*)?$/, '.thumbnail.jpg')
@@ -1510,11 +1636,30 @@ async function deleteMessage(msg) {
 function applyRecall(data) {
   const messageId = data.messageId || data._id
   const msg = messages.value.find(item => String(item._id) === String(messageId))
-  if (msg) Object.assign(msg, data, { recalledAt: data.recalledAt || new Date().toISOString(), content: '', attachmentUrl: '', attachmentName: '', thumbnailUrl: '' })
+  if (msg) {
+    releaseAttachmentUrls(msg)
+    Object.assign(msg, data, { recalledAt: data.recalledAt || new Date().toISOString(), attachmentStatus: 'recalled', content: '', attachmentUrl: '', attachmentName: '', thumbnailUrl: '' })
+    if (msg.attachmentId) invalidateAttachment(cacheScope.value, msg.attachmentId, 'recalled')
+    persistMessages()
+  }
 }
 
 function applyDelete(data) {
-  messages.value = messages.value.filter(item => String(item._id) !== String(data.messageId || data._id))
+  const messageId = data.messageId || data._id
+  const msg = messages.value.find(item => String(item._id) === String(messageId))
+  if (msg) releaseAttachmentUrls(msg)
+  if (msg?.attachmentId) invalidateAttachment(cacheScope.value, msg.attachmentId, 'deleted')
+  messages.value = messages.value.filter(item => String(item._id) !== String(messageId))
+  persistMessages()
+}
+
+function applyAttachmentUpdate(data) {
+  const msg = messages.value.find(item => String(item._id) === String(data.messageId))
+  if (!msg || !['expired', 'recalled', 'deleted'].includes(data.status)) return
+  msg.attachmentStatus = data.status
+  releaseAttachmentUrls(msg)
+  invalidateAttachment(cacheScope.value, data.attachmentId || msg.attachmentId, data.status)
+  persistMessages()
 }
 
 async function handleAttachment(event, messageType) {
@@ -1528,23 +1673,21 @@ async function handleAttachment(event, messageType) {
   try {
     const formData = new FormData()
     formData.append('file', file)
-    const uploadRes = await api.post('/upload/client', formData)
+    const uploadRes = await api.post('/client/conversation/attachments', formData)
     if (uploadRes.code !== 0) throw new Error(uploadRes.message || '上传失败')
 
-    const effectiveType = uploadRes.data.mimetype?.startsWith('video/') ? 'video' : messageType
+    const effectiveType = ['image', 'video'].includes(uploadRes.data.category) ? uploadRes.data.category : 'file'
     const clientMessageId = 'c_' + Date.now()
     const payload = {
-      content: effectiveType === 'image' ? '' : effectiveType === 'video' ? '[视频]' : `[文件] ${uploadRes.data.name || file.name}`,
+      attachmentId: uploadRes.data.attachmentId,
       clientMessageId,
       messageType: effectiveType,
-      attachmentUrl: uploadRes.data.url,
-      attachmentName: uploadRes.data.name || file.name,
-      thumbnailUrl: uploadRes.data.thumbnailUrl || '',
     }
     localMsg = {
       _id: 'temp_' + Date.now(),
       senderType: 'customer',
       createdAt: new Date().toISOString(),
+      attachmentName: uploadRes.data.name || uploadRes.data.originalName || file.name,
       ...payload,
     }
     mergeMessage(localMsg)
@@ -1688,6 +1831,7 @@ function setupSocket() {
   socket.off('message.new', handleNewMessage)
   socket.off('message.recalled', applyRecall)
   socket.off('message.deleted', applyDelete)
+  socket.off('attachment.updated', applyAttachmentUpdate)
   socket.off('conversation.updated', handleConversationUpdated)
   socket.off('conversation.closed', handleConversationClosed)
   socket.off('presence:changed', handlePresenceChanged)
@@ -1695,6 +1839,7 @@ function setupSocket() {
   socket.on('connect', handleSocketConnect)
   socket.on('message.recalled', applyRecall)
   socket.on('message.deleted', applyDelete)
+  socket.on('attachment.updated', applyAttachmentUpdate)
   socket.on('conversation.updated', handleConversationUpdated)
   socket.on('conversation.closed', handleConversationClosed)
   socket.on('presence:changed', handlePresenceChanged)
@@ -1814,6 +1959,10 @@ onMounted(() => {
   loadChannel()
 })
 
+watch(cacheScope, scope => {
+  if (scope) initializeChatCache(scope)
+}, { immediate: true })
+
 onUnmounted(() => {
   window.removeEventListener('pointerdown', unlockNotificationSound)
   window.removeEventListener('keydown', unlockNotificationSound)
@@ -1837,6 +1986,7 @@ onUnmounted(() => {
     socket.off('connect', handleSocketConnect)
     socket.off('message.recalled', applyRecall)
     socket.off('message.deleted', applyDelete)
+    socket.off('attachment.updated', applyAttachmentUpdate)
     socket.off('conversation.updated', handleConversationUpdated)
     socket.off('conversation.closed', handleConversationClosed)
     socket.off('presence:changed', handlePresenceChanged)
@@ -1844,5 +1994,7 @@ onUnmounted(() => {
   }
   notificationAudioContext?.close().catch(() => {})
   notificationAudioContext = null
+  Object.values(mediaUrls.value).forEach(url => URL.revokeObjectURL(url))
+  Object.values(avatarUrls.value).forEach(url => URL.revokeObjectURL(url))
 })
 </script>

@@ -5,6 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import ChatPanel from './ChatPanel.vue'
 import api from '../../api'
 import { getTenantSocket } from '../../socket'
+import { cacheConversations, getCachedConversations, initializeChatCache, loadCachedAvatar, tenantCacheScope } from '../../chatCache'
 
 const route = useRoute()
 const router = useRouter()
@@ -27,6 +28,41 @@ let requestSequence = 0
 let activeRequestKey = ''
 let activeRequest = null
 let socket = null
+const avatarUrls = ref({})
+const failedAvatarUrls = ref({})
+const avatarRequests = new Map()
+
+function avatarSrc(url) {
+  return avatarUrls.value[url] || url
+}
+
+function avatarVisible(url) { return Boolean(url && !failedAvatarUrls.value[url]) }
+function handleAvatarError(url) {
+  if (!url) return
+  failedAvatarUrls.value = { ...failedAvatarUrls.value, [url]: true }
+}
+
+function loadAvatar(el, url) {
+  if (!url || avatarUrls.value[url]) return
+  if (!avatarRequests.has(url)) {
+    avatarRequests.set(url, loadCachedAvatar(
+      tenantCacheScope(selectedChannelId.value),
+      url,
+      () => api.get(url, { baseURL: '', responseType: 'blob' }),
+    ).then(blob => {
+      if (!blob) return
+      avatarUrls.value[url] = URL.createObjectURL(blob)
+      el.src = avatarUrls.value[url]
+    }).catch(() => {}).finally(() => avatarRequests.delete(url)))
+  }
+}
+
+const vCachedAvatar = {
+  mounted(el, binding) { loadAvatar(el, binding.value) },
+  updated(el, binding) {
+    if (binding.value !== binding.oldValue) loadAvatar(el, binding.value)
+  },
+}
 
 // 选中会话：优先从路由取（桌面端直接打开聊天链接），否则停留在会话列表
 const selectedId = ref(route.params.id || null)
@@ -60,12 +96,17 @@ const filteredChannels = computed(() => {
 })
 
 async function loadConversations() {
+  const scope = tenantCacheScope(selectedChannelId.value)
   if (!selectedChannelId.value) {
     conversations.value = []
     loading.value = false
     return
   }
   const keyword = search.value.trim()
+  if (!keyword) {
+    const cached = await getCachedConversations(scope)
+    if (cached.length) conversations.value = cached
+  }
   const params = {
     limit: 100,
     status: filter.value === 'all' ? undefined : filter.value,
@@ -80,7 +121,10 @@ async function loadConversations() {
   activeRequest = api.get('/tenant/conversations', { params })
   try {
     const res = await activeRequest
-    if (sequence === requestSequence && res.code === 0) conversations.value = res.data.items
+    if (sequence === requestSequence && res.code === 0) {
+      conversations.value = res.data.items
+      if (!keyword && filter.value === 'all') cacheConversations(scope, conversations.value)
+    }
   } catch (e) {
     console.error(e)
   } finally {
@@ -246,6 +290,7 @@ function getAvatarColor(id) {
 }
 
 onMounted(async () => {
+  initializeChatCache(tenantCacheScope())
   const channelRes = await api.get('/tenant/channels').catch(() => null)
   if (channelRes?.code === 0) channels.value = channelRes.data || []
   if (selectedChannelId.value && !selectedChannel.value) selectedChannelId.value = ''
@@ -259,6 +304,7 @@ onUnmounted(() => {
   socket?.off('conversation.accepted', handleConversationUpdated)
   socket?.off('conversation.updated', handleConversationUpdated)
   socket?.off('message.new', handleNewMessage)
+  Object.values(avatarUrls.value).forEach(url => URL.revokeObjectURL(url))
 })
 </script>
 
@@ -276,7 +322,7 @@ onUnmounted(() => {
           </div>
           <div v-if="filteredChannels.length" class="msg-sider-list channel-list">
             <button v-for="channel in filteredChannels" :key="channel._id" class="channel-item" @click="openChannel(channel)">
-              <img v-if="channel.avatarUrl" class="mi-avatar channel-avatar-image" :src="channel.avatarUrl" loading="lazy" decoding="async" alt="" />
+              <img v-if="channel.avatarUrl" v-cached-avatar="channel.avatarUrl" class="mi-avatar channel-avatar-image" :src="avatarSrc(channel.avatarUrl)" loading="lazy" decoding="async" alt="" />
               <span v-else class="mi-avatar channel-avatar">{{ channel.name?.slice(0, 1) || '渠' }}</span>
               <span class="mi-body">
                 <span class="mi-row"><strong class="mi-name">{{ channel.name }}</strong><i>›</i></span>
@@ -331,7 +377,7 @@ onUnmounted(() => {
                 :class="{ active: selectedId === conv._id }"
                 @click="openSearchMatches(conv)"
               >
-                <img v-if="conv.customer?.avatarUrl" class="mi-avatar" :src="conv.customer.avatarUrl" loading="lazy" decoding="async" alt="客户QQ头像" />
+                <img v-if="avatarVisible(conv.customer?.avatarUrl)" v-cached-avatar="conv.customer.avatarUrl" class="mi-avatar" :src="avatarSrc(conv.customer.avatarUrl)" loading="lazy" decoding="async" alt="客户头像" @error="handleAvatarError(conv.customer.avatarUrl)" />
                 <div v-else class="mi-avatar" :style="{ background: getAvatarColor(conv._id) }">
                   {{ conv.customer?.phone?.slice(-1) || '客' }}
                 </div>

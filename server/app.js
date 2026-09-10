@@ -23,6 +23,8 @@ const clientRoutes = require('./src/routes/client');
 const appRoutes = require('./src/routes/app');
 const uploadRoutes = require('./src/routes/upload');
 const complaintUploadRoutes = require('./src/routes/complaintUpload');
+const fileRoutes = require('./src/routes/files');
+const attachmentCleanupService = require('./src/services/attachmentCleanupService');
 
 // Socket
 const setupSocketIO = require('./src/sockets');
@@ -72,6 +74,7 @@ async function start() {
   // 静态资源：上传文件
   const UPLOAD_DIR = path.resolve(__dirname, 'uploads');
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+  app.use('/uploads/conversations', (req, res) => res.status(404).json({ code: 404, message: '资源不存在' }));
   app.use('/uploads', express.static(UPLOAD_DIR));
   
   // 健康检查
@@ -108,6 +111,7 @@ async function start() {
   app.use('/api/client/channels/:token/auth/register', loginLimiter);
 
   // 路由
+  app.use('/api/files', fileRoutes);
   app.use('/api/admin', adminRoutes);
   app.use('/api/tenant', tenantRoutes);
   app.use('/api/client', clientRoutes);
@@ -131,9 +135,21 @@ async function start() {
   });
   
   server.listen(config.port, () => {
+    attachmentCleanupService.start(io);
     console.log(`[Server] 运行中: http://localhost:${config.port}`);
     console.log(`[Server] 环境: ${config.nodeEnv}`);
   });
+
+  let shuttingDown = false;
+  const shutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    attachmentCleanupService.stop();
+    io.close();
+    server.close(() => mongoose.disconnect().finally(() => process.exit(0)));
+  };
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
 }
 
 start().catch(err => {

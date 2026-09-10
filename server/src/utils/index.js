@@ -50,6 +50,20 @@ function normalizePhone(phone) {
   return String(phone).replace(/[\s\-]/g, '').trim();
 }
 
+function qqAvatarUrl(qq) {
+  const normalized = String(qq || '').trim();
+  return /^[1-9]\d{4,11}$/.test(normalized)
+    ? `https://q1.qlogo.cn/g?b=qq&nk=${encodeURIComponent(normalized)}&s=100`
+    : '';
+}
+
+function customerAvatarUrl(customer) {
+  if (!customer || customer.identityType === 'guest' || customer.accountId === null) return '';
+  const stored = String(customer.avatarUrl || '').trim();
+  if (stored && !/^https:\/\/q1\.qlogo\.cn\/g\?/i.test(stored)) return stored;
+  return qqAvatarUrl(customer.qq);
+}
+
 /**
  * 生成 HMAC 指纹哈希
  */
@@ -88,6 +102,8 @@ module.exports = {
   verifyToken,
   generateToken,
   normalizePhone,
+  qqAvatarUrl,
+  customerAvatarUrl,
   hashFingerprint,
   getClientIp,
   ok,

@@ -158,6 +158,20 @@ async function authCustomer(req, res, next) {
 }
 
 /**
+ * 私有文件统一认证，根据令牌类型复用现有数据库回查鉴权。
+ */
+async function authAny(req, res, next) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const payload = token ? verifyToken(token) : null;
+  if (!payload) return error(res, '未登录', 4011, 401);
+  if (payload.type === 'admin') return authAdmin(req, res, next);
+  if (payload.type === 'tenant_user') return authTenantUser(req, res, next);
+  if (payload.type === 'customer') return authCustomer(req, res, next);
+  return error(res, '令牌无效或已过期', 4012, 401);
+}
+
+/**
  * 可选认证（未登录也可访问，但如果登录了会注入用户信息）
  */
 function optionalAuth(req, res, next) {
@@ -190,6 +204,7 @@ module.exports = {
   authTenantUser,
   requireTenantAdmin,
   authCustomer,
+  authAny,
   optionalAuth,
   requestId,
 };

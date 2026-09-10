@@ -54,7 +54,7 @@
 
       <template v-else>
         <section class="account-hero">
-          <img v-if="customer.avatarUrl" :src="customer.avatarUrl" alt="客户头像" />
+          <img v-if="customer.avatarUrl && !customerAvatarFailed" :src="customer.avatarUrl" alt="客户头像" @error="customerAvatarFailed = true" />
           <div v-else class="account-avatar">{{ customer.nickname?.[0] || '我' }}</div>
           <div><span>个人中心 · 客户</span><h1>{{ customer.nickname && customer.nickname !== '访客' ? customer.nickname : (customer.qq || '客户') }}</h1><p>{{ customer.email || '未完善邮箱' }}</p></div>
         </section>
@@ -119,10 +119,19 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api, { getSocket } from '../api'
+import {
+  cacheConversations,
+  clearIdentityCache,
+  clientCacheScope,
+  clientIdentityScope,
+  getCachedConversations,
+  initializeChatCache,
+} from '../chatCache'
 
 const route = useRoute()
 const router = useRouter()
 const customer = ref(null)
+const customerAvatarFailed = ref(false)
 const channels = ref([])
 const activeTab = ref('channels')
 const loading = ref(Boolean(localStorage.getItem('client_token')))
@@ -183,7 +192,12 @@ async function loadAccount() {
       throw new Error('访客不能进入客户后台，请先在聊天页绑定客户账号')
     }
     customer.value = meRes.data
+    customerAvatarFailed.value = false
     setupSocket()
+    const cacheScope = clientCacheScope(customer.value)
+    initializeChatCache(cacheScope)
+    const cachedChannels = await getCachedConversations(cacheScope)
+    if (cachedChannels.length) channels.value = cachedChannels
 
     try {
       const historyRes = await api.get('/client/channels/history')
@@ -194,7 +208,7 @@ async function loadAccount() {
         localStorage.setItem('client_channel_token', current.publicToken)
       }
     } catch {
-      channels.value = []
+      if (!cachedChannels.length) channels.value = []
     }
   } catch (error) {
     customer.value = null
@@ -301,6 +315,7 @@ async function submitRegister() {
   if (!/^\d{6}$/.test(form.emailCode)) return authMessage.value = '请输入6位邮箱验证码'
   if (form.password.length < 6 || form.password.length > 72) return authMessage.value = '密码须为6-72位'
   if (form.password !== form.confirmPassword) return authMessage.value = '两次输入的密码不一致'
+  if (!agreed.value) return authMessage.value = '请先阅读并同意免责协议和使用协议'
   authLoading.value = true
   try { await finishAuth(await api.post('/client/auth/register', { ...form, fingerprint: navigator.userAgent, ...await getCaptchaPayload() })) }
   catch (error) { authMessage.value = error?.message || '注册失败'; await loadCaptcha(); geetestInstance?.reset?.() } finally { authLoading.value = false }
@@ -324,7 +339,7 @@ async function changePassword() {
   try {
     const res = await api.post('/client/profile/password', form); if (res.code !== 0) throw new Error(res.message)
     passwordSuccess.value = true; passwordMessage.value = res.message || '密码修改成功'; passwordForm.value = { currentPassword: '', emailCode: '', newPassword: '', confirmPassword: '' }
-    localStorage.removeItem('client_token'); setTimeout(() => { customer.value = null; authTab.value = 'login'; passwordMessage.value = ''; loadCaptcha() }, 1000)
+    await clearIdentityCache(clientIdentityScope(customer.value)); localStorage.removeItem('client_token'); setTimeout(() => { customer.value = null; authTab.value = 'login'; passwordMessage.value = ''; loadCaptcha() }, 1000)
   } catch (error) { passwordMessage.value = error?.message || '密码修改失败' } finally { passwordLoading.value = false }
 }
 function openChannel(item) { if (item.publicToken) router.push(`/c/${item.publicToken}`) }
@@ -342,6 +357,7 @@ function handleChannelHistoryUpdate(update) {
   if (index >= 0) channels.value.splice(index, 1, { ...channels.value[index], ...update })
   else channels.value.push(update)
   channels.value.sort((a, b) => new Date(b.lastMessageAt || 0) - new Date(a.lastMessageAt || 0))
+  cacheConversations(clientCacheScope(customer.value), channels.value)
 }
 function getNotificationAudioContext() {
   if (!notificationAudioContext) {
@@ -393,6 +409,7 @@ function handleNewMessage(message) {
       unreadCount: incoming ? Number(item.unreadCount || 0) + 1 : Number(item.unreadCount || 0),
     })
     channels.value.sort((a, b) => new Date(b.lastMessageAt || 0) - new Date(a.lastMessageAt || 0))
+    cacheConversations(clientCacheScope(customer.value), channels.value)
   }
   if (!incoming) return
   playNotificationSound()
@@ -455,3 +472,13 @@ onBeforeUnmount(() => {
   notificationAudioContext = null
 })
 </script>
+
+<style scoped>
+.agreement-check { display: flex; align-items: flex-start; gap: 8px; margin: 4px 0 0; font-size: 13px; color: #64748b; text-align: left; line-height: 1.5; }
+.agreement-check input { flex: none; margin-top: 2px; }
+.agreement-check a { color: #2563eb; text-decoration: none; }
+.channel-title-actions { display: flex; align-items: center; gap: 10px; }
+.channel-refresh { border: 1px solid #e2e8f0; background: #fff; color: #2563eb; border-radius: 8px; padding: 4px 10px; font-size: 13px; cursor: pointer; }
+.channel-refresh:disabled { opacity: .6; cursor: default; }
+.channel-refresh-message { margin: 4px 0 8px; color: #b91c1c; font-size: 13px; }
+</style>

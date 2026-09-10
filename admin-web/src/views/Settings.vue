@@ -5,11 +5,12 @@ import api from '../api'
 
 const tabs = [
   { key: 'app', label: 'APP 配置' },
-  { key: 'upload', label: '上传' },
+  { key: 'upload', label: '存储配置' },
   { key: 'captcha', label: '验证码' },
   { key: 'smtp', label: '发信邮箱' },
   { key: 'auth', label: '注册登录' },
   { key: 'forbiddenWords', label: '违禁词' },
+  { key: 'agreements', label: '协议内容' },
   { key: 'other', label: '其他' },
 ]
 
@@ -22,9 +23,18 @@ const defaults = {
   siteKeywords: '',
   siteDescription: '',
   forbiddenWords: '',
+  agreements: {
+    disclaimer: '',
+    terms: '',
+  },
   upload: {
-    maxFileSizeMB: 10,
+    maxFileSizeMB: 50,
     allowedTypes: 'jpg,jpeg,png,gif,webp,pdf,docx,xlsx,zip,txt,mp3,wav,mp4,webm',
+  },
+  storage: {
+    conversationAttachmentRetentionDays: 2,
+    pendingAttachmentHours: 24,
+    cleanupBatchSize: 100,
   },
   captcha: {
     enabled: false,
@@ -59,6 +69,11 @@ const publishingAnnouncement = ref(false)
 const publishingApp = ref(false)
 const testingEmail = ref(false)
 const testEmailTo = ref('')
+const loadingCleanupStatus = ref(false)
+const estimatingCleanup = ref(false)
+const cleaningFiles = ref(false)
+const cleanupEstimate = ref(null)
+const cleanupStatus = ref(null)
 const notice = ref(null)
 const form = reactive(structuredClone(defaults))
 const currentTab = computed(() => tabs.find(tab => tab.key === activeTab.value))
@@ -71,6 +86,7 @@ function applySettings(data) {
   }
   if (typeof source.loginEnabled === 'boolean') form.loginEnabled = source.loginEnabled
   if (Array.isArray(source.forbiddenWords)) form.forbiddenWords = source.forbiddenWords.join('\n')
+  if (source.agreements) Object.assign(form.agreements, source.agreements)
   for (const key of ['customerServiceDomain', 'siteTitle', 'siteKeywords', 'siteDescription']) {
     if (source[key] !== undefined) form[key] = source[key]
   }
@@ -80,6 +96,7 @@ function applySettings(data) {
       form.upload.allowedTypes = source.upload.allowedTypes.join(',')
     }
   }
+  if (source.storage) Object.assign(form.storage, source.storage)
   if (source.captcha) Object.assign(form.captcha, source.captcha, { geetestKey: '' })
   if (source.smtp) Object.assign(form.smtp, source.smtp, { password: '' })
 }
@@ -118,6 +135,7 @@ async function loadSettings() {
 }
 
 async function saveSettings() {
+  if (activeTab.value === 'upload' && !window.confirm('保存后，超过有效期的会话附件可能被永久删除且无法恢复。只删除附件，不会删除聊天文字和消息记录。确认保存存储配置？')) return
   saving.value = true
   notice.value = null
   try {
@@ -191,8 +209,59 @@ async function publishAnnouncement() {
 }
 
 function formatFileSize(bytes) {
-  if (!bytes) return ''
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+  const value = Number(bytes) || 0
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
+  if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`
+  return `${(value / 1024 / 1024 / 1024).toFixed(2)} GB`
+}
+
+function formatDateTime(value) {
+  if (!value) return '暂无'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '暂无' : date.toLocaleString('zh-CN', { hour12: false })
+}
+
+async function loadCleanupStatus(showError = false) {
+  loadingCleanupStatus.value = true
+  try {
+    const res = await api.get('/admin/storage/conversation-files/status')
+    if (res.code !== 0) throw new Error(res.message || '清理状态加载失败')
+    cleanupStatus.value = res.data || {}
+  } catch (error) {
+    if (showError) showNotice('error', error?.message || '清理状态加载失败')
+  } finally {
+    loadingCleanupStatus.value = false
+  }
+}
+
+async function estimateCleanup() {
+  estimatingCleanup.value = true
+  try {
+    const res = await api.post('/admin/storage/conversation-files/estimate')
+    if (res.code !== 0) throw new Error(res.message || '清理预估失败')
+    cleanupEstimate.value = res.data || {}
+    showNotice('success', '清理预估已完成，本次未删除任何文件')
+  } catch (error) {
+    showNotice('error', error?.message || '清理预估失败')
+  } finally {
+    estimatingCleanup.value = false
+  }
+}
+
+async function cleanupConversationFiles() {
+  if (!window.confirm('超过有效期的会话附件将永久删除且无法恢复。此操作只删除附件，不会删除聊天文字和消息记录。确认立即清理？')) return
+  cleaningFiles.value = true
+  try {
+    const res = await api.post('/admin/storage/conversation-files/cleanup')
+    if (res.code !== 0) throw new Error(res.message || '清理任务启动失败')
+    showNotice('success', res.message || '清理任务已启动')
+    await loadCleanupStatus()
+  } catch (error) {
+    showNotice('error', error?.message || '清理任务启动失败')
+  } finally {
+    cleaningFiles.value = false
+  }
 }
 
 async function publishAppVersion() {
@@ -228,14 +297,17 @@ async function testEmail() {
   }
 }
 
-onMounted(loadSettings)
+onMounted(() => {
+  loadSettings()
+  loadCleanupStatus()
+})
 </script>
 
 <template>
   <div class="page-header settings-heading">
     <div>
       <h1>系统设置</h1>
-      <p class="desc">配置 APP 发布、平台上传、验证码、发信邮箱、注册登录、网站信息以及违禁词规则</p>
+      <p class="desc">配置 APP 发布、存储与附件清理、验证码、发信邮箱、注册登录、网站信息以及违禁词规则</p>
     </div>
     <button v-if="activeTab !== 'app'" class="btn btn-primary" :disabled="loading || saving" @click="saveSettings">
       {{ saving ? '保存中...' : '保存设置' }}
@@ -269,11 +341,12 @@ onMounted(loadSettings)
         <div class="panel-title">
           <h2>{{ currentTab.label }}设置</h2>
           <p v-if="activeTab === 'app'">上传 Android 安装包，并复用现有 APP 版本 API 配置发布信息。</p>
-          <p v-else-if="activeTab === 'upload'">限制平台附件上传方式、大小和文件类型。</p>
+          <p v-else-if="activeTab === 'upload'">配置平台上传限制与会话附件自动清理策略。</p>
           <p v-else-if="activeTab === 'captcha'">配置人机验证服务及验证码有效期。</p>
           <p v-else-if="activeTab === 'smtp'">配置用于通知和验证邮件的 SMTP 服务。</p>
           <p v-else-if="activeTab === 'auth'">控制账号注册和登录功能。</p>
           <p v-else-if="activeTab === 'forbiddenWords'">配置消息内容中不允许出现的词语。</p>
+          <p v-else-if="activeTab === 'agreements'">配置客服后台和客户中心注册时展示的免责协议与使用协议。</p>
           <p v-else>配置客服访问域名与网站搜索展示信息。</p>
         </div>
 
@@ -320,7 +393,8 @@ onMounted(loadSettings)
           <div class="app-api-tip full-width">版本提交复用现有 APP 版本 API，客户端继续通过公开更新检查接口获取最新已发布版本。</div>
         </div>
 
-        <div v-else-if="activeTab === 'upload'" class="settings-grid">
+        <div v-else-if="activeTab === 'upload'" class="settings-grid storage-settings">
+          <h3 class="section-heading full-width">上传规则</h3>
           <div class="input-group">
             <label for="upload-limit">单文件大小上限（MB）</label>
             <input id="upload-limit" v-model.number="form.upload.maxFileSizeMB" class="input" type="number" min="1" max="1024" />
@@ -329,6 +403,53 @@ onMounted(loadSettings)
             <label for="upload-types">允许的文件扩展名</label>
             <input id="upload-types" v-model.trim="form.upload.allowedTypes" class="input" placeholder="jpg,png,pdf,zip" />
             <span class="hint">多个扩展名请使用英文逗号分隔，不要包含点号。</span>
+          </div>
+
+          <div class="storage-divider full-width"></div>
+          <div class="section-title-row full-width">
+            <div><h3>会话附件清理</h3><p>附件按消息创建时间计算有效期；上传后未关联消息的文件按 pending 保留时间清理。</p></div>
+            <span class="safety-label">只删附件，不删消息</span>
+          </div>
+          <div class="input-group">
+            <label for="retention-days">附件有效天数</label>
+            <input id="retention-days" v-model.number="form.storage.conversationAttachmentRetentionDays" class="input" type="number" min="1" max="365" />
+            <span class="hint">默认 2 天，超过有效期后附件不可恢复。</span>
+          </div>
+          <div class="input-group">
+            <label for="pending-hours">待绑定附件保留小时</label>
+            <input id="pending-hours" v-model.number="form.storage.pendingAttachmentHours" class="input" type="number" min="1" max="168" />
+            <span class="hint">清理上传后未关联到消息的文件。</span>
+          </div>
+          <div class="input-group full-width">
+            <label for="cleanup-batch-size">单次清理数量</label>
+            <input id="cleanup-batch-size" v-model.number="form.storage.cleanupBatchSize" class="input" type="number" min="1" max="100" />
+            <span class="hint">每次定时或手动任务最多处理的附件数量。</span>
+          </div>
+
+          <div class="cleanup-card full-width">
+            <div class="cleanup-card-header">
+              <div><h3>清理状态</h3><p>查看最近一次任务执行结果，或预估当前可清理内容。</p></div>
+              <button class="btn btn-ghost" type="button" :disabled="loadingCleanupStatus" @click="loadCleanupStatus(true)">{{ loadingCleanupStatus ? '刷新中...' : '刷新状态' }}</button>
+            </div>
+            <div class="status-grid">
+              <div><span>运行状态</span><strong>{{ cleanupStatus?.isRunning || cleanupStatus?.running ? '正在清理' : '空闲' }}</strong></div>
+              <div><span>上次开始</span><strong>{{ formatDateTime(cleanupStatus?.lastRun?.startedAt) }}</strong></div>
+              <div><span>上次完成</span><strong>{{ formatDateTime(cleanupStatus?.lastRun?.finishedAt) }}</strong></div>
+              <div><span>上次删除</span><strong>{{ cleanupStatus?.lastRun?.deleted ?? 0 }} 个文件</strong></div>
+              <div><span>上次释放</span><strong>{{ formatFileSize(cleanupStatus?.lastRun?.releasedBytes) }}</strong></div>
+              <div><span>最近错误</span><strong :class="{ 'status-error': cleanupStatus?.lastRun?.failed }">{{ cleanupStatus?.lastRun?.failed ? `${cleanupStatus.lastRun.failed} 个文件清理失败` : '无' }}</strong></div>
+            </div>
+            <div v-if="cleanupEstimate" class="estimate-result">
+              <strong>预估结果</strong>
+              <span>当前到期 {{ cleanupEstimate.due?.count ?? 0 }} 个</span>
+              <span>预计释放 {{ formatFileSize(cleanupEstimate.due?.bytes) }}</span>
+              <span>统计时间 {{ formatDateTime(cleanupEstimate.generatedAt) }}</span>
+            </div>
+            <div class="cleanup-actions">
+              <button class="btn btn-ghost" type="button" :disabled="estimatingCleanup || cleaningFiles" @click="estimateCleanup">{{ estimatingCleanup ? '预估中...' : '预估清理' }}</button>
+              <button class="btn btn-danger" type="button" :disabled="cleaningFiles || cleanupStatus?.isRunning || cleanupStatus?.running" @click="cleanupConversationFiles">{{ cleaningFiles ? '启动中...' : '立即清理' }}</button>
+            </div>
+            <p class="danger-tip">危险操作：超过有效期的会话附件将永久删除且无法恢复，聊天文字和消息记录不会删除。</p>
           </div>
         </div>
 
@@ -416,7 +537,7 @@ onMounted(loadSettings)
             <label class="switch"><input v-model="form.registerEnabled" type="checkbox" /><span class="slider"></span></label>
           </div>
           <div class="setting-switch full-width">
-            <div><strong>租户注册邮箱验证</strong><span>开启后租户注册时必须先获取并填写邮箱验证码。</span></div>
+            <div><strong>客服后台注册邮箱验证</strong><span>开启后客服后台注册时必须先获取并填写邮箱验证码。</span></div>
             <label class="switch"><input v-model="form.tenantRegisterEmailVerificationEnabled" type="checkbox" /><span class="slider"></span></label>
           </div>
           <div class="setting-switch full-width">
@@ -430,6 +551,19 @@ onMounted(loadSettings)
             <label for="forbidden-words">违禁词列表</label>
             <textarea id="forbidden-words" v-model="form.forbiddenWords" class="textarea forbidden-words-input" rows="10" placeholder="违禁词一&#10;违禁词二,违禁词三"></textarea>
             <span class="hint">多个违禁词支持每行一个，或使用中英文逗号分隔。</span>
+          </div>
+        </div>
+
+        <div v-else-if="activeTab === 'agreements'" class="settings-grid">
+          <div class="input-group full-width">
+            <label for="agreement-disclaimer">免责协议</label>
+            <textarea id="agreement-disclaimer" v-model="form.agreements.disclaimer" class="textarea agreement-input" rows="10" placeholder="请输入免责协议内容，支持多行文本"></textarea>
+            <span class="hint">客服后台与客户中心注册页及协议页将展示此内容。</span>
+          </div>
+          <div class="input-group full-width">
+            <label for="agreement-terms">使用协议</label>
+            <textarea id="agreement-terms" v-model="form.agreements.terms" class="textarea agreement-input" rows="10" placeholder="请输入使用协议内容，支持多行文本"></textarea>
+            <span class="hint">客服后台与客户中心注册页及协议页将展示此内容。</span>
           </div>
         </div>
 
@@ -481,7 +615,25 @@ onMounted(loadSettings)
 .app-version-actions { display: flex; justify-content: flex-end; gap: 10px; }
 .check-field { display: flex; align-items: center; gap: 8px; color: var(--text-sec); font-size: 13px; }
 .app-api-tip { padding: 14px 16px; border-radius: var(--radius-md); background: var(--primary-soft); color: var(--text-sec); font-size: 13px; line-height: 1.6; }
+.section-heading { margin-bottom: 10px; font-size: 15px; }
+.storage-divider { height: 1px; margin: 14px 0 18px; background: var(--border); }
+.section-title-row, .cleanup-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.section-title-row h3, .cleanup-card h3 { font-size: 15px; }
+.section-title-row p, .cleanup-card-header p { margin: 5px 0 0; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.safety-label { flex: 0 0 auto; padding: 5px 9px; border-radius: 999px; background: var(--success-soft); color: #047857; font-size: 12px; font-weight: 600; }
+.cleanup-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 20px; margin: 4px 0 18px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-md); background: #f8fafc; }
+.cleanup-card { padding: 18px; border: 1px solid var(--border); border-radius: var(--radius-md); }
+.status-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 18px; }
+.status-grid > div { min-width: 0; padding: 12px; border-radius: var(--radius-md); background: #f8fafc; }
+.status-grid span, .status-grid strong { display: block; overflow-wrap: anywhere; }
+.status-grid span { margin-bottom: 5px; color: var(--text-muted); font-size: 12px; }
+.status-grid strong { color: var(--text-main); font-size: 13px; }
+.status-grid .status-error { color: var(--danger); }
+.estimate-result { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 16px; padding: 12px 14px; border-radius: var(--radius-md); background: var(--primary-soft); color: var(--text-sec); font-size: 12px; }
+.cleanup-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+.danger-tip { margin: 12px 0 0; color: var(--danger); font-size: 12px; line-height: 1.6; text-align: right; }
 .forbidden-words-input { min-height: 220px; line-height: 1.6; resize: vertical; }
+.agreement-input { min-height: 200px; line-height: 1.7; resize: vertical; white-space: pre-wrap; }
 .email-test { display: flex; align-items: flex-end; gap: 16px; }
 .email-test .input-group { flex: 1; margin-bottom: 0; }
 .email-test .btn { flex: 0 0 auto; margin-bottom: 16px; }
@@ -506,6 +658,12 @@ onMounted(loadSettings)
   .apk-upload-card .btn, .apk-result .btn { width: 100%; }
   .app-version-form { padding: 16px; }
   .app-version-actions { align-items: stretch; flex-direction: column; }
+  .section-title-row, .cleanup-card-header { align-items: stretch; flex-direction: column; }
+  .safety-label { align-self: flex-start; }
+  .cleanup-options, .status-grid { grid-template-columns: 1fr; }
+  .cleanup-actions { align-items: stretch; flex-direction: column; }
+  .cleanup-actions .btn { width: 100%; }
+  .danger-tip { text-align: left; }
   .email-test { align-items: stretch; flex-direction: column; }
   .email-test .btn { margin-bottom: 12px; }
   .setting-switch { gap: 16px; }

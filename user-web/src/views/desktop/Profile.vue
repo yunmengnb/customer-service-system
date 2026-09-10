@@ -3,6 +3,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../../api'
+import { clearIdentityCache, tenantIdentityScope } from '../../chatCache'
 
 const router = useRouter()
 const loading = ref(true)
@@ -110,6 +111,7 @@ async function updatePassword() {
   try {
     const res = await api.patch('/tenant/auth/profile/password', passwordForm)
     if (res.code !== 0) throw new Error(res.message || '密码修改失败')
+    await clearIdentityCache(tenantIdentityScope())
     for (const storage of [sessionStorage, localStorage]) {
       storage.removeItem('tenant_token'); storage.removeItem('tenant_user'); storage.removeItem('tenant_info')
     }

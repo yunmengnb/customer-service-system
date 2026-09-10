@@ -3,6 +3,7 @@
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import { clearIdentityCache, tenantIdentityScope } from '../chatCache'
 
 const route = useRoute()
 const router = useRouter()
@@ -27,6 +28,7 @@ const pageTitle = computed(() => {
   return current.value?.label || ({
     '/m/announcements': '系统公告',
     '/m/profile/about': '关于软件',
+    '/m/logs': '操作日志',
   }[route.path] || (route.path.startsWith('/m/announcements/') ? '公告详情' : '详情'))
 })
 
@@ -43,9 +45,11 @@ function go(tab) {
   }
 }
 
-function logout() {
+async function logout() {
   showLogoutConfirm.value = false
+  const identityScope = tenantIdentityScope()
   const storage = sessionStorage.getItem('tenant_token') ? sessionStorage : localStorage
+  await clearIdentityCache(identityScope)
   storage.removeItem('tenant_token')
   storage.removeItem('tenant_user')
   storage.removeItem('tenant_info')

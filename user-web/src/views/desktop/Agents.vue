@@ -131,7 +131,7 @@ onMounted(load)
       <div class="modal-footer"><button class="btn-ghost" @click="resetTarget = null">取消</button><button class="btn-primary" @click="doReset">确认重置</button></div>
     </div></div>
 
-    <ConfirmDialog :open="!!loginTarget" title="登录员工后台" :message="`确认在新窗口登录员工「${loginTarget?.displayName || ''}」的后台吗？当前租户后台会保持登录。`" confirm-text="确认登录" @confirm="loginAsEmployee" @cancel="loginTarget = null" />
+    <ConfirmDialog :open="!!loginTarget" title="登录员工后台" :message="`确认在新窗口登录员工「${loginTarget?.displayName || ''}」的后台吗？当前客服后台会保持登录。`" confirm-text="确认登录" @confirm="loginAsEmployee" @cancel="loginTarget = null" />
     <ConfirmDialog :open="!!deleteTarget" title="删除员工" :message="`确认删除员工「${deleteTarget?.displayName || ''}」吗？此操作无法撤销。`" confirm-text="确认删除" danger @confirm="deleteEmployee" @cancel="deleteTarget = null" />
   </div>
 </template>

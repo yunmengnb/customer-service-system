@@ -49,7 +49,7 @@ async function doLogin() {
 <template>
   <div class="simple-page">
     <div class="simple-box">
-      <h1>租户后台</h1>
+      <h1>客服后台</h1>
       <div class="sub">管理员与员工使用同一账号入口登录</div>
       <input v-model="form.username" autocomplete="username" placeholder="用户名" @keyup.enter="doLogin" />
       <input v-model="form.password" type="password" autocomplete="current-password" placeholder="密码" @keyup.enter="doLogin" />

@@ -1,7 +1,7 @@
 // 忆梦云团队开发 - 平台客户管理
 const CustomerAccount = require('../models/CustomerAccount');
 const Customer = require('../models/Customer');
-const { ok, error, hashPassword, normalizePhone } = require('../utils');
+const { ok, error, hashPassword, normalizePhone, qqAvatarUrl } = require('../utils');
 
 class AdminCustomerController {
   async list(req, res) {
@@ -44,8 +44,9 @@ class AdminCustomerController {
     if (body.qq !== undefined) {
       const qq = String(body.qq).trim();
       if (qq && !/^[1-9]\d{4,11}$/.test(qq)) return error(res, 'QQ号格式不正确');
+      const previousQQAvatar = qqAvatarUrl(account.qq);
       account.qq = qq;
-      account.avatarUrl = qq ? `https://q1.qlogo.cn/g?b=qq&nk=${qq}&s=100` : '';
+      if (!account.avatarUrl || account.avatarUrl === previousQQAvatar) account.avatarUrl = '';
     }
     if (body.nickname !== undefined) {
       const nickname = String(body.nickname).trim();

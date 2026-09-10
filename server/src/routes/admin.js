@@ -14,6 +14,7 @@ const VersionController = require('../controllers/VersionController');
 const AppController = require('../controllers/AppController');
 const CaptchaController = require('../controllers/CaptchaController');
 const ComplaintController = require('../controllers/ComplaintController');
+const StorageController = require('../controllers/StorageController');
 const { verifyCaptcha } = require('../middleware/captcha');
 
 // ===== 认证 =====
@@ -64,6 +65,9 @@ router.patch('/customers/:id/status', authAdmin, requireSuperAdmin, AdminCustome
 router.get('/settings', authAdmin, requireSuperAdmin, SystemSettingController.get);
 router.put('/settings', authAdmin, requireSuperAdmin, SystemSettingController.update);
 router.post('/settings/test-email', authAdmin, requireSuperAdmin, SystemSettingController.testEmail);
+router.post('/storage/conversation-files/estimate', authAdmin, requireSuperAdmin, StorageController.estimate);
+router.post('/storage/conversation-files/cleanup', authAdmin, requireSuperAdmin, StorageController.cleanup);
+router.get('/storage/conversation-files/status', authAdmin, requireSuperAdmin, StorageController.status);
 router.patch('/complaints/:id/status', authAdmin, requireSuperAdmin, ComplaintController.updateStatus);
 
 module.exports = router;

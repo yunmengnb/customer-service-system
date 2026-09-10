@@ -27,7 +27,9 @@ api.interceptors.response.use(
     if (err.response?.status === 401 && err.config?.headers?.Authorization) {
       localStorage.removeItem('client_token')
     }
-    return Promise.reject(err.response?.data || err)
+    const reason = err.response?.data || err
+    if (reason && typeof reason === 'object') reason.httpStatus = err.response?.status
+    return Promise.reject(reason)
   }
 )
 

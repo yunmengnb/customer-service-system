@@ -160,10 +160,10 @@ class AdminConversationController {
       $or: [{ content: keywordRegex }, { attachmentName: keywordRegex }],
     };
     const [items, total] = await Promise.all([
-      Message.find(query).sort({ createdAt: -1, _id: -1 }).limit(200).lean(),
+      Message.find(query).sort({ createdAt: -1, _id: -1 }).limit(200),
       Message.countDocuments(query),
     ]);
-    return ok(res, { items, total });
+    return ok(res, { items: items.map(message => message.toJSON()), total });
   }
 
   // GET /api/admin/conversations/:id/messages

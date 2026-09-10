@@ -4,6 +4,7 @@ const TenantUser = require('../models/TenantUser');
 const { ok, error, hashPassword, comparePassword, signToken } = require('../utils');
 const { getSystemSettings } = require('../utils/systemSettings');
 const { normalizeEmail, sendEmailCode, verifyEmailCode } = require('../utils/emailVerification');
+const { recordLogin, recordOperation } = require('../services/auditLogService');
 
 function ownerToken(user) {
   return signToken({
@@ -65,7 +66,10 @@ class TenantAuthController {
     const settings = await getSystemSettings();
     if (!settings.loginEnabled) return error(res, '系统暂时关闭登录', 4034, 403);
     const tenant = await Tenant.findOne({ username });
-    if (tenant && tenant.status !== 'active') return error(res, '账号已被禁用', 403, 403);
+    if (tenant && tenant.status !== 'active') {
+      recordLogin({ req, tenantId: tenant._id, user: { username, displayName: tenant.name, role: 'owner' }, result: 'failure', detail: '账号已被禁用' });
+      return error(res, '账号已被禁用', 403, 403);
+    }
 
     if (tenant && comparePassword(password, tenant.password)) {
       tenant.lastLoginAt = new Date();
@@ -75,16 +79,27 @@ class TenantAuthController {
       if (owner.status !== 'active') return error(res, '账号已被禁用', 403, 403);
       owner.lastLoginAt = new Date();
       await owner.save();
+      recordLogin({ req, tenantId: tenant._id, user: owner, result: 'success', detail: '登录成功' });
       return ok(res, { token: ownerToken(owner), tenant: tenant.toJSON(), user: owner.toJSON() });
     }
 
     const user = await TenantUser.findOne({ username });
-    if (!user || !comparePassword(password, user.password)) return error(res, '账号或密码错误', 401, 401);
-    if (user.status !== 'active') return error(res, '账号已被禁用', 403, 403);
+    if (!user || !comparePassword(password, user.password)) {
+      recordLogin({ req, tenantId: user ? user.tenantId : (tenant ? tenant._id : null), user: user || { username }, result: 'failure', detail: '账号或密码错误' });
+      return error(res, '账号或密码错误', 401, 401);
+    }
+    if (user.status !== 'active') {
+      recordLogin({ req, tenantId: user.tenantId, user, result: 'failure', detail: '账号已被禁用' });
+      return error(res, '账号已被禁用', 403, 403);
+    }
     const tenantObj = await Tenant.findById(user.tenantId);
-    if (!tenantObj || tenantObj.status !== 'active') return error(res, '所属租户已被禁用', 403, 403);
+    if (!tenantObj || tenantObj.status !== 'active') {
+      recordLogin({ req, tenantId: user.tenantId, user, result: 'failure', detail: '所属租户已被禁用' });
+      return error(res, '所属租户已被禁用', 403, 403);
+    }
     user.lastLoginAt = new Date();
     await user.save();
+    recordLogin({ req, tenantId: user.tenantId, user, result: 'success', detail: '登录成功' });
     return ok(res, { token: ownerToken(user), tenant: tenantObj.toJSON(), user: user.toJSON() });
   }
 
@@ -118,6 +133,7 @@ class TenantAuthController {
     }
     await user.save();
     const tenant = await Tenant.findById(req.tenantId);
+    recordOperation({ req, tenantId: req.tenantId, user, action: 'update_profile', detail: '修改个人资料' });
     return ok(res, { token: ownerToken(user), user: user.toJSON(), tenant: tenant.toJSON() }, '资料已更新');
   }
 
@@ -140,6 +156,7 @@ class TenantAuthController {
     const valid = await verifyEmailCode({ scope: `tenant-profile:${req.tenantId}:change-email`, email, code: req.body.emailCode });
     if (!valid) return error(res, '邮箱验证码错误或已过期', 4004, 400);
     const tenant = await Tenant.findByIdAndUpdate(req.tenantId, { email }, { new: true, runValidators: true });
+    recordOperation({ req, tenantId: req.tenantId, user: req.user, action: 'update_email', detail: '修改租户邮箱' });
     return ok(res, tenant.toJSON(), '邮箱修改成功');
   }
 
@@ -155,6 +172,7 @@ class TenantAuthController {
     tenant.password = password;
     await tenant.save();
     await TenantUser.updateOne({ tenantId: tenant._id, role: 'owner' }, { $set: { password } });
+    recordOperation({ req, tenantId: req.tenantId, user: req.user, action: 'update_password', detail: '修改登录密码' });
     return ok(res, null, '密码修改成功，请使用新密码登录');
   }
 

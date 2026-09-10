@@ -67,6 +67,16 @@ class SystemSettingController {
         });
     }
 
+    if (body.agreements) {
+      for (const key of ['disclaimer', 'terms']) {
+        if (body.agreements[key] !== undefined) {
+          const value = String(body.agreements[key] || '');
+          if (value.length > 20000) return error(res, '协议内容过长');
+          setting.agreements[key] = value;
+        }
+      }
+    }
+
     if (body.upload) {
       if (body.upload.allowedTypes !== undefined) {
         if (!Array.isArray(body.upload.allowedTypes)) return error(res, '上传类型必须为数组');
@@ -75,6 +85,24 @@ class SystemSettingController {
         setting.upload.allowedTypes = types;
       }
       if (body.upload.maxFileSizeMB !== undefined) setting.upload.maxFileSizeMB = Number(body.upload.maxFileSizeMB);
+    }
+
+    if (body.storage) {
+      const retentionDays = Number(body.storage.conversationAttachmentRetentionDays);
+      const pendingHours = Number(body.storage.pendingAttachmentHours);
+      const batchSize = Number(body.storage.cleanupBatchSize);
+      if (body.storage.conversationAttachmentRetentionDays !== undefined) {
+        if (!Number.isInteger(retentionDays) || retentionDays < 1 || retentionDays > 365) return error(res, '会话附件有效期必须为1到365天的整数');
+        setting.storage.conversationAttachmentRetentionDays = retentionDays;
+      }
+      if (body.storage.pendingAttachmentHours !== undefined) {
+        if (!Number.isInteger(pendingHours) || pendingHours < 1 || pendingHours > 168) return error(res, '待绑定附件保留时间必须为1到168小时的整数');
+        setting.storage.pendingAttachmentHours = pendingHours;
+      }
+      if (body.storage.cleanupBatchSize !== undefined) {
+        if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 100) return error(res, '清理批次必须为1到100的整数');
+        setting.storage.cleanupBatchSize = batchSize;
+      }
     }
 
     if (body.captcha) {

@@ -10,6 +10,7 @@ const CaptchaController = require('../controllers/CaptchaController');
 const { verifyCaptcha } = require('../middleware/captcha');
 const SystemSettingController = require('../controllers/SystemSettingController');
 const ComplaintController = require('../controllers/ComplaintController');
+const ConversationAttachmentController = require('../controllers/ConversationAttachmentController');
 
 router.get('/public-settings', SystemSettingController.getPublic);
 
@@ -49,6 +50,7 @@ router.post('/profile/password', authCustomer, validators.customerPassword, Cust
 // 会话与消息
 router.get('/conversation', authCustomer, ChatController.getClientConversation);
 router.get('/conversation/messages', authCustomer, ChatController.getClientMessages);
+router.post('/conversation/attachments', authCustomer, ConversationAttachmentController.uploadCustomer);
 router.post('/conversation/messages', authCustomer, ChatController.customerSendMessage);
 router.post('/conversation/messages/:messageId/recall', authCustomer, ChatController.customerRecallMessage);
 router.delete('/conversation/messages/:messageId', authCustomer, ChatController.customerDeleteMessage);

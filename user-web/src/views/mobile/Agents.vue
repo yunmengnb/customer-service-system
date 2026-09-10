@@ -80,7 +80,7 @@ onMounted(load)
       <h3>编辑员工</h3><div class="form-group"><label>用户名</label><input v-model="editForm.username" /></div><div class="form-group"><label>显示名</label><input v-model="editForm.displayName" /></div><div v-if="editTarget.role !== 'owner'" class="form-group"><label>角色</label><select v-model="editForm.role"><option value="agent">员工</option><option value="admin">管理员</option></select></div><div class="modal-footer"><button class="btn-ghost" @click="editTarget = null">取消</button><button class="btn-primary" @click="saveEmployee">保存</button></div>
     </div></div>
     <div v-if="resetTarget" class="modal-overlay" @click.self="resetTarget = null"><div class="modal-box"><h3>重置 {{ resetTarget.displayName }} 的密码</h3><div class="form-group"><label>新密码</label><input type="password" v-model="resetPwd" /></div><div class="modal-footer"><button class="btn-ghost" @click="resetTarget = null">取消</button><button class="btn-primary" @click="doReset">确认重置</button></div></div></div>
-    <ConfirmDialog :open="!!loginTarget" title="登录员工后台" :message="`确认在新窗口登录员工「${loginTarget?.displayName || ''}」的后台吗？当前租户后台会保持登录。`" confirm-text="确认登录" @confirm="loginAsEmployee" @cancel="loginTarget = null" />
+    <ConfirmDialog :open="!!loginTarget" title="登录员工后台" :message="`确认在新窗口登录员工「${loginTarget?.displayName || ''}」的后台吗？当前客服后台会保持登录。`" confirm-text="确认登录" @confirm="loginAsEmployee" @cancel="loginTarget = null" />
     <ConfirmDialog :open="!!deleteTarget" title="删除员工" :message="`确认删除员工「${deleteTarget?.displayName || ''}」吗？此操作无法撤销。`" confirm-text="确认删除" danger @confirm="deleteEmployee" @cancel="deleteTarget = null" />
   </div>
 </template>

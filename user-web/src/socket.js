@@ -1,4 +1,4 @@
-// 忆梦云团队开发 - 租户工作台全局 Socket.IO 单例
+// 忆梦云团队开发 - 客服后台全局 Socket.IO 单例
 import { io } from 'socket.io-client'
 
 let tenantSocket = null

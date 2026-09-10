@@ -4,6 +4,7 @@ import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import api from '../../api'
 import ConfirmDialog from '../../components/ConfirmDialog.vue'
 import { getTenantSocket } from '../../socket'
+import { cacheMessages, cleanupChatCache, clearCachedConversation, getCachedMessages, invalidateAttachment, loadCachedAvatar, loadCachedMedia, tenantCacheScope } from '../../chatCache'
 
 const props = defineProps({
   conversationId: { type: String, default: null },
@@ -39,6 +40,11 @@ const closing = ref(false)
 const confirmAction = ref(null)
 const actionSubmitting = ref(false)
 const preview = ref(null)
+const mediaUrls = ref({})
+const mediaRequests = new Map()
+const avatarUrls = ref({})
+const failedAvatarUrls = ref({})
+const avatarRequests = new Map()
 const contextMenu = ref(null)
 const downloadProgress = ref(null)
 const toast = ref('')
@@ -48,6 +54,8 @@ let longPressStart = null
 let suppressBubbleClickUntil = 0
 
 const currentUserId = JSON.parse(sessionStorage.getItem('tenant_user') || localStorage.getItem('tenant_user') || 'null')?._id
+const cacheScope = tenantCacheScope()
+const persistMessages = () => cacheMessages(cacheScope, props.conversationId, messages.value)
 const canDeleteMessage = (msg) => msg.senderType !== 'system' && msg._id
 const canRecallMessage = (msg) => (
   msg.senderType === 'agent' &&
@@ -76,6 +84,8 @@ async function loadConversation() {
 
 async function loadMessages() {
   if (!props.conversationId) return
+  const cached = await getCachedMessages(cacheScope, props.conversationId)
+  if (cached.length && !props.targetMessageId) messages.value = cached
   try {
     const params = props.targetMessageId
       ? { limit: 100, around: props.targetMessageId }
@@ -83,6 +93,7 @@ async function loadMessages() {
     const res = await api.get(`/tenant/conversations/${props.conversationId}/messages`, { params })
     if (res.code === 0) {
       messages.value = res.data || []
+      persistMessages()
       hasMoreMessages.value = props.targetMessageId ? true : messages.value.length >= 50
       emit('conversation-read', props.conversationId)
       if (!loading.value) {
@@ -118,6 +129,7 @@ async function loadPreviousMessages() {
       const olderMessages = res.data || []
       const existingIds = new Set(messages.value.map(message => String(message._id)))
       messages.value = [...olderMessages.filter(message => !existingIds.has(String(message._id))), ...messages.value]
+      persistMessages()
       hasMoreMessages.value = olderMessages.length === 50
       await nextTick()
       if (container) container.scrollTop = container.scrollHeight - previousHeight
@@ -162,6 +174,7 @@ function mergeMessage(message) {
   )
   if (index >= 0) messages.value[index] = message
   else messages.value.push(message)
+  persistMessages()
 }
 
 async function syncLatestMessages() {
@@ -203,7 +216,7 @@ async function runCustomerAction() {
     const type = confirmAction.value
     if (type === 'clear') {
       const res = await api.delete(`/tenant/conversations/${props.conversationId}/messages`)
-      if (res.code === 0) messages.value = []
+      if (res.code === 0) { messages.value = []; clearCachedConversation(cacheScope, props.conversationId) }
     } else {
       const field = type === 'block' ? 'blocked' : 'messageReceivingDisabled'
       const current = Boolean(conversation.value.customer?.[field])
@@ -236,15 +249,13 @@ async function handleUpload(ev) {
   uploading.value = true
   const fd = new FormData(); fd.append('file', file)
   try {
-    const res = await api.upload('/upload/tenant', fd)
+    const res = await api.upload(`/tenant/conversations/${props.conversationId}/attachments`, fd)
     if (res.code === 0) {
       const fi = res.data
-      const mediaType = fi.isImage ? 'image' : (fi.mimetype?.startsWith('video/') ? 'video' : 'file')
+      const mediaType = ['image', 'video'].includes(fi.category) ? fi.category : 'file'
       const body = {
+        attachmentId: fi.attachmentId,
         messageType: mediaType,
-        content: mediaType === 'image' ? '' : (mediaType === 'video' ? fi.url : ''),
-        attachmentUrl: fi.url, attachmentName: fi.name,
-        thumbnailUrl: fi.thumbnailUrl || '',
         clientMessageId: 'up_' + Date.now(),
       }
       const sr = await api.post(`/tenant/conversations/${props.conversationId}/messages`, body)
@@ -286,6 +297,7 @@ function removeSocketListeners() {
   socket?.off('message.new', handleSocketMessage)
   socket?.off('message.recalled', applyRecall)
   socket?.off('message.deleted', applyDelete)
+  socket?.off('attachment.updated', applyAttachmentUpdate)
   socket?.off('conversation.updated', handleConversationUpdated)
 }
 function setupSocket() {
@@ -306,6 +318,7 @@ async function init() {
   if (!props.conversationId) { conversation.value = null; messages.value = []; return }
   loading.value = true
   try {
+    cleanupChatCache(cacheScope)
     await Promise.all([loadConversation(), loadMessages()])
     if (conversation.value) {
       await loadQuickReplies(); setupSocket()
@@ -329,6 +342,7 @@ watch(
       return
     }
     removeSocketListeners(); socket = null
+    releaseMediaUrls()
     customerOnline.value = false
     clearInterval(messageSyncTimer); messageSyncTimer = null
     showMore.value = false
@@ -350,6 +364,7 @@ onUnmounted(() => {
   clearTimeout(toastTimer)
   clearTimeout(longPressTimer)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
+  releaseMediaUrls()
 })
 
 function isNearBottom() {
@@ -370,10 +385,114 @@ function showToast(message) {
   clearTimeout(toastTimer)
   toastTimer = setTimeout(() => { toast.value = '' }, 2200)
 }
-function openPreview(msg) { preview.value = { url: msg.attachmentUrl, type: msg.messageType, name: msg.attachmentName } }
-function closePreview() { preview.value = null }
-async function downloadFile(url, name = '下载文件') {
+function attachmentUrl(msg) { return msg.attachmentId ? `/api/files/${msg.attachmentId}` : msg.attachmentUrl }
+function thumbnailUrl(msg) { return msg.attachmentId ? `/api/files/${msg.attachmentId}/thumbnail` : msg.thumbnailUrl }
+function attachmentExpired(msg) { return ['expired', 'deleted'].includes(msg.attachmentStatus) }
+function markAttachmentExpired(msg) {
+  if (!msg) return
+  msg.attachmentStatus = 'expired'
+  releaseAttachmentUrls(msg)
+  invalidateAttachment(cacheScope, msg.attachmentId)
+  persistMessages()
+}
+function mediaKey(msg, thumbnail = false) { return `${msg._id || msg.clientMessageId}:${thumbnail ? 'thumbnail' : 'original'}` }
+function releaseAttachmentUrls(msg) {
+  if (!msg) return
+  for (const thumbnail of [false, true]) {
+    const key = mediaKey(msg, thumbnail)
+    if (mediaUrls.value[key]) URL.revokeObjectURL(mediaUrls.value[key])
+    delete mediaUrls.value[key]
+    mediaRequests.delete(key)
+  }
+  if (preview.value?.msg === msg) closePreview()
+}
+function avatarSrc(url) { return avatarUrls.value[url] || url }
+function customerAvatarVisible() { return Boolean(conversation.value?.customer?.avatarUrl && !failedAvatarUrls.value[conversation.value.customer.avatarUrl]) }
+function handleAvatarError(url) {
+  if (!url) return
+  failedAvatarUrls.value = { ...failedAvatarUrls.value, [url]: true }
+}
+function loadAvatar(el, url) {
+  if (!url || avatarUrls.value[url]) return
+  if (!avatarRequests.has(url)) {
+    avatarRequests.set(url, loadCachedAvatar(cacheScope, url, () => api.get(url, { baseURL: '', responseType: 'blob' }))
+      .then(blob => {
+        if (!blob) return
+        avatarUrls.value[url] = URL.createObjectURL(blob)
+        el.src = avatarUrls.value[url]
+      })
+      .catch(() => {})
+      .finally(() => avatarRequests.delete(url)))
+  }
+}
+const vCachedAvatar = { mounted(el, binding) { loadAvatar(el, binding.value) }, updated(el, binding) { if (binding.value !== binding.oldValue) loadAvatar(el, binding.value) } }
+function releaseMediaUrls() {
+  Object.values(mediaUrls.value).forEach(url => URL.revokeObjectURL(url))
+  Object.values(avatarUrls.value).forEach(url => URL.revokeObjectURL(url))
+  mediaUrls.value = {}
+  avatarUrls.value = {}
+  mediaRequests.clear()
+  avatarRequests.clear()
+  preview.value = null
+}
+function loadMedia(msg, thumbnail = false) {
+  if (!msg.attachmentId) return Promise.resolve(thumbnail ? thumbnailUrl(msg) : attachmentUrl(msg))
+  if (attachmentExpired(msg)) return Promise.resolve('')
+  const key = mediaKey(msg, thumbnail)
+  if (mediaUrls.value[key]) return Promise.resolve(mediaUrls.value[key])
+  if (!mediaRequests.has(key)) {
+    const request = loadCachedMedia(cacheScope, msg, thumbnail, () => api.get(thumbnail ? thumbnailUrl(msg) : attachmentUrl(msg), { baseURL: '', responseType: 'blob' }))
+      .then(blob => {
+        if (!blob) return ''
+        const url = URL.createObjectURL(blob)
+        if (msg.messageType !== 'video' || thumbnail) mediaUrls.value[key] = url
+        return url
+      })
+      .catch(error => {
+        if (error?.httpStatus === 410) markAttachmentExpired(msg)
+        return ''
+      })
+      .finally(() => mediaRequests.delete(key))
+    mediaRequests.set(key, request)
+  }
+  return mediaRequests.get(key)
+}
+function mediaSrc(msg, thumbnail = false) {
+  if (!msg.attachmentId) return thumbnail ? thumbnailUrl(msg) : attachmentUrl(msg)
+  return mediaUrls.value[mediaKey(msg, thumbnail)] || ''
+}
+const vLazyMedia = {
+  mounted(el, binding) {
+    const { msg, thumbnail = false } = binding.value
+    if (!msg.attachmentId) return
+    const load = () => loadMedia(msg, thumbnail).then(url => { if (url) el.src = url })
+    if (!('IntersectionObserver' in window)) { load(); return }
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) {
+        observer.disconnect()
+        load()
+      }
+    }, { rootMargin: '160px' })
+    el._attachmentObserver = observer
+    observer.observe(el)
+  },
+  unmounted(el) { el._attachmentObserver?.disconnect() },
+}
+async function openPreview(msg) {
+  if (attachmentExpired(msg)) return
+  const url = await loadMedia(msg)
+  if (url && !attachmentExpired(msg)) preview.value = { url, type: msg.messageType, name: msg.attachmentName, msg }
+}
+function closePreview() {
+  if (preview.value?.type === 'video') URL.revokeObjectURL(preview.value.url)
+  preview.value = null
+}
+async function downloadFile(msgOrUrl, name = '下载文件') {
   contextMenu.value = null
+  const msg = typeof msgOrUrl === 'object' ? msgOrUrl : null
+  if (attachmentExpired(msg)) return
+  const url = msg ? attachmentUrl(msg) : msgOrUrl
+  const fileName = msg?.attachmentName || name
   downloadProgress.value = 0
   try {
     const blob = await api.get(url, {
@@ -385,11 +504,14 @@ async function downloadFile(url, name = '下载文件') {
     })
     const objectUrl = URL.createObjectURL(blob)
     const link = document.createElement('a')
-    link.href = objectUrl; link.download = name || '下载文件'; link.click()
+    link.href = objectUrl; link.download = fileName || '下载文件'; link.click()
     URL.revokeObjectURL(objectUrl)
     downloadProgress.value = 100
     showToast('文件已保存')
-  } catch { showToast('下载失败') }
+  } catch (error) {
+    if (error?.httpStatus === 410) markAttachmentExpired(msg)
+    showToast(error?.httpStatus === 410 ? '该文件已过期并自动清理' : '下载失败')
+  }
   finally { setTimeout(() => { downloadProgress.value = null }, 500) }
 }
 function showContextMenu(event, msg) {
@@ -467,7 +589,10 @@ async function copyMessage(msg) {
 async function recallMessage(msg) {
   try {
     await api.post(`/tenant/conversations/${props.conversationId}/messages/${msg._id}/recall`)
-    Object.assign(msg, { recalledAt: new Date().toISOString(), content: '', attachmentUrl: '', attachmentName: '', thumbnailUrl: '' })
+    releaseAttachmentUrls(msg)
+    Object.assign(msg, { recalledAt: new Date().toISOString(), attachmentStatus: 'recalled', content: '', attachmentUrl: '', attachmentName: '', thumbnailUrl: '' })
+    if (msg.attachmentId) invalidateAttachment(cacheScope, msg.attachmentId, 'recalled')
+    persistMessages()
     showToast('消息已撤回')
   } catch (e) { showToast(e?.message || '撤回失败') }
   contextMenu.value = null
@@ -475,7 +600,10 @@ async function recallMessage(msg) {
 async function deleteMessage(msg) {
   try {
     await api.delete(`/tenant/conversations/${props.conversationId}/messages/${msg._id}`)
+    releaseAttachmentUrls(msg)
+    if (msg.attachmentId) invalidateAttachment(cacheScope, msg.attachmentId, 'deleted')
     messages.value = messages.value.filter(item => String(item._id) !== String(msg._id))
+    persistMessages()
     showToast('消息已删除')
   } catch (e) { showToast(e?.message || '删除失败') }
   contextMenu.value = null
@@ -483,10 +611,30 @@ async function deleteMessage(msg) {
 function applyRecall(data) {
   if (String(data.conversationId) !== String(props.conversationId)) return
   const msg = messages.value.find(item => String(item._id) === String(data.messageId))
-  if (msg) Object.assign(msg, { recalledAt: data.recalledAt, content: '', attachmentUrl: '', attachmentName: '', thumbnailUrl: '' })
+  if (msg) {
+    Object.assign(msg, { recalledAt: data.recalledAt, attachmentStatus: 'recalled', content: '', attachmentUrl: '', attachmentName: '', thumbnailUrl: '' })
+    invalidateAttachment(cacheScope, msg.attachmentId, 'recalled')
+    persistMessages()
+  }
 }
 function applyDelete(data) {
-  if (String(data.conversationId) === String(props.conversationId)) messages.value = messages.value.filter(item => String(item._id) !== String(data.messageId))
+  if (String(data.conversationId) !== String(props.conversationId)) return
+  const msg = messages.value.find(item => String(item._id) === String(data.messageId))
+  if (msg?.attachmentId) {
+    releaseAttachmentUrls(msg)
+    invalidateAttachment(cacheScope, msg.attachmentId, 'deleted')
+  }
+  messages.value = messages.value.filter(item => String(item._id) !== String(data.messageId))
+  persistMessages()
+}
+function applyAttachmentUpdate(data) {
+  if (String(data.conversationId) !== String(props.conversationId)) return
+  const msg = messages.value.find(item => String(item._id) === String(data.messageId))
+  if (!msg || !['expired', 'recalled', 'deleted'].includes(data.status)) return
+  msg.attachmentStatus = data.status
+  releaseAttachmentUrls(msg)
+  invalidateAttachment(cacheScope, data.attachmentId || msg.attachmentId, data.status)
+  persistMessages()
 }
 async function sendQuickReply(qr) {
   if (!accepted.value || conversation.value?.status !== 'active' || sendingQuickReplyId.value) return
@@ -547,7 +695,7 @@ defineExpose({ reload: init })
       <header class="cp-header">
         <button v-if="$slots.back" class="cp-back" @click="emit('back')">←</button>
         <div class="cp-title-wrap" @click="showInfo = !showInfo">
-          <img v-if="conversation.customer?.avatarUrl" class="cp-avatar cp-avatar-image" :src="conversation.customer.avatarUrl" loading="lazy" decoding="async" alt="客户QQ头像" />
+          <img v-if="customerAvatarVisible()" v-cached-avatar="conversation.customer.avatarUrl" class="cp-avatar cp-avatar-image" :src="avatarSrc(conversation.customer.avatarUrl)" loading="lazy" decoding="async" alt="客户头像" @error="handleAvatarError(conversation.customer.avatarUrl)" />
           <div v-else class="cp-avatar">{{ avatarChar() }}</div>
           <div>
             <div class="cp-title">
@@ -592,20 +740,21 @@ defineExpose({ reload: init })
 
           <div v-else class="cp-bubble-row" :data-message-id="msg._id" :class="msg.senderType === 'customer' ? 'is-left' : 'is-right'">
             <template v-if="msg.senderType === 'customer'">
-              <img v-if="conversation.customer?.avatarUrl" class="cp-bubble-avatar" :src="conversation.customer.avatarUrl" loading="lazy" decoding="async" alt="客户头像" />
+              <img v-if="customerAvatarVisible()" v-cached-avatar="conversation.customer.avatarUrl" class="cp-bubble-avatar" :src="avatarSrc(conversation.customer.avatarUrl)" loading="lazy" decoding="async" alt="客户头像" @error="handleAvatarError(conversation.customer.avatarUrl)" />
               <div v-else class="cp-bubble-avatar" :style="{ background: `linear-gradient(135deg,#f59e0b,#d97706)` }">{{ avatarChar() }}</div>
               <div class="cp-bubble-wrap">
-                <div class="cp-bubble cp-bubble-customer" :class="{ 'cp-media-message-bubble': ['image', 'video', 'file'].includes(msg.messageType) && msg.attachmentUrl, 'cp-menu-active': contextMenu?.msg === msg }" @contextmenu="showContextMenu($event, msg)" @touchstart="startLongPress($event, msg)" @touchend="finishLongPress" @touchcancel="cancelLongPress" @touchmove="moveLongPress" @click.capture="handleBubbleClick">
+                <div class="cp-bubble cp-bubble-customer" :class="{ 'cp-media-message-bubble': ['image', 'video', 'file'].includes(msg.messageType) && (msg.attachmentId || msg.attachmentUrl), 'cp-menu-active': contextMenu?.msg === msg }" @contextmenu="showContextMenu($event, msg)" @touchstart="startLongPress($event, msg)" @touchend="finishLongPress" @touchcancel="cancelLongPress" @touchmove="moveLongPress" @click.capture="handleBubbleClick">
                   <template v-if="msg.recalledAt"><span class="cp-recalled">消息已撤回</span></template>
-                  <template v-else-if="msg.messageType === 'image' && msg.attachmentUrl"><img :src="msg.attachmentUrl" class="cp-bubble-img" loading="lazy" decoding="async" alt="聊天图片" @click="openPreview(msg)" /></template>
-                  <template v-else-if="msg.messageType === 'video' && msg.attachmentUrl">
+                  <span v-else-if="attachmentExpired(msg)">该文件已过期并自动清理</span>
+                  <template v-else-if="msg.messageType === 'image' && (msg.attachmentId || msg.attachmentUrl)"><img :src="mediaSrc(msg)" v-lazy-media="{ msg }" class="cp-bubble-img" loading="lazy" decoding="async" alt="聊天图片" @click="openPreview(msg)" /></template>
+                  <template v-else-if="msg.messageType === 'video' && (msg.attachmentId || msg.attachmentUrl)">
                     <div class="cp-video-wrap">
-                      <img v-if="msg.thumbnailUrl" :src="msg.thumbnailUrl" :alt="msg.attachmentName || '视频封面'" class="cp-bubble-img cp-bubble-video" loading="lazy" decoding="async" @click.prevent="openPreview(msg)" />
+                      <img v-if="msg.attachmentId || msg.thumbnailUrl" :src="mediaSrc(msg, true)" v-lazy-media="{ msg, thumbnail: true }" :alt="msg.attachmentName || '视频封面'" class="cp-bubble-img cp-bubble-video" loading="lazy" decoding="async" @click.prevent="openPreview(msg)" />
                       <button v-else type="button" class="cp-bubble-img cp-bubble-video cp-video-placeholder" aria-label="加载并播放视频" @click.prevent="openPreview(msg)">视频</button>
                       <span class="cp-video-play-icon" @click.prevent="openPreview(msg)">▶</span>
                     </div>
                   </template>
-                  <button v-else-if="msg.messageType === 'file' && msg.attachmentUrl" class="cp-bubble-file" @click="downloadFile(msg.attachmentUrl, msg.attachmentName)">
+                  <button v-else-if="msg.messageType === 'file' && (msg.attachmentId || msg.attachmentUrl)" class="cp-bubble-file" @click="downloadFile(msg)">
                     📎 {{ msg.attachmentName || '文件' }}
                   </button>
                   <template v-else>
@@ -621,17 +770,18 @@ defineExpose({ reload: init })
 
             <template v-else>
               <div class="cp-bubble-wrap">
-                <div class="cp-bubble" :class="{ 'cp-media-message-bubble': ['image', 'video', 'file'].includes(msg.messageType) && msg.attachmentUrl, 'cp-menu-active': contextMenu?.msg === msg }" @contextmenu="showContextMenu($event, msg)" @touchstart="startLongPress($event, msg)" @touchend="finishLongPress" @touchcancel="cancelLongPress" @touchmove="moveLongPress" @click.capture="handleBubbleClick">
+                <div class="cp-bubble" :class="{ 'cp-media-message-bubble': ['image', 'video', 'file'].includes(msg.messageType) && (msg.attachmentId || msg.attachmentUrl), 'cp-menu-active': contextMenu?.msg === msg }" @contextmenu="showContextMenu($event, msg)" @touchstart="startLongPress($event, msg)" @touchend="finishLongPress" @touchcancel="cancelLongPress" @touchmove="moveLongPress" @click.capture="handleBubbleClick">
                   <template v-if="msg.recalledAt"><span class="cp-recalled">消息已撤回</span></template>
-                  <template v-else-if="msg.messageType === 'image' && msg.attachmentUrl"><img :src="msg.attachmentUrl" class="cp-bubble-img" loading="lazy" decoding="async" alt="聊天图片" @click="openPreview(msg)" /><div v-if="imageCaption(msg)" class="cp-image-caption">{{ imageCaption(msg) }}</div></template>
-                  <template v-else-if="msg.messageType === 'video' && msg.attachmentUrl">
+                  <span v-else-if="attachmentExpired(msg)">该文件已过期并自动清理</span>
+                  <template v-else-if="msg.messageType === 'image' && (msg.attachmentId || msg.attachmentUrl)"><img :src="mediaSrc(msg)" v-lazy-media="{ msg }" class="cp-bubble-img" loading="lazy" decoding="async" alt="聊天图片" @click="openPreview(msg)" /><div v-if="imageCaption(msg)" class="cp-image-caption">{{ imageCaption(msg) }}</div></template>
+                  <template v-else-if="msg.messageType === 'video' && (msg.attachmentId || msg.attachmentUrl)">
                     <div class="cp-video-wrap">
-                      <img v-if="msg.thumbnailUrl" :src="msg.thumbnailUrl" :alt="msg.attachmentName || '视频封面'" class="cp-bubble-img cp-bubble-video" loading="lazy" decoding="async" @click.prevent="openPreview(msg)" />
+                      <img v-if="msg.attachmentId || msg.thumbnailUrl" :src="mediaSrc(msg, true)" v-lazy-media="{ msg, thumbnail: true }" :alt="msg.attachmentName || '视频封面'" class="cp-bubble-img cp-bubble-video" loading="lazy" decoding="async" @click.prevent="openPreview(msg)" />
                       <button v-else type="button" class="cp-bubble-img cp-bubble-video cp-video-placeholder" aria-label="加载并播放视频" @click.prevent="openPreview(msg)">视频</button>
                       <span class="cp-video-play-icon" @click.prevent="openPreview(msg)">▶</span>
                     </div>
                   </template>
-                  <button v-else-if="msg.messageType === 'file' && msg.attachmentUrl" class="cp-bubble-file" @click="downloadFile(msg.attachmentUrl, msg.attachmentName)">
+                  <button v-else-if="msg.messageType === 'file' && (msg.attachmentId || msg.attachmentUrl)" class="cp-bubble-file" @click="downloadFile(msg)">
                     📎 {{ msg.attachmentName || '文件' }}
                   </button>
                   <template v-else>
@@ -644,7 +794,7 @@ defineExpose({ reload: init })
                 <div v-if="msg.autoReplyType === 'keyword'" class="cp-keyword-reply-notice">关键词自动回复内容可作为参考</div>
                 <div class="cp-bubble-time">{{ formatTime(msg.createdAt) }}</div>
               </div>
-              <img v-if="msg.senderType === 'agent' && (msg.sender?.avatarUrl || conversation.channel?.avatarUrl)" class="cp-bubble-avatar" :src="msg.sender?.avatarUrl || conversation.channel.avatarUrl" loading="lazy" decoding="async" alt="客服头像" />
+              <img v-if="msg.senderType === 'agent' && (msg.sender?.avatarUrl || conversation.channel?.avatarUrl)" v-cached-avatar="msg.sender?.avatarUrl || conversation.channel.avatarUrl" class="cp-bubble-avatar" :src="avatarSrc(msg.sender?.avatarUrl || conversation.channel.avatarUrl)" loading="lazy" decoding="async" alt="客服头像" />
               <div v-else class="cp-bubble-avatar" :style="{ background: `linear-gradient(135deg,#2563eb,#1d4ed8)` }">{{ msg.senderType === 'bot' ? 'AI' : (msg.sender?.displayName?.[0] || '我') }}</div>
             </template>
           </div>
@@ -710,7 +860,7 @@ defineExpose({ reload: init })
 
     <div v-if="preview" class="cp-preview" @click.self="closePreview">
       <div class="cp-preview-actions">
-        <button type="button" @click="downloadFile(preview.url, preview.name)">下载</button>
+        <button type="button" @click="downloadFile(preview.msg || preview.url, preview.name)">下载</button>
         <button type="button" class="cp-preview-close" @click="closePreview">×</button>
       </div>
       <img v-if="preview.type === 'image'" :src="preview.url" :alt="preview.name || '图片预览'" />
