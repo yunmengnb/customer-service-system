@@ -15,6 +15,7 @@ const AppController = require('../controllers/AppController');
 const CaptchaController = require('../controllers/CaptchaController');
 const ComplaintController = require('../controllers/ComplaintController');
 const StorageController = require('../controllers/StorageController');
+const DataManagementController = require('../controllers/DataManagementController');
 const { verifyCaptcha } = require('../middleware/captcha');
 
 // ===== 认证 =====
