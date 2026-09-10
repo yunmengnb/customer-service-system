@@ -6,6 +6,7 @@ import api from '../api'
 const tabs = [
   { key: 'app', label: 'APP 配置' },
   { key: 'upload', label: '存储配置' },
+  { key: 'data', label: '数据管理' },
   { key: 'captcha', label: '验证码' },
   { key: 'smtp', label: '发信邮箱' },
   { key: 'auth', label: '注册登录' },
@@ -74,6 +75,12 @@ const estimatingCleanup = ref(false)
 const cleaningFiles = ref(false)
 const cleanupEstimate = ref(null)
 const cleanupStatus = ref(null)
+const loadingOverview = ref(false)
+const overview = ref(null)
+const cleaningHistory = ref(false)
+const cleanupForm = reactive({ types: [], before: '' })
+const exportForm = reactive({ type: 'tenants', format: 'csv' })
+const exporting = ref(false)
 const notice = ref(null)
 const form = reactive(structuredClone(defaults))
 const currentTab = computed(() => tabs.find(tab => tab.key === activeTab.value))
@@ -135,7 +142,7 @@ async function loadSettings() {
 }
 
 async function saveSettings() {
-  if (activeTab.value === 'upload' && !window.confirm('保存后，超过有效期的会话附件可能被永久删除且无法恢复。只删除附件，不会删除聊天文字和消息记录。确认保存存储配置？')) return
+  if (activeTab.value === 'data' && !window.confirm('保存后，超过有效期的会话附件可能被永久删除且无法恢复。只删除附件，不会删除聊天文字和消息记录。确认保存数据清理配置？')) return
   saving.value = true
   notice.value = null
   try {
@@ -264,6 +271,73 @@ async function cleanupConversationFiles() {
   }
 }
 
+async function loadOverview() {
+  loadingOverview.value = true
+  try {
+    const res = await api.get('/admin/data/overview')
+    if (res.code !== 0) throw new Error(res.message || '数据统计加载失败')
+    overview.value = res.data || {}
+  } catch (error) {
+    showNotice('error', error?.message || '数据统计加载失败')
+  } finally {
+    loadingOverview.value = false
+  }
+}
+
+async function cleanupHistory() {
+  if (!cleanupForm.before) { showNotice('error', '请选择清理截止时间'); return }
+  if (!cleanupForm.types.length) { showNotice('error', '请选择要清理的数据类型'); return }
+  const labels = { login_logs: '登录日志', operation_logs: '操作日志', conversations: '已关闭会话与消息' }
+  const typeText = cleanupForm.types.map(type => labels[type]).join('、')
+  if (!window.confirm(`将永久删除 ${cleanupForm.before} 之前的${typeText}，此操作不可恢复。确认继续？`)) return
+  cleaningHistory.value = true
+  try {
+    const res = await api.post('/admin/data/cleanup', { before: cleanupForm.before, types: cleanupForm.types })
+    if (res.code !== 0) throw new Error(res.message || '历史数据清理失败')
+    showNotice('success', `清理完成：登录日志 ${res.data?.loginLogs ?? 0} 条，操作日志 ${res.data?.operationLogs ?? 0} 条，会话 ${res.data?.conversations ?? 0} 个，消息 ${res.data?.messages ?? 0} 条`)
+    await loadOverview()
+  } catch (error) {
+    showNotice('error', error?.message || '历史数据清理失败')
+  } finally {
+    cleaningHistory.value = false
+  }
+}
+
+async function exportData() {
+  exporting.value = true
+  try {
+    const blob = await api.get('/admin/data/export', {
+      params: { type: exportForm.type, format: exportForm.format },
+      responseType: 'blob',
+    })
+    if (!(blob instanceof Blob)) throw new Error('导出失败')
+    if ((blob.type || '').includes('application/json')) {
+      let message = '导出失败'
+      try { message = JSON.parse(await blob.text()).message || message } catch (_) {}
+      throw new Error(message)
+    }
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${exportForm.type}.${exportForm.format}`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+    showNotice('success', '数据导出完成')
+  } catch (error) {
+    let message = '导出失败'
+    if (error instanceof Blob) {
+      try { message = JSON.parse(await error.text()).message || message } catch (_) {}
+    } else {
+      message = error?.message || message
+    }
+    showNotice('error', message)
+  } finally {
+    exporting.value = false
+  }
+}
+
 async function publishAppVersion() {
   publishingApp.value = true
   notice.value = null
@@ -341,7 +415,8 @@ onMounted(() => {
         <div class="panel-title">
           <h2>{{ currentTab.label }}设置</h2>
           <p v-if="activeTab === 'app'">上传 Android 安装包，并复用现有 APP 版本 API 配置发布信息。</p>
-          <p v-else-if="activeTab === 'upload'">配置平台上传限制与会话附件自动清理策略。</p>
+          <p v-else-if="activeTab === 'upload'">配置平台上传限制（文件大小与扩展名）。</p>
+          <p v-else-if="activeTab === 'data'">查看数据统计、导出数据、清理历史数据与过期附件。</p>
           <p v-else-if="activeTab === 'captcha'">配置人机验证服务及验证码有效期。</p>
           <p v-else-if="activeTab === 'smtp'">配置用于通知和验证邮件的 SMTP 服务。</p>
           <p v-else-if="activeTab === 'auth'">控制账号注册和登录功能。</p>
@@ -404,6 +479,25 @@ onMounted(() => {
             <input id="upload-types" v-model.trim="form.upload.allowedTypes" class="input" placeholder="jpg,png,pdf,zip" />
             <span class="hint">多个扩展名请使用英文逗号分隔，不要包含点号。</span>
           </div>
+        </div>
+
+        <div v-else-if="activeTab === 'data'" class="settings-grid data-settings">
+          <h3 class="section-heading full-width">数据统计概览</h3>
+          <div class="overview-grid full-width">
+            <div class="overview-card"><span>租户</span><strong>{{ overview?.tenantCount ?? '-' }}</strong></div>
+            <div class="overview-card"><span>活跃租户</span><strong>{{ overview?.activeTenants ?? '-' }}</strong></div>
+            <div class="overview-card"><span>客服账号</span><strong>{{ overview?.agentCount ?? '-' }}</strong></div>
+            <div class="overview-card"><span>客户账号</span><strong>{{ overview?.customerAccountCount ?? '-' }}</strong></div>
+            <div class="overview-card"><span>渠道绑定</span><strong>{{ overview?.customerCount ?? '-' }}</strong></div>
+            <div class="overview-card"><span>渠道</span><strong>{{ overview?.channelCount ?? '-' }}</strong></div>
+            <div class="overview-card"><span>会话</span><strong>{{ overview?.conversationCount ?? '-' }}</strong></div>
+            <div class="overview-card"><span>消息</span><strong>{{ overview?.messageCount ?? '-' }}</strong></div>
+            <div class="overview-card"><span>登录日志</span><strong>{{ overview?.loginLogCount ?? '-' }}</strong></div>
+            <div class="overview-card"><span>操作日志</span><strong>{{ overview?.operationLogCount ?? '-' }}</strong></div>
+            <div class="overview-card"><span>附件</span><strong>{{ overview?.attachmentCount ?? '-' }}</strong></div>
+            <div class="overview-card"><span>附件占用</span><strong>{{ formatFileSize(overview?.attachmentBytes) }}</strong></div>
+          </div>
+          <button class="btn btn-ghost full-width" type="button" :disabled="loadingOverview" @click="loadOverview">{{ loadingOverview ? '统计中...' : '刷新统计' }}</button>
 
           <div class="storage-divider full-width"></div>
           <div class="section-title-row full-width">
@@ -428,7 +522,7 @@ onMounted(() => {
 
           <div class="cleanup-card full-width">
             <div class="cleanup-card-header">
-              <div><h3>清理状态</h3><p>查看最近一次任务执行结果，或预估当前可清理内容。</p></div>
+              <div><h3>附件清理状态</h3><p>查看最近一次任务执行结果，或预估当前可清理内容。</p></div>
               <button class="btn btn-ghost" type="button" :disabled="loadingCleanupStatus" @click="loadCleanupStatus(true)">{{ loadingCleanupStatus ? '刷新中...' : '刷新状态' }}</button>
             </div>
             <div class="status-grid">
@@ -450,6 +544,47 @@ onMounted(() => {
               <button class="btn btn-danger" type="button" :disabled="cleaningFiles || cleanupStatus?.isRunning || cleanupStatus?.running" @click="cleanupConversationFiles">{{ cleaningFiles ? '启动中...' : '立即清理' }}</button>
             </div>
             <p class="danger-tip">危险操作：超过有效期的会话附件将永久删除且无法恢复，聊天文字和消息记录不会删除。</p>
+          </div>
+
+          <div class="storage-divider full-width"></div>
+          <div class="section-title-row full-width">
+            <div><h3>历史数据清理</h3><p>按截止时间清理历史数据，操作不可恢复，请谨慎。</p></div>
+          </div>
+          <div class="input-group full-width">
+            <label for="cleanup-before">清理截止时间</label>
+            <input id="cleanup-before" v-model="cleanupForm.before" class="input" type="date" />
+            <span class="hint">将清理该时间之前产生的历史数据。</span>
+          </div>
+          <div class="cleanup-type-row full-width">
+            <label class="check-field"><input v-model="cleanupForm.types" type="checkbox" value="login_logs" /> 登录日志</label>
+            <label class="check-field"><input v-model="cleanupForm.types" type="checkbox" value="operation_logs" /> 操作日志</label>
+            <label class="check-field"><input v-model="cleanupForm.types" type="checkbox" value="conversations" /> 已关闭会话与消息</label>
+          </div>
+          <div class="cleanup-actions full-width">
+            <button class="btn btn-danger" type="button" :disabled="cleaningHistory" @click="cleanupHistory">{{ cleaningHistory ? '清理中...' : '执行历史数据清理' }}</button>
+          </div>
+
+          <div class="storage-divider full-width"></div>
+          <div class="section-title-row full-width">
+            <div><h3>数据导出</h3><p>将平台数据导出为 CSV 或 JSON 文件。</p></div>
+          </div>
+          <div class="input-group">
+            <label for="export-type">导出类型</label>
+            <select id="export-type" v-model="exportForm.type" class="select">
+              <option value="tenants">租户</option>
+              <option value="customers">客户</option>
+              <option value="conversations">会话</option>
+            </select>
+          </div>
+          <div class="input-group">
+            <label for="export-format">导出格式</label>
+            <select id="export-format" v-model="exportForm.format" class="select">
+              <option value="csv">CSV</option>
+              <option value="json">JSON</option>
+            </select>
+          </div>
+          <div class="cleanup-actions full-width">
+            <button class="btn btn-primary" type="button" :disabled="exporting" @click="exportData">{{ exporting ? '导出中...' : '导出数据' }}</button>
           </div>
         </div>
 
@@ -632,6 +767,12 @@ onMounted(() => {
 .estimate-result { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 16px; padding: 12px 14px; border-radius: var(--radius-md); background: var(--primary-soft); color: var(--text-sec); font-size: 12px; }
 .cleanup-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
 .danger-tip { margin: 12px 0 0; color: var(--danger); font-size: 12px; line-height: 1.6; text-align: right; }
+.overview-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.overview-card { padding: 14px; border: 1px solid var(--border); border-radius: var(--radius-md); background: #f8fafc; }
+.overview-card span, .overview-card strong { display: block; }
+.overview-card span { color: var(--text-muted); font-size: 12px; }
+.overview-card strong { margin-top: 6px; color: var(--text-main); font-size: 20px; font-weight: 700; }
+.cleanup-type-row { display: flex; flex-wrap: wrap; gap: 12px 22px; padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius-md); background: #f8fafc; }
 .forbidden-words-input { min-height: 220px; line-height: 1.6; resize: vertical; }
 .agreement-input { min-height: 200px; line-height: 1.7; resize: vertical; white-space: pre-wrap; }
 .email-test { display: flex; align-items: flex-end; gap: 16px; }
@@ -655,6 +796,7 @@ onMounted(() => {
   .settings-grid { grid-template-columns: 1fr; }
   .settings-grid .full-width { grid-column: auto; }
   .apk-upload-card, .apk-result { align-items: stretch; flex-direction: column; }
+  .overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .apk-upload-card .btn, .apk-result .btn { width: 100%; }
   .app-version-form { padding: 16px; }
   .app-version-actions { align-items: stretch; flex-direction: column; }

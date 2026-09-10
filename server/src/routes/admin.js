@@ -39,6 +39,7 @@ router.get('/app/announcements', authAdmin, AppController.adminAnnouncementList)
 router.get('/app/android/versions', authAdmin, AppController.adminVersionList);
 router.get('/app/customer-center/android/versions', authAdmin, AppController.adminCustomerVersionList);
 router.get('/version', authAdmin, VersionController.get);
+router.get('/data/overview', authAdmin, DataManagementController.overview);
 
 // ===== 敏感写操作（需要超级管理员）=====
 router.post('/announcements', authAdmin, requireSuperAdmin, validators.createAnnouncement, AnnouncementController.create);
