@@ -251,7 +251,7 @@ class ChatController {
       searchMessageMap = Object.fromEntries(
         matchingMessages.map(item => [item._id.toString(), {
           count: item.count,
-          message: item.message,
+          message: Message.applyAttachmentUrls(item.message),
         }]),
       );
       where.$or = [
@@ -425,7 +425,7 @@ class ChatController {
       Message.find(query).sort({ createdAt: -1 }).limit(200).lean(),
       Message.countDocuments(query),
     ]);
-    return ok(res, { items, total });
+    return ok(res, { items: items.map(Message.applyAttachmentUrls), total });
   }
 
   // GET /api/tenant/conversations/:id/messages
@@ -1068,7 +1068,7 @@ class ChatController {
         senderId: customer.id,
         senderTypeModel: 'Customer',
         messageType: effectiveType,
-        content: attachment ? '' : (content || '').trim(),
+        content: (content || '').trim(),
         attachmentUrl: attachment ? '' : (attachmentUrl || ''),
         attachmentName: attachment ? attachment.originalName : (attachmentName || ''),
         thumbnailUrl: attachment ? '' : (effectiveType === 'video' ? (thumbnailUrl || '') : ''),

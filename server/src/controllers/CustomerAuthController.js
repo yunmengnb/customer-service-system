@@ -688,7 +688,7 @@ class CustomerAuthController {
     ]) : [];
     const channelMap = Object.fromEntries(channels.map(item => [String(item._id), item]));
     const conversationMap = Object.fromEntries(conversations.map(item => [String(item._id), item.conversation]));
-    const messageMap = Object.fromEntries(latestMessages.map(item => [String(item._id), item.message]));
+    const messageMap = Object.fromEntries(latestMessages.map(item => [String(item._id), Message.applyAttachmentUrls(item.message)]));
     const items = bindings.flatMap(binding => {
       const channel = channelMap[String(binding.channelId)];
       if (!channel || String(channel.tenantId) !== String(binding.tenantId)) return [];

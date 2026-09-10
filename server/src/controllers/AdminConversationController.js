@@ -82,7 +82,7 @@ class AdminConversationController {
       ]);
       searchMessageMap = Object.fromEntries(matchingMessages.map(item => [String(item._id), {
         count: item.count,
-        message: item.message,
+        message: Message.applyAttachmentUrls(item.message),
       }]));
       where.$or = [
         { customerId: { $in: customerIds } },

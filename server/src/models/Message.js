@@ -97,19 +97,24 @@ const MessageSchema = new mongoose.Schema({
   versionKey: false,
 });
 
+function applyAttachmentUrls(obj) {
+  if (!obj || typeof obj !== 'object') return obj;
+  if (obj.attachmentId) {
+    if (obj.attachmentStatus === 'active' && obj.attachmentExpiredAt && new Date(obj.attachmentExpiredAt) <= new Date()) {
+      obj.attachmentStatus = 'expired';
+    }
+    const available = obj.attachmentStatus === 'active';
+    obj.attachmentUrl = available ? `/api/files/${obj.attachmentId}` : '';
+    obj.thumbnailUrl = available && ['image', 'video'].includes(obj.messageType)
+      ? `/api/files/${obj.attachmentId}/thumbnail`
+      : '';
+  }
+  return obj;
+}
+
 MessageSchema.set('toJSON', {
   transform(doc, ret) {
-    if (ret.attachmentId) {
-      if (ret.attachmentStatus === 'active' && ret.attachmentExpiredAt && new Date(ret.attachmentExpiredAt) <= new Date()) {
-        ret.attachmentStatus = 'expired';
-      }
-      const available = ret.attachmentStatus === 'active';
-      ret.attachmentUrl = available ? `/api/files/${ret.attachmentId}` : '';
-      ret.thumbnailUrl = available && ['image', 'video'].includes(ret.messageType)
-        ? `/api/files/${ret.attachmentId}/thumbnail`
-        : '';
-    }
-    return ret;
+    return applyAttachmentUrls(ret);
   },
 });
 

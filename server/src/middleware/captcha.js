@@ -49,7 +49,13 @@ async function verifyCaptcha(req, res, next) {
     }
     const captcha = new Geetest({ geetest_id: geetestId, geetest_key: geetestKey, protocol: 'https://' });
     try {
-      const passed = await captcha.validate({ challenge, validate, seccode });
+      const passed = await new Promise((resolve, reject) => {
+        captcha.validate(false, {
+          geetest_challenge: challenge,
+          geetest_validate: validate,
+          geetest_seccode: seccode,
+        }, (err, result) => (err ? reject(err) : resolve(result)));
+      });
       if (!passed) return error(res, '验证码校验失败', 4004, 400);
       return next();
     } catch (_) {
