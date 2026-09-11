@@ -6,6 +6,54 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { spawnSync } = require('node:child_process');
 
+for (const device of ['desktop', 'mobile']) test(device + ' merge preserves timestamp order with ID tie breaker', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../user-web/src/views', device, 'ChatPanel.vue'), 'utf8');
+  const context = vm.createContext({ messages: { value: [] }, persistMessages() {} });
+  const start = source.indexOf('function mergeMessage(');
+  vm.runInContext(source.slice(start, source.indexOf('\n}', start) + 2), context);
+  for (const message of [{ _id: '01', createdAt: 3000 }, { _id: '03', createdAt: 1000 }, { _id: '02', createdAt: 1000 }]) context.mergeMessage(message);
+  assert.equal(context.messages.value.map(m => m._id).join(','), '02,03,01');
+});
+
+for (const side of ['tenant', 'client', 'admin']) test(side + ' real pagination handles reversed IDs, ties and foreign cursors', async () => {
+  const id = n => String(n).padStart(24, '0');
+  const conv = { _id: id(99), tenantId: 't' };
+  const rows = [[4, 1000], [2, 2000], [3, 2000], [1, 3000]].map(([n, time]) => ({
+    _id: id(n), createdAt: new Date(time), conversationId: conv._id, tenantId: 't',
+    toJSON() { return { _id: this._id, createdAt: this.createdAt }; }, async populate() { return this; },
+  }));
+  const matches = (row, filter) => Object.entries(filter).every(([key, value]) => {
+    if (key === '$or') return value.some(f => matches(row, f));
+    if (value == null) return row[key] == null;
+    if (value instanceof Date || Object.prototype.toString.call(value) === '[object Date]') return +row[key] === +value;
+    if (typeof value === 'object') return Object.entries(value).every(([op, bound]) => op === '$lt' ? row[key] < bound : row[key] > bound);
+    return row[key] === value;
+  });
+  const chain = value => ({ select() { return this; }, populate() { return this; }, sort(order) {
+    if (Array.isArray(value)) value.sort((a,b) => { for (const [key, direction] of Object.entries(order)) { if (a[key] < b[key]) return -direction; if (a[key] > b[key]) return direction; } return 0; });
+    return this;
+  }, limit(n) { assert.ok(n > 0, 'never issue unbounded limit(0)'); value = value.slice(0,n); return this; }, lean() { return this; }, then(resolve,reject) { return Promise.resolve(value).then(resolve,reject); } });
+  const mocks = {
+    '../models/Conversation': { findOne: () => chain(conv), findById: () => chain(conv) },
+    '../models/Message': { findOne: filter => chain(rows.find(r => matches(r,filter)) || null), find: filter => chain(rows.filter(r => matches(r,filter))), updateMany: async () => ({ modifiedCount: 0 }) },
+  };
+  const controller = loadModule('src/controllers/' + (side === 'admin' ? 'AdminConversationController.js' : 'ChatController.js'), mocks).module.exports;
+  const invoke = async query => {
+    const res = { locals: {}, status(n) { this.http = n; return this; }, json(body) { this.body = body; return this; } };
+    await controller[side === 'admin' ? 'messages' : side === 'client' ? 'getClientMessages' : 'getMessages']({ params: { id: conv._id }, query, tenantId: 't', user: { role: 'owner' }, customer: { tenantId: 't' } },res);
+    return res;
+  };
+  const ids = res => Array.from(res.body.data, m => m._id);
+  assert.deepEqual(ids(await invoke({ limit: 2 })), [id(3), id(1)]);
+  assert.deepEqual(ids(await invoke({ before: id(3), limit: 2 })), [id(4), id(2)]);
+  assert.notEqual((await invoke({ before: id(88) })).body.code, 0);
+  if (side !== 'admin') assert.deepEqual(ids(await invoke({ after: id(2), limit: 2 })), [id(3), id(1)]);
+  if (side !== 'client') {
+    assert.deepEqual(ids(await invoke({ around: id(2), limit: 1 })), [id(2)]);
+    assert.deepEqual(ids(await invoke({ around: id(2), limit: 3 })), [id(4), id(2), id(3)]);
+  }
+});
+
 test('chat events reject foreign/uninitialized/stale identity before merge, sound and cursor', () => {
   const source = fs.readFileSync(path.join(__dirname, '../client-web/src/views/ChatPage.vue'), 'utf8');
   const context = vm.createContext({ deletedMessageIds: new Set(), sessionActive: true, mountedToken: 'a', token: { value: 'a' }, conversation: { value: null }, customer: { value: { tenantId: 't' } }, messages: { value: [] }, sounds: 0, playNotificationSound() { context.sounds++; }, scheduleScroll() {} });

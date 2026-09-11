@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const { authAdmin, requireSuperAdmin } = require('../middleware/auth');
 const validators = require('../middleware/validators');
+const { messageHistory } = require('../middleware/messageParameters');
 
 const AdminAuthController = require('../controllers/AdminAuthController');
 const AdminCustomerController = require('../controllers/AdminCustomerController');
@@ -28,7 +29,7 @@ router.get('/tenants/:id', authAdmin, TenantAdminController.detail);
 router.get('/customers', authAdmin, AdminCustomerController.list);
 router.get('/conversations', authAdmin, AdminConversationController.list);
 router.get('/conversations/:id/messages/search', authAdmin, AdminConversationController.searchMessages);
-router.get('/conversations/:id/messages', authAdmin, AdminConversationController.messages);
+router.get('/conversations/:id/messages', authAdmin, messageHistory(['before', 'around']), AdminConversationController.messages);
 router.get('/complaints', authAdmin, ComplaintController.adminList);
 router.get('/complaints/:id', authAdmin, ComplaintController.adminDetail);
 router.get('/announcements', authAdmin, AnnouncementController.adminList);

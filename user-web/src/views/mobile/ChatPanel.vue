@@ -185,7 +185,7 @@ function mergeMessage(message) {
   )
   if (index >= 0) messages.value[index] = message
   else messages.value.push(message)
-  messages.value.sort((a, b) => String(a._id).localeCompare(String(b._id)))
+  messages.value.sort((a, b) => (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()) || String(a._id).localeCompare(String(b._id)))
   persistMessages()
 }
 

@@ -496,7 +496,7 @@ class ChatController {
     const beforeId = req.query.before;
     const afterId = req.query.after;
     const aroundId = req.query.around;
-    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 200);
 
     if (afterId) {
       if (!mongoose.isValidObjectId(afterId)) return error(res, '无效的分页参数', 4001, 400);
@@ -532,20 +532,21 @@ class ChatController {
       });
       if (!target) return error(res, '消息不存在或已被清理', 404, 404);
 
-      const half = Math.floor(limit / 2);
+      const olderLimit = Math.floor((limit - 1) / 2);
+      const newerLimit = limit - 1 - olderLimit;
       const [older, newer] = await Promise.all([
-        Message.find({
+        olderLimit ? Message.find({
           conversationId: conv._id,
           tenantId: req.tenantId,
           deletedForAgentAt: null,
-          _id: { $lt: target._id },
-        }).populate({ path: 'senderId', select: 'displayName avatarUrl' }).sort({ _id: -1 }).limit(half),
-        Message.find({
+          $or: [{ createdAt: { $lt: target.createdAt } }, { createdAt: target.createdAt, _id: { $lt: target._id } }],
+        }).populate({ path: 'senderId', select: 'displayName avatarUrl' }).sort({ createdAt: -1, _id: -1 }).limit(olderLimit) : [],
+        newerLimit ? Message.find({
           conversationId: conv._id,
           tenantId: req.tenantId,
           deletedForAgentAt: null,
-          _id: { $gt: target._id },
-        }).populate({ path: 'senderId', select: 'displayName avatarUrl' }).sort({ _id: 1 }).limit(half),
+          $or: [{ createdAt: { $gt: target.createdAt } }, { createdAt: target.createdAt, _id: { $gt: target._id } }],
+        }).populate({ path: 'senderId', select: 'displayName avatarUrl' }).sort({ createdAt: 1, _id: 1 }).limit(newerLimit) : [],
       ]);
       await target.populate({ path: 'senderId', select: 'displayName avatarUrl' });
       const locatedMessages = [...older.reverse(), target, ...newer];
@@ -567,12 +568,17 @@ class ChatController {
     let query = { conversationId: conv._id, tenantId: req.tenantId, deletedForAgentAt: null };
     if (beforeId) {
       if (!mongoose.isValidObjectId(beforeId)) return error(res, '无效的分页参数', 4001, 400);
-      query._id = { $lt: new mongoose.Types.ObjectId(beforeId) };
+      const cursor = await Message.findOne({ _id: beforeId, conversationId: conv._id, tenantId: req.tenantId });
+      if (!cursor) return error(res, '消息游标不属于当前会话', 4001, 400);
+      query.$or = [
+        { createdAt: { $lt: cursor.createdAt } },
+        { createdAt: cursor.createdAt, _id: { $lt: cursor._id } },
+      ];
     }
     
     const messages = await Message.find(query)
       .populate({ path: 'senderId', select: 'displayName avatarUrl' })
-      .sort({ createdAt: -1 })
+      .sort({ createdAt: -1, _id: -1 })
       .limit(limit);
     
     // waiting 会话可供授权坐席预览，但仅管理员或实际接待坐席可改变已读状态。
@@ -959,7 +965,12 @@ class ChatController {
       ];
     } else if (beforeId) {
       if (!mongoose.isValidObjectId(beforeId)) return error(res, '无效的分页参数', 4001, 400);
-      query._id = { $lt: new mongoose.Types.ObjectId(beforeId) };
+      const cursor = await Message.findOne({ _id: beforeId, conversationId: conv._id, tenantId: customer.tenantId });
+      if (!cursor) return error(res, '消息游标不属于当前会话', 4001, 400);
+      query.$or = [
+        { createdAt: { $lt: cursor.createdAt } },
+        { createdAt: cursor.createdAt, _id: { $lt: cursor._id } },
+      ];
     }
     const messages = await Message.find(query)
       .populate({ path: 'senderId', select: 'displayName avatarUrl' })

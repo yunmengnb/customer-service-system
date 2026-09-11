@@ -186,14 +186,14 @@ class AdminConversationController {
       const olderLimit = Math.floor((limit - 1) / 2);
       const newerLimit = limit - 1 - olderLimit;
       const [older, newer] = await Promise.all([
-        Message.find({ ...scope, _id: { $lt: target._id } })
+        olderLimit ? Message.find({ ...scope, $or: [{ createdAt: { $lt: target.createdAt } }, { createdAt: target.createdAt, _id: { $lt: target._id } }] })
           .populate(senderPopulate)
-          .sort({ _id: -1 })
-          .limit(olderLimit),
-        Message.find({ ...scope, _id: { $gt: target._id } })
+          .sort({ createdAt: -1, _id: -1 })
+          .limit(olderLimit) : [],
+        newerLimit ? Message.find({ ...scope, $or: [{ createdAt: { $gt: target.createdAt } }, { createdAt: target.createdAt, _id: { $gt: target._id } }] })
           .populate(senderPopulate)
-          .sort({ _id: 1 })
-          .limit(newerLimit),
+          .sort({ createdAt: 1, _id: 1 })
+          .limit(newerLimit) : [],
       ]);
       return ok(res, [...older.reverse(), target, ...newer].map(message => message.toJSON()));
     }
@@ -201,11 +201,13 @@ class AdminConversationController {
     const query = { ...scope };
     if (beforeId) {
       if (!mongoose.isValidObjectId(beforeId)) return error(res, '无效的分页参数');
-      query._id = { $lt: new mongoose.Types.ObjectId(beforeId) };
+      const cursor = await Message.findOne({ ...scope, _id: beforeId });
+      if (!cursor) return error(res, '消息游标不属于当前会话');
+      query.$or = [{ createdAt: { $lt: cursor.createdAt } }, { createdAt: cursor.createdAt, _id: { $lt: cursor._id } }];
     }
     const items = await Message.find(query)
       .populate(senderPopulate)
-      .sort({ _id: -1 })
+      .sort({ createdAt: -1, _id: -1 })
       .limit(limit);
     return ok(res, items.reverse().map(message => message.toJSON()));
   }

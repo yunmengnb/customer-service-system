@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const { authCustomer } = require('../middleware/auth');
 const validators = require('../middleware/validators');
+const { messageBody, messageHistory } = require('../middleware/messageParameters');
 
 const CustomerAuthController = require('../controllers/CustomerAuthController');
 const ChatController = require('../controllers/ChatController');
@@ -49,9 +50,9 @@ router.post('/profile/password', authCustomer, validators.customerPassword, Cust
 
 // 会话与消息
 router.get('/conversation', authCustomer, ChatController.getClientConversation);
-router.get('/conversation/messages', authCustomer, ChatController.getClientMessages);
+router.get('/conversation/messages', authCustomer, messageHistory(['before', 'after']), ChatController.getClientMessages);
 router.post('/conversation/attachments', authCustomer, ConversationAttachmentController.uploadCustomer);
-router.post('/conversation/messages', authCustomer, ChatController.customerSendMessage);
+router.post('/conversation/messages', authCustomer, messageBody, ChatController.customerSendMessage);
 router.post('/conversation/messages/:messageId/recall', authCustomer, ChatController.customerRecallMessage);
 router.delete('/conversation/messages/:messageId', authCustomer, ChatController.customerDeleteMessage);
 
