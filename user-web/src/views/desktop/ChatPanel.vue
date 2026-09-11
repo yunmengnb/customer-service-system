@@ -30,6 +30,8 @@ let socket = null
 let socketConnectedOnce = false
 let messageSyncTimer = null
 let messageSyncInFlight = false
+let historyCursor = null
+let messageGeneration = 0
 
 const uploading = ref(false)
 const showInfo = ref(false)
@@ -85,15 +87,20 @@ async function loadConversation() {
 
 async function loadMessages() {
   if (!props.conversationId) return
+  const generation = ++messageGeneration
+  historyCursor = null
   const cached = await getCachedMessages(cacheScope, props.conversationId)
+  if (generation !== messageGeneration) return
   if (cached.length && !props.targetMessageId) messages.value = cached
   try {
     const params = props.targetMessageId
       ? { limit: 100, around: props.targetMessageId }
       : { limit: 50 }
     const res = await api.get(`/tenant/conversations/${props.conversationId}/messages`, { params })
+    if (generation !== messageGeneration) return
     if (res.code === 0) {
       messages.value = res.data || []
+      historyCursor = messages.value.at(-1)?._id || null
       persistMessages()
       hasMoreMessages.value = props.targetMessageId ? true : messages.value.length >= 50
       emit('conversation-read', props.conversationId)
@@ -120,12 +127,14 @@ async function loadPreviousMessages() {
   const firstMessage = messages.value.find(message => message._id)
   if (!firstMessage) return
   loadingHistory.value = true
+  const generation = messageGeneration
   const container = msgContainer.value
   const previousHeight = container?.scrollHeight || 0
   try {
     const res = await api.get(`/tenant/conversations/${props.conversationId}/messages`, {
       params: { limit: 50, before: firstMessage._id },
     })
+    if (generation !== messageGeneration) return
     if (res.code === 0) {
       const olderMessages = res.data || []
       const existingIds = new Set(messages.value.map(message => String(message._id)))
@@ -175,6 +184,7 @@ function mergeMessage(message) {
   )
   if (index >= 0) messages.value[index] = message
   else messages.value.push(message)
+  messages.value.sort((a, b) => String(a._id).localeCompare(String(b._id)))
   persistMessages()
 }
 
@@ -183,15 +193,16 @@ async function syncLatestMessages() {
   if (!conversationId || messageSyncInFlight) return
   messageSyncInFlight = true
   try {
-    let cursor = [...messages.value].reverse().find(message => message._id && !String(message._id).startsWith('temp_'))?._id
+    let cursor = historyCursor
+    const generation = messageGeneration
     if (!cursor) return await loadMessages()
     while (String(conversationId) === String(props.conversationId)) {
       const res = await api.get(`/tenant/conversations/${conversationId}/messages`, { params: { limit: 50, after: cursor } })
-      if (res.code !== 0) break
+      if (res.code !== 0 || generation !== messageGeneration || String(conversationId) !== String(props.conversationId)) break
       const page = res.data || []
       page.forEach(mergeMessage)
+      if (page.length) historyCursor = cursor = page[page.length - 1]._id
       if (page.length < 50) break
-      cursor = page[page.length - 1]._id
     }
     emit('conversation-read', conversationId)
   } catch {}
@@ -223,7 +234,7 @@ async function runCustomerAction() {
     const type = confirmAction.value
     if (type === 'clear') {
       const res = await api.delete(`/tenant/conversations/${props.conversationId}/messages`)
-      if (res.code === 0) { messages.value = []; clearCachedConversation(cacheScope, props.conversationId) }
+      if (res.code === 0) applyDelete({ conversationId: props.conversationId, clearAll: true, side: 'agent' })
     } else {
       const field = type === 'block' ? 'blocked' : 'messageReceivingDisabled'
       const current = Boolean(conversation.value.customer?.[field])
@@ -348,6 +359,8 @@ watch(
       if (targetId && targetId !== previousTargetId) loadMessages()
       return
     }
+    messageGeneration++
+    historyCursor = null
     removeSocketListeners(); socket = null
     releaseMediaUrls()
     customerOnline.value = false
@@ -450,7 +463,7 @@ function loadMedia(msg, thumbnail = false) {
   if (!mediaRequests.has(key)) {
     const request = loadCachedMedia(cacheScope, msg, thumbnail, () => api.get(thumbnail ? thumbnailUrl(msg) : attachmentUrl(msg), { baseURL: '', responseType: 'blob' }))
       .then(blob => {
-        if (!blob) return ''
+        if (!blob || mediaRequests.get(key) !== request) return ''
         const url = URL.createObjectURL(blob)
         if (msg.messageType !== 'video' || thumbnail) mediaUrls.value[key] = url
         return url
@@ -627,6 +640,17 @@ function applyRecall(data) {
 }
 function applyDelete(data) {
   if (String(data.conversationId) !== String(props.conversationId)) return
+  if (data.clearAll && data.side === 'agent') {
+    messageGeneration++
+    historyCursor = null
+    closePreview()
+    releaseMediaUrls()
+    messages.value = []
+    hasMoreMessages.value = false
+    contextMenu.value = null
+    clearCachedConversation(cacheScope, props.conversationId)
+    return
+  }
   const msg = messages.value.find(item => String(item._id) === String(data.messageId))
   if (msg?.attachmentId) {
     releaseAttachmentUrls(msg)

@@ -23,6 +23,32 @@ async function getChannelByToken(publicToken) {
   return channel;
 }
 
+// 调用方已验证全局账号；旧绑定还必须证明同一凭据，不能仅凭邮箱或手机号接管历史。
+async function findSessionBinding(channel, account, password) {
+  const scope = { tenantId: channel.tenantId, channelId: channel._id };
+  const existing = await Customer.findOne({ ...scope, accountId: account._id });
+  if (existing) return existing;
+  const legacy = await Customer.findOne({ ...scope, phone: account.phone });
+  if (!legacy) return null;
+  if (legacy.accountId) {
+    if (String(legacy.accountId) === String(account._id)) return legacy;
+    throw Object.assign(new Error('渠道账号绑定冲突'), { status: 409 });
+  }
+  const sameCredentials = legacy.password && (legacy.password === account.password
+    || (password && comparePassword(password, account.password) && comparePassword(password, legacy.password)));
+  if (legacy.identityType === 'guest' || !sameCredentials) {
+    throw Object.assign(new Error('旧渠道账号凭据不一致，请联系管理员处理'), { status: 409 });
+  }
+  const linked = await Customer.findOneAndUpdate(
+    { ...scope, _id: legacy._id, accountId: null, password: legacy.password },
+    { $set: { accountId: account._id } }, { new: true },
+  );
+  if (linked) return linked;
+  const winner = await Customer.findOne({ ...scope, _id: legacy._id, accountId: account._id });
+  if (winner) return winner;
+  throw Object.assign(new Error('渠道账号绑定冲突，请重试'), { status: 409 });
+}
+
 async function resolveConversation(channel, customerId) {
   const scope = {
     tenantId: channel.tenantId,
@@ -531,7 +557,9 @@ class CustomerAuthController {
 
   async createSession(req, res, channel, account, isNew, preferredBinding = null) {
     const ip = getClientIp(req);
-    let binding = preferredBinding || await Customer.findOne({ accountId: account._id, channelId: channel._id });
+    let binding;
+    try { binding = preferredBinding || await findSessionBinding(channel, account, req.body?.password); }
+    catch (err) { if (err.status === 409) return error(res, err.message, 4091, 409); throw err; }
     if (!binding) {
       binding = await Customer.create({
         accountId: account._id,
@@ -599,7 +627,9 @@ class CustomerAuthController {
     if (!channel) return error(res, '客服链接无效或已过期', 404, 404);
 
     const ip = getClientIp(req);
-    let binding = await Customer.findOne({ accountId: account._id, channelId: channel._id });
+    let binding;
+    try { binding = await findSessionBinding(channel, account, req.body?.password); }
+    catch (err) { if (err.status === 409) return error(res, err.message, 4091, 409); throw err; }
     if (!binding) {
       binding = await Customer.create({
         accountId: account._id,

@@ -65,6 +65,9 @@ async function setupSocketIO(io) {
           tenantId: user.tenantId.toString(),
         };
       } else if (payload.type === 'customer') {
+        if ((payload.id || payload.tenantId || payload.channelId) && !(payload.id && payload.tenantId && payload.channelId)) {
+          return next(new Error('Customer context is invalid'));
+        }
         if (payload.id && payload.tenantId && payload.channelId) {
           const isGuest = payload.identity === 'guest';
           const binding = await Customer.findOne({

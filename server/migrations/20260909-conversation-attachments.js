@@ -110,8 +110,8 @@ async function main() {
     senderType: { $in: ['agent', 'customer'] },
     senderId: { $ne: null },
     autoReplyType: null,
+    // 同时覆盖曾由旧版脚本写入 attachmentId、但文件仍在公开目录的记录
     attachmentUrl: { $type: 'string', $ne: '' },
-    attachmentId: null,
   };
   const messages = await Message.find(query).sort({ _id: 1 }).limit(limit).lean();
   const report = {

@@ -12,15 +12,11 @@ const TenantAdminController = require('../controllers/TenantAdminController');
 const SystemSettingController = require('../controllers/SystemSettingController');
 const VersionController = require('../controllers/VersionController');
 const AppController = require('../controllers/AppController');
-const CaptchaController = require('../controllers/CaptchaController');
 const ComplaintController = require('../controllers/ComplaintController');
 const StorageController = require('../controllers/StorageController');
 const DataManagementController = require('../controllers/DataManagementController');
-const { verifyCaptcha } = require('../middleware/captcha');
-
 // ===== 认证 =====
-router.get('/auth/captcha', CaptchaController.create);
-router.post('/auth/login', verifyCaptcha, validators.adminLogin, AdminAuthController.login);
+router.post('/auth/login', validators.adminLogin, AdminAuthController.login);
 router.post('/auth/logout', authAdmin, AdminAuthController.logout);
 router.get('/auth/me', authAdmin, AdminAuthController.me);
 router.patch('/auth/profile', authAdmin, AdminAuthController.updateProfile);

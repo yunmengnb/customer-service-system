@@ -125,6 +125,15 @@ async function authCustomer(req, res, next) {
   if (!payload || payload.type !== 'customer') return error(res, '令牌无效或已过期', 4012, 401);
 
   try {
+    // 纯账号令牌仍可访问账号中心；带聊天上下文的令牌必须对应有效渠道和租户。
+    if (payload.id || payload.channelId || payload.tenantId) {
+      if (!payload.id || !payload.channelId || !payload.tenantId) return error(res, '客户上下文无效', 4012, 401);
+      const [channel, tenant] = await Promise.all([
+        Channel.findOne({ _id: payload.channelId, tenantId: payload.tenantId }).select('_id'),
+        Tenant.findOne({ _id: payload.tenantId, status: { $in: ['active', 'trial'] } }).select('_id'),
+      ]);
+      if (!channel || !tenant) return error(res, '渠道不存在或已不可用', 4035, 403);
+    }
     if (payload.identity === 'guest') {
       const binding = await Customer.findOne({
         _id: payload.id,

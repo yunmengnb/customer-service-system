@@ -597,6 +597,8 @@ class ChatController {
   async agentSendMessage(req, res) {
     let conv = await Conversation.findOne({ _id: req.params.id, tenantId: req.tenantId });
     if (!conv) return error(res, '会话不存在', 404, 404);
+    const channel = await Channel.findOne({ _id: conv.channelId, tenantId: req.tenantId }).select('_id');
+    if (!channel) return error(res, '渠道不存在', 404, 404);
     if (!await canAccessConversation(req, conv)) return error(res, '无权访问', 403, 403);
     
     // 必须已接入
@@ -1064,6 +1066,8 @@ class ChatController {
   // POST /api/client/conversation/messages
   async customerSendMessage(req, res) {
     const { customer } = req;
+    const channel = await Channel.findOne({ _id: customer.channelId, tenantId: customer.tenantId }).select('_id');
+    if (!channel) return error(res, '渠道不存在', 404, 404);
     const { content, messageType, attachmentId, attachmentUrl, attachmentName, thumbnailUrl } = req.body;
     const clientMessageId = String(req.body.clientMessageId || '').trim();
 

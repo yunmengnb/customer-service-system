@@ -173,6 +173,130 @@ function loadModule(relative, mocks, expose = '') {
   return context;
 }
 
+test('geetest 3.0.1 real SDK Promise handles success false rejection and online/offline initialization', async () => {
+  assert.equal(require('geetest/package.json').version, '3.0.1');
+  const md5 = value => require('crypto').createHash('md5').update(value).digest('hex');
+  let mode = 'success';
+  const SDK = loadModule('node_modules/geetest/gt-sdk.js', { request: {
+    post(url, options, cb) { setImmediate(() => mode === 'reject' ? cb(new Error('network')) : cb(null, {}, mode === 'success' ? md5('code') : 'bad')); },
+    get(url, options, cb) { setImmediate(() => mode === 'offline' ? cb(new Error('network')) : cb(null, {}, 'a'.repeat(32))); },
+  } }).module.exports;
+  const settings = { getSystemSettings: async () => ({ captcha: { enabled: true, provider: 'geetest', geetestId: 'id', geetestKey: 'key' } }) };
+  const mocks = { geetest: SDK, '../utils/systemSettings': settings };
+  const verify = loadModule('src/middleware/captcha.js', mocks).module.exports.verifyCaptcha;
+  const create = loadModule('src/controllers/CaptchaController.js', mocks).module.exports.create;
+  for (mode of ['success', 'false', 'reject']) {
+    const res = response(); let passed = 0;
+    await verify({ body: { geetest_challenge: 'challenge', geetest_validate: md5('keygeetestchallenge'), geetest_seccode: 'code' } }, res, () => passed++);
+    await new Promise(setImmediate);
+    assert.equal(passed, mode === 'success' ? 1 : 0);
+    if (!passed) assert.equal(res.http, mode === 'reject' ? 503 : 400);
+  }
+  for (mode of ['success', 'offline']) {
+    const res = response(); await create({}, res);
+    assert.equal(res.body.data.success, mode === 'success' ? 1 : 0);
+    assert.ok(res.body.data.challenge);
+    assert.equal(res.body.data.gt, 'id');
+  }
+});
+
+function response() {
+  return { locals: {}, status(code) { this.http = code; return this; }, json(body) { this.body = body; return this; } };
+}
+
+test('deleted channel denies HTTP guest/customer context and both send paths before writes', async () => {
+  for (const identity of ['guest', 'customer']) {
+    const payload = { type: 'customer', identity, id: 'b', tenantId: 't', channelId: 'c' };
+    const mocks = { '../utils': { ...require('./src/utils'), verifyToken: () => payload },
+      '../models/Channel': { findOne: filter => { assert.equal(filter.tenantId, 't'); return query(null); } },
+      '../models/Tenant': { findOne: () => query({ _id: 't' }) } };
+    const res = response();
+    await loadModule('src/middleware/auth.js', mocks).authCustomer({ headers: { authorization: 'Bearer test' } }, res, () => assert.fail('authorized'));
+    assert.equal(res.http, 403);
+    const chat = loadModule('src/controllers/ChatController.js', { ...mocks, '../models/Conversation': { findOne: () => query({ _id: 'v', channelId: 'c' }) } }).module.exports;
+    for (const method of ['agentSendMessage', 'customerSendMessage']) {
+      const result = response();
+      await chat[method]({ params: { id: 'v' }, tenantId: 't', customer: payload }, result);
+      assert.equal(result.http, 404);
+    }
+  }
+});
+
+test('channel deletion scopes cleanup and evicts only related subscriptions', async () => {
+  const calls = [];
+  const scoped = filter => { assert.equal(filter.tenantId, 't'); calls.push(filter); };
+  const controller = loadModule('src/controllers/ChannelController.js', {
+    '../models/Channel': { findOne: () => query({ _id: 'c', publicToken: 'p' }), deleteOne: scoped },
+    '../models/KeywordReply': { deleteMany: scoped }, '../models/QuickReply': { deleteMany: scoped },
+    '../utils/cache': { remove: async () => {} }, '../services/auditLogService': { recordOperation() {} },
+  }).module.exports;
+  const rooms = [];
+  await controller.delete({ params: { id: 'c' }, tenantId: 't', app: { get: () => ({ in: room => ({ disconnectSockets: close => rooms.push([room, close]), socketsLeave: target => rooms.push([room, target]) }) }) } }, response());
+  assert.equal(calls.length, 3);
+  assert.deepEqual(rooms, [['channel-c', true], ['channel-staff-c', 'channel-staff-c']]);
+});
+
+test('socket handshake rejects deleted and partial customer channel contexts', async () => {
+  for (const partial of [false, true]) {
+    let auth;
+    const payload = { type: 'customer', id: 'b', tenantId: 't', ...(partial ? {} : { channelId: 'c' }) };
+    const setup = loadModule('src/sockets/index.js', {
+      '../utils': { verifyToken: () => payload }, '../config/redis': { getRedis: () => null },
+      '../models/Customer': { findOne: () => query({ accountId: 'a', tenantId: 't', channelId: 'c' }) },
+      '../models/CustomerAccount': { findOne: () => query({ _id: 'a' }) },
+      '../models/Tenant': { findOne: () => query({ _id: 't' }) },
+      '../models/Channel': { findOne: filter => { assert.equal(filter.tenantId, 't'); return query(null); } },
+    }).module.exports;
+    await setup({ use(fn) { auth = fn; }, on() {} });
+    let rejected;
+    await auth({ handshake: { auth: { token: 'test' } } }, err => { rejected = err; });
+    assert.ok(rejected);
+  }
+});
+
+test('legacy binding claims preserve identity and reject foreign account guest and credential mismatch', async () => {
+  for (const mode of ['match', 'different-hash', 'mismatch', 'foreign', 'guest', 'race']) {
+    const utils = require('./src/utils');
+    const hash = utils.hashPassword('verified-password');
+    const account = { _id: 'a', phone: '123', password: hash };
+    const legacy = { _id: 'b', password: mode === 'different-hash' ? utils.hashPassword('verified-password') : mode === 'mismatch' ? utils.hashPassword('other') : hash, identityType: mode === 'guest' ? 'guest' : 'customer', accountId: mode === 'foreign' ? 'foreign' : null, blocked: true };
+    let claims = 0;
+    const context = loadModule('src/controllers/CustomerAuthController.js', { '../models/Customer': {
+      findOne: filter => { assert.equal(filter.tenantId, 't'); assert.equal(filter.channelId, 'c'); assert.equal(filter.email, undefined); return query(filter.phone ? legacy : null); },
+      findOneAndUpdate: (filter, update) => { claims++; assert.equal(filter.accountId, null); assert.equal(update.$set.accountId, 'a'); return query(mode === 'race' ? null : { ...legacy, accountId: 'a' }); },
+    } });
+    const action = () => context.findSessionBinding({ _id: 'c', tenantId: 't' }, account, 'verified-password');
+    if (['match', 'different-hash'].includes(mode)) { const linked = await action(); assert.equal(linked._id, 'b'); assert.equal(linked.blocked, true); }
+    else await assert.rejects(action, err => err.status === 409);
+    assert.equal(claims, ['match', 'different-hash', 'race'].includes(mode) ? 1 : 0);
+  }
+});
+
+for (const device of ['desktop', 'mobile']) test(`${device} real handlers clear other window media and fill historical gaps despite live messages`, async () => {
+  const source = fs.readFileSync(path.join(__dirname, `../user-web/src/views/${device}/ChatPanel.vue`), 'utf8');
+  const revoked = [], requests = [];
+  const context = vm.createContext({
+    props: { conversationId: 'c' }, messages: { value: [{ _id: '01' }] }, historyCursor: '01', messageGeneration: 0, messageSyncInFlight: false,
+    mediaUrls: { value: { x: 'blob:x' } }, avatarUrls: { value: {} }, mediaRequests: new Map(), avatarRequests: new Map(), preview: { value: null },
+    hasMoreMessages: { value: true }, contextMenu: { value: {} }, cacheScope: 'scope', URL: { revokeObjectURL: url => revoked.push(url) },
+    closePreview() {}, clearCachedConversation() {}, persistMessages() {}, emit() {},
+    api: { get: async (_, { params }) => { requests.push(params.after); return { code: 0, data: [{ _id: '02' }, { _id: '03' }] }; } },
+  });
+  for (const name of ['mergeMessage', 'syncLatestMessages', 'releaseMediaUrls', 'applyDelete']) {
+    const match = source.match(new RegExp(`(?:async )?function ${name}\\([^]*?\\n\\}`));
+    assert.ok(match, name); vm.runInContext(match[0], context);
+  }
+  context.mergeMessage({ _id: '03' });
+  await context.syncLatestMessages();
+  assert.deepEqual(requests, ['01']);
+  assert.equal(context.messages.value.map(m => m._id).join(','), '01,02,03');
+  context.applyDelete({ conversationId: 'other', clearAll: true, side: 'agent' });
+  assert.equal(context.messages.value.length, 3);
+  context.applyDelete({ conversationId: 'c', clearAll: true, side: 'agent' });
+  assert.equal(context.messages.value.length, 0); assert.equal(context.historyCursor, null);
+  assert.deepEqual(revoked, ['blob:x']); assert.equal(context.mediaRequests.size, 0);
+});
+
 function query(value) {
   return { select() { return this; }, lean: async () => value, then(resolve, reject) { return Promise.resolve(value).then(resolve, reject); } };
 }
@@ -252,7 +376,10 @@ function query(value) {
         },
         create: async data => { creates++; if (mode === 'race') throw Object.assign(new Error('duplicate'), { code: 11000 }); return { ...data, _id: 'account' }; },
       };
-      const mocks = { '../models/Customer': customerModel, '../models/CustomerAccount': accountModel };
+      const mocks = { '../models/Customer': customerModel, '../models/CustomerAccount': accountModel,
+        '../models/Channel': { findOne: () => query({ _id: 'channel' }) },
+        '../models/Tenant': { findOne: () => query({ _id: 'tenant' }) },
+      };
       if (target === 'middleware') mocks['../utils'] = { ...require('./src/utils'), verifyToken: () => payload };
       const context = loadModule(target === 'middleware' ? 'src/middleware/auth.js' : 'src/controllers/CustomerAuthController.js', mocks);
       if (target === 'middleware') {

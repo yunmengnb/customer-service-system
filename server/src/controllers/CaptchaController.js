@@ -15,9 +15,7 @@ class CaptchaController {
       if (!geetestId || !geetestKey) return error(res, '极验验证码配置不完整', 5031, 503);
       const captcha = new Geetest({ geetest_id: geetestId, geetest_key: geetestKey, protocol: 'https://' });
       try {
-        const result = await new Promise((resolve, reject) => {
-          captcha.register((err, data) => (err ? reject(err) : resolve(data)));
-        });
+        const result = await captcha.register();
         const payload = {
           gt: result.geetest_id || result.gt || geetestId,
           challenge: result.challenge,

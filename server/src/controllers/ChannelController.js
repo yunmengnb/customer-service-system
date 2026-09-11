@@ -143,15 +143,21 @@ class ChannelController {
     const channel = await Channel.findOne({ _id: req.params.id, tenantId: req.tenantId });
     if (!channel) return error(res, '渠道不存在', 404, 404);
     
-    await Channel.deleteOne({ _id: channel._id });
+    await Channel.deleteOne({ _id: channel._id, tenantId: req.tenantId });
+    // 保留客户、会话与消息历史，仅撤销已删除渠道的实时订阅。
+    const io = req.app.get('io');
+    if (io) {
+      io.in(`channel-${channel._id}`).disconnectSockets(true);
+      io.in(`channel-staff-${channel._id}`).socketsLeave(`channel-staff-${channel._id}`);
+    }
     await Promise.all([
       invalidateChannelConfig(channel.publicToken),
       invalidateKeywordReplies(req.tenantId, channel._id),
       invalidateQuickReplies(req.tenantId, channel._id),
     ]);
     // 清理关联数据
-    await KeywordReply.deleteMany({ channelId: channel._id });
-    await QuickReply.deleteMany({ channelId: channel._id });
+    await KeywordReply.deleteMany({ channelId: channel._id, tenantId: req.tenantId });
+    await QuickReply.deleteMany({ channelId: channel._id, tenantId: req.tenantId });
     
     recordOperation({ req, tenantId: req.tenantId, user: req.user, action: 'channel_delete', detail: `删除渠道「${channel.name}」` });
     return ok(res, null, '已删除');
