@@ -74,18 +74,31 @@ async function usedByNonConversationResource(storageKey) {
   return (await Promise.all(queries)).some(Boolean);
 }
 
-async function existingAttachmentFor(message, storageKey) {
-  const attachment = await ConversationAttachment.findOne({
-    $or: [{ messageId: message._id }, { storageKey }],
-  });
-  if (!attachment) return null;
-  if (String(attachment.messageId) !== String(message._id)
-    || String(attachment.tenantId) !== String(message.tenantId)
-    || String(attachment.conversationId) !== String(message.conversationId)
-    || attachment.storageKey !== storageKey) {
-    throw new Error('附件路径已被其他记录占用');
+function protectedStorageKey(tenantId, attachmentId, ext) {
+  return path.posix.join('conversations', String(tenantId), String(attachmentId), `original.${ext}`);
+}
+
+function protectedThumbnailKey(tenantId, attachmentId) {
+  return path.posix.join('conversations', String(tenantId), String(attachmentId), 'thumbnail.jpg');
+}
+
+// 将旧公开目录文件移动/复制到受保护目录；目标已存在时视为已就位，仅清理残留旧源。
+async function relocateFile(from, to) {
+  try {
+    await fs.promises.access(to);
+    if (from !== to) {
+      try { await fs.promises.unlink(from); } catch (err) { if (err.code !== 'ENOENT') throw err; }
+    }
+    return;
+  } catch (_) { /* 目标不存在，继续移动 */ }
+  await fs.promises.mkdir(path.dirname(to), { recursive: true });
+  try {
+    await fs.promises.rename(from, to);
+  } catch (err) {
+    if (err.code !== 'EXDEV') throw err;
+    await fs.promises.copyFile(from, to);
+    try { await fs.promises.unlink(from); } catch (e) { if (e.code !== 'ENOENT') throw e; }
   }
-  return attachment;
 }
 
 async function main() {
@@ -161,11 +174,28 @@ async function main() {
       if (state.messageStatus === 'expired') report.expired += 1;
       if (dryRun) continue;
 
-      let attachment = await existingAttachmentFor(message, parsed.key);
+      // 文件从旧公开目录迁移到受保护目录，杜绝经 /uploads 静态暴露绕过鉴权
+      const ext = path.extname(parsed.key).slice(1).toLowerCase() || 'bin';
+      let attachment = await ConversationAttachment.findOne({ messageId: message._id });
+      if (!attachment && await ConversationAttachment.exists({ storageKey: parsed.key })) {
+        report.invalid += 1;
+        continue;
+      }
+      const attachmentId = attachment ? attachment._id : new mongoose.Types.ObjectId();
+      const newStorageKey = protectedStorageKey(message.tenantId, attachmentId, ext);
+      const newThumbnailKey = thumbnailStat ? protectedThumbnailKey(message.tenantId, attachmentId) : '';
+      try {
+        await relocateFile(parsed.full, absoluteStoragePath(newStorageKey));
+        if (newThumbnailKey) await relocateFile(thumbnail.full, absoluteStoragePath(newThumbnailKey));
+      } catch (err) {
+        report.errors.push({ messageId: String(message._id), error: `移动文件失败: ${err.message}` });
+        continue;
+      }
       const existedBefore = Boolean(attachment);
       if (!attachment) {
         try {
           attachment = await ConversationAttachment.create({
+            _id: attachmentId,
             tenantId: message.tenantId,
             channelId: conv.channelId,
             conversationId: conv._id,
@@ -173,13 +203,13 @@ async function main() {
             uploaderType: message.senderType,
             uploaderId: message.senderId,
             category: message.messageType,
-            storageKey: parsed.key,
-            thumbnailStorageKey: thumbnailStat ? thumbnail.key : '',
+            storageKey: newStorageKey,
+            thumbnailStorageKey: newThumbnailKey,
             originalName: message.attachmentName || path.basename(parsed.key),
-            extension: path.extname(parsed.key).slice(1).toLowerCase() || 'bin',
-            mimeType: MIME_BY_EXTENSION[path.extname(parsed.key).slice(1).toLowerCase()] || 'application/octet-stream',
+            extension: ext,
+            mimeType: MIME_BY_EXTENSION[ext] || 'application/octet-stream',
             size: stat.size,
-            checksum: await checksum(parsed.full),
+            checksum: await checksum(absoluteStoragePath(newStorageKey)),
             status: state.status,
             uploadedAt: message.createdAt,
             activatedAt: message.createdAt,
@@ -189,14 +219,19 @@ async function main() {
           });
         } catch (err) {
           if (err?.code !== 11000) throw err;
-          attachment = await existingAttachmentFor(message, parsed.key);
+          attachment = await ConversationAttachment.findOne({ messageId: message._id });
           if (!attachment) throw err;
         }
+      } else if (attachment.storageKey !== newStorageKey || attachment.thumbnailStorageKey !== newThumbnailKey) {
+        await ConversationAttachment.updateOne(
+          { _id: attachment._id },
+          { $set: { storageKey: newStorageKey, thumbnailStorageKey: newThumbnailKey } },
+        );
       }
 
       const updated = await Message.updateOne(
-        { _id: message._id, tenantId: message.tenantId, attachmentId: null },
-        { $set: { attachmentId: attachment._id, attachmentStatus: state.messageStatus, attachmentExpiredAt: expiresAt } },
+        { _id: message._id, tenantId: message.tenantId },
+        { $set: { attachmentId: attachment._id, attachmentStatus: state.messageStatus, attachmentExpiredAt: expiresAt, attachmentUrl: '', thumbnailUrl: '' } },
       );
       if (updated.modifiedCount) {
         report.migrated += 1;

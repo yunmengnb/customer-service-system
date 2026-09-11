@@ -414,37 +414,49 @@ class ChatController {
       messageType: 'system',
       content: `${agent?.displayName || '客服'} 已接入`,
     });
-    updated.lastMessageAt = systemMsg.createdAt;
-    await updated.save();
-    await broadcastCustomerChannelSummary(updated, {
-      lastMessage: systemMsg.toJSON(),
-      lastMessageAt: updated.lastMessageAt,
-      ...await conversationUnread(updated),
-    }, true);
+    const acceptedAt = updated.acceptedAt;
+    const acceptedLastMessageAt = updated.lastMessageAt;
+    const advanced = await Conversation.findOneAndUpdate(
+      {
+        _id: updated._id,
+        tenantId: req.tenantId,
+        status: 'active',
+        assignedAgentId: req.user.id,
+        acceptedAt,
+        lastMessageAt: acceptedLastMessageAt,
+      },
+      { $set: { lastMessageAt: systemMsg.createdAt } },
+      { new: true }
+    );
+    const current = advanced || await Conversation.findOne({ _id: updated._id, tenantId: req.tenantId });
+    const summaries = await refreshConversationSummary(current);
+    await broadcastCustomerChannelSummary(current, summaries.customer, true);
     
     // Socket 推送
     if (io) {
       const acceptedData = {
-        conversationId: updated._id,
-        status: 'active',
+        conversationId: current._id,
+        status: current.status,
         agentId: req.user.id,
         agentName: agent?.displayName,
-        assignedAgentId: req.user.id,
-        lastMessage: systemMsg.toJSON(),
-        lastMessageAt: updated.lastMessageAt,
+        assignedAgentId: current.assignedAgentId,
+        ...summaries.agent,
       };
-      waitingAudience.emit('conversation.accepted', acceptedData);
+      const acceptanceStillCurrent = current.status === 'active'
+        && String(current.assignedAgentId) === String(req.user.id)
+        && current.acceptedAt?.getTime() === acceptedAt?.getTime();
+      if (acceptanceStillCurrent) waitingAudience.emit('conversation.accepted', acceptedData);
       waitingAudience.emit('conversation.updated', acceptedData);
-      tenantConversationRoom(updated).emit('message.new', systemMsg.toJSON());
-      io.to(`customer-${updated.customerId}`).emit('message.new', systemMsg.toJSON());
-      io.to(`customer-${updated.customerId}`).emit('conversation.updated', {
-        conversationId: updated._id,
-        status: 'active',
-        agent: { id: req.user.id, name: agent?.displayName },
+      tenantConversationRoom(current).emit('message.new', systemMsg.toJSON());
+      io.to(`customer-${current.customerId}`).emit('message.new', systemMsg.toJSON());
+      io.to(`customer-${current.customerId}`).emit('conversation.updated', {
+        conversationId: current._id,
+        status: current.status,
+        agent: acceptanceStillCurrent ? { id: req.user.id, name: agent?.displayName } : null,
       });
     }
     
-    return ok(res, { ...updated.toJSON(), ...await conversationUnread(updated) });
+    return ok(res, { ...current.toJSON(), ...await conversationUnread(current) });
   }
   
   // GET /api/tenant/conversations/:id/messages/search
@@ -853,30 +865,43 @@ class ChatController {
       messageType: 'system',
       content: '会话已结束',
     });
-    closed.lastMessageAt = closedMessage.createdAt;
-    await closed.save();
-    await broadcastCustomerChannelSummary(closed, {
-      lastMessage: closedMessage.toJSON(),
-      lastMessageAt: closed.lastMessageAt,
-      ...await conversationUnread(closed),
-    }, true);
+    const advanced = await Conversation.findOneAndUpdate(
+      {
+        _id: closed._id,
+        tenantId: req.tenantId,
+        status: 'closed',
+        closedAt,
+        lastMessageAt: conv.lastMessageAt,
+      },
+      { $set: { lastMessageAt: closedMessage.createdAt } },
+      { new: true }
+    );
+    const current = advanced || await Conversation.findOne({ _id: closed._id, tenantId: req.tenantId });
+    const summaries = await refreshConversationSummary(current);
+    await broadcastCustomerChannelSummary(current, summaries.customer, true);
 
     if (io) {
       const closedData = {
-        conversationId: closed._id,
-        status: 'closed',
-        lastMessage: closedMessage.toJSON(),
-        lastMessageAt: closed.lastMessageAt,
+        conversationId: current._id,
+        status: current.status,
+        assignedAgentId: current.assignedAgentId,
+        ...summaries.agent,
       };
-      io.to(`customer-${closed.customerId}`).emit('message.new', closedMessage.toJSON());
-      io.to(`customer-${closed.customerId}`).emit('conversation.closed', closedData);
-      io.to(`customer-${closed.customerId}`).emit('conversation.updated', closedData);
+      io.to(`customer-${current.customerId}`).emit('message.new', closedMessage.toJSON());
       previousAudience.emit('message.new', closedMessage.toJSON());
-      previousAudience.emit('conversation.closed', closedData);
+      if (advanced) {
+        io.to(`customer-${current.customerId}`).emit('conversation.closed', closedData);
+        previousAudience.emit('conversation.closed', closedData);
+      }
+      io.to(`customer-${current.customerId}`).emit('conversation.updated', {
+        ...closedData,
+        ...summaries.customer,
+      });
       previousAudience.emit('conversation.updated', closedData);
+      if (!advanced) tenantConversationRoom(current).emit('conversation.updated', closedData);
     }
     
-    return ok(res, { ...closed.toJSON(), ...await conversationUnread(closed) });
+    return ok(res, { ...current.toJSON(), ...await conversationUnread(current) });
   }
   
   // ============ 客户端 ============

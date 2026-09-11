@@ -272,3 +272,18 @@ function query(value) {
     }
   }
 });
+
+test('accept and close advance system-message timestamps without stale snapshot saves', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'src/controllers/ChatController.js'), 'utf8');
+  const accept = source.slice(source.indexOf('  async acceptConversation('), source.indexOf('  // GET /api/tenant/conversations/:id/messages/search'));
+  const close = source.slice(source.indexOf('  async closeConversation('), source.indexOf('  // ============ 客户端 ============'));
+
+  assert.doesNotMatch(accept, /updated\.save\s*\(/);
+  assert.match(accept, /status: 'active',[\s\S]*assignedAgentId: req\.user\.id,[\s\S]*acceptedAt,[\s\S]*lastMessageAt: acceptedLastMessageAt/);
+  assert.match(accept, /const current = advanced \|\| await Conversation\.findOne/);
+  assert.match(accept, /const summaries = await refreshConversationSummary\(current\)/);
+  assert.doesNotMatch(close, /closed\.save\s*\(/);
+  assert.match(close, /status: 'closed',[\s\S]*closedAt,[\s\S]*lastMessageAt: conv\.lastMessageAt/);
+  assert.match(close, /if \(advanced\) \{[\s\S]*emit\('conversation\.closed'/);
+  assert.match(close, /const summaries = await refreshConversationSummary\(current\)/);
+});
