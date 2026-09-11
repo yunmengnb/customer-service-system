@@ -4,6 +4,7 @@ const Customer = require('../models/Customer');
 const Channel = require('../models/Channel');
 const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
+const { unreadLookup } = require('../services/conversationUnreadService');
 const crypto = require('crypto');
 const config = require('../config');
 const cache = require('../utils/cache');
@@ -704,6 +705,7 @@ class CustomerAuthController {
         .lean(),
       Conversation.aggregate([
         { $match: { customerId: { $in: bindingIds } } },
+        ...unreadLookup(),
         { $sort: { lastMessageAt: -1, createdAt: -1 } },
         { $group: { _id: '$customerId', conversation: { $first: '$$ROOT' } } },
       ]),

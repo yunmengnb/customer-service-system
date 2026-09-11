@@ -453,6 +453,17 @@ import {
 const route = useRoute()
 const router = useRouter()
 const token = computed(() => route.params.token)
+const mountedToken = String(route.params.token || '')
+let sessionActive = true
+const deletedMessageIds = new Set()
+function isCurrentSession() { return sessionActive && String(token.value || '') === mountedToken }
+function belongsToConversation(data) {
+  return Boolean(isCurrentSession() && conversation.value?._id && data?.conversationId &&
+    String(data.conversationId) === String(conversation.value._id) &&
+    (!data.tenantId || String(data.tenantId) === String(customer.value?.tenantId)) &&
+    (!data.channelToken || String(data.channelToken) === mountedToken) &&
+    (!data.publicToken || String(data.publicToken) === mountedToken))
+}
 const currentWindowLink = computed(() => {
   if (typeof window === 'undefined') return ''
   return `${window.location.origin}/c/${token.value}`
@@ -744,6 +755,7 @@ async function loadChannel() {
       saved ? api.get('/client/me') : Promise.resolve(null),
     ])
 
+    if (!isCurrentSession()) return
     const channelRes = channelResult.status === 'fulfilled' ? channelResult.value : null
     if (channelRes?.code !== 0) {
       channel.value = null
@@ -758,6 +770,7 @@ async function loadChannel() {
     if (meRes?.code === 0 && String(meRes.data.channelId) !== String(channelRes.data.id)) {
       try {
         const switchRes = await api.post(`/client/channels/${token.value}/switch`)
+        if (!isCurrentSession()) return
         if (switchRes.code === 0) {
           localStorage.setItem('client_token', switchRes.data.token)
           meRes = await api.get('/client/me')
@@ -768,6 +781,7 @@ async function loadChannel() {
         meRes = null
       }
     }
+    if (!isCurrentSession()) return
     if (meRes?.code === 0) {
       customer.value = meRes.data
       setupSocket()
@@ -792,6 +806,7 @@ async function loadChannel() {
 async function loadMe() {
   try {
     const res = await api.get('/client/me')
+    if (!isCurrentSession()) return
     if (res.code === 0) {
       customer.value = res.data
       await Promise.all([loadConversation(), loadMessages()])
@@ -847,6 +862,7 @@ async function getCaptchaPayload() {
 }
 
 async function completeAuth(res) {
+  if (!isCurrentSession()) return
   if (res.code !== 0) throw new Error(res.message || '认证失败')
   localStorage.setItem('client_token', res.data.token)
   customer.value = res.data.customer
@@ -1244,7 +1260,10 @@ async function submitQQ() {
 async function loadConversation() {
   try {
     const res = await api.get('/client/conversation')
-    if (res.code === 0 && res.data) {
+    if (isCurrentSession() && res.code === 0 && res.data) {
+      if (String(res.data.tenantId) !== String(customer.value?.tenantId) ||
+          String(res.data.channelId) !== String(customer.value?.channelId) ||
+          String(res.data.customerId) !== String(customer.value?._id || customer.value?.id)) return
       conversation.value = res.data
       conversationStatus.value = res.data.status
       assignedAgentId.value = String(res.data.agent?.id || res.data.assignedAgentId || '')
@@ -1254,13 +1273,17 @@ async function loadConversation() {
 }
 
 async function loadMessages() {
+  await loadConversation()
+  if (!isCurrentSession() || !conversation.value?._id) return
   const cached = await getCachedMessages(cacheScope.value, conversationCacheId.value)
-  if (cached.length) messages.value = cached
+  if (!isCurrentSession()) return
+  if (cached.length) messages.value = cached.filter(belongsToConversation)
   cleanupChatCache(cacheScope.value)
   try {
     const res = await api.get('/client/conversation/messages', { params: { limit: 50 } })
     if (res.code === 0) {
-      messages.value = res.data || []
+      if (!isCurrentSession()) return
+      messages.value = (res.data || []).filter(belongsToConversation)
       hasMoreMessages.value = messages.value.length === 50
       persistMessages()
       await scrollToBottom()
@@ -1278,7 +1301,8 @@ async function syncLatestMessages() {
     while (customer.value) {
       const res = await api.get('/client/conversation/messages', { params: { limit: 50, after: cursor } })
       if (res.code !== 0) break
-      const page = res.data || []
+      if (!isCurrentSession()) return
+      const page = (res.data || []).filter(belongsToConversation)
       page.forEach(mergeMessage)
       if (page.length < 50) break
       cursor = page[page.length - 1]._id
@@ -1304,7 +1328,8 @@ async function loadPreviousMessages() {
       params: { limit: 50, before: firstMessage._id },
     })
     if (res.code === 0) {
-      const olderMessages = res.data || []
+      if (!isCurrentSession()) return
+      const olderMessages = (res.data || []).filter(belongsToConversation)
       const existingIds = new Set(messages.value.map(message => String(message._id)))
       messages.value = [
         ...olderMessages.filter(message => !existingIds.has(String(message._id))),
@@ -1326,13 +1351,15 @@ function handleMessageScroll() {
 }
 
 function mergeMessage(message) {
-  if (!message) return false
+  if (!isCurrentSession() || !message || deletedMessageIds.has(String(message._id))) return false
+  if (!String(message._id || '').startsWith('temp_') && !belongsToConversation(message)) return false
   const index = messages.value.findIndex(item =>
     String(item._id) === String(message._id) ||
     (message.clientMessageId && item.clientMessageId === message.clientMessageId),
   )
   if (index >= 0) {
-    messages.value.splice(index, 1, message)
+    // 重复新消息不能复活已经撤回的消息。
+    if (!messages.value[index].recalledAt) messages.value.splice(index, 1, message)
     return false
   }
 
@@ -1630,7 +1657,7 @@ async function recallMessage(msg) {
   try {
     const res = await api.post(`/client/conversation/messages/${msg._id}/recall`)
     if (res.code !== 0) throw new Error(res.message || '撤回失败')
-    applyRecall(res.data || { messageId: msg._id, recalledAt: new Date().toISOString() })
+    applyRecall(res.data || { conversationId: msg.conversationId, messageId: msg._id, recalledAt: new Date().toISOString() })
     showToast('消息已撤回')
   } catch (error) {
     showToast(error?.message || '撤回失败')
@@ -1642,7 +1669,7 @@ async function deleteMessage(msg) {
   try {
     const res = await api.delete(`/client/conversation/messages/${msg._id}`)
     if (res.code !== 0) throw new Error(res.message || '删除失败')
-    applyDelete(res.data || { messageId: msg._id })
+    applyDelete(res.data || { conversationId: msg.conversationId, messageId: msg._id })
     showToast('消息已删除')
   } catch (error) {
     showToast(error?.message || '删除失败')
@@ -1650,6 +1677,7 @@ async function deleteMessage(msg) {
 }
 
 function applyRecall(data) {
+  if (!belongsToConversation(data)) return
   const messageId = data.messageId || data._id
   const msg = messages.value.find(item => String(item._id) === String(messageId))
   if (msg) {
@@ -1661,6 +1689,8 @@ function applyRecall(data) {
 }
 
 function applyDelete(data) {
+  if (!belongsToConversation(data) || (data.side && data.side !== 'customer')) return
+  deletedMessageIds.add(String(data.messageId || data._id))
   const messageId = data.messageId || data._id
   const msg = messages.value.find(item => String(item._id) === String(messageId))
   if (msg) releaseAttachmentUrls(msg)
@@ -1670,6 +1700,7 @@ function applyDelete(data) {
 }
 
 function applyAttachmentUpdate(data) {
+  if (!belongsToConversation(data)) return
   const msg = messages.value.find(item => String(item._id) === String(data.messageId))
   if (!msg || !['expired', 'recalled', 'deleted'].includes(data.status)) return
   msg.attachmentStatus = data.status
@@ -1778,6 +1809,7 @@ async function sendMessage() {
 }
 
 function handleNewMessage(msg) {
+  if (!belongsToConversation(msg)) return
   const isNewMessage = mergeMessage(msg)
   if (!isNewMessage) return
   if (['agent', 'bot'].includes(msg.senderType)) playNotificationSound()
@@ -1819,6 +1851,7 @@ function handlePresenceChanged(data) {
 }
 
 function handleConversationUpdated(data) {
+  if (!belongsToConversation(data)) return
   if (data.status) conversationStatus.value = data.status
   const agentId = data.agent?.id || data.assignedAgentId
   if (agentId) {
@@ -1828,6 +1861,7 @@ function handleConversationUpdated(data) {
 }
 
 function handleConversationClosed(data) {
+  if (!belongsToConversation(data)) return
   conversationStatus.value = data.status || 'closed'
   if (conversation.value) conversation.value = { ...conversation.value, ...data }
   scheduleScroll(false)
@@ -1839,6 +1873,7 @@ function handleSocketConnect() {
 }
 
 function setupSocket() {
+  if (!isCurrentSession()) return
   const savedToken = localStorage.getItem('client_token')
   if (!savedToken) return
 
@@ -1980,6 +2015,7 @@ watch(cacheScope, scope => {
 }, { immediate: true })
 
 onUnmounted(() => {
+  sessionActive = false
   window.removeEventListener('pointerdown', unlockNotificationSound)
   window.removeEventListener('keydown', unlockNotificationSound)
   window.visualViewport?.removeEventListener('resize', updateViewport)

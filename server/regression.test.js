@@ -5,6 +5,77 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { spawnSync } = require('node:child_process');
+
+test('chat events reject foreign/uninitialized/stale identity before merge, sound and cursor', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../client-web/src/views/ChatPage.vue'), 'utf8');
+  const context = vm.createContext({ deletedMessageIds: new Set(), sessionActive: true, mountedToken: 'a', token: { value: 'a' }, conversation: { value: null }, customer: { value: { tenantId: 't' } }, messages: { value: [] }, sounds: 0, playNotificationSound() { context.sounds++; }, scheduleScroll() {} });
+  for (const name of ['isCurrentSession', 'belongsToConversation', 'mergeMessage', 'handleNewMessage']) {
+    const start = source.indexOf('function ' + name + '(');
+    const end = name === 'isCurrentSession' ? source.indexOf('\n', start) : source.indexOf('\n}', start) + 2;
+    vm.runInContext(source.slice(start, end), context);
+  }
+  const msg = { _id: 'm1', conversationId: 'c', tenantId: 't', senderType: 'agent' };
+  context.handleNewMessage(msg);
+  assert.equal(context.messages.value.length, 0);
+  context.conversation.value = { _id: 'c' };
+  context.handleNewMessage(msg);
+  context.handleNewMessage(msg);
+  const cursor = () => context.messages.value.at(-1)?._id;
+  for (const foreign of [{ ...msg, _id: 'foreign', conversationId: 'other' }, { ...msg, _id: 'foreign', channelToken: 'b' }, { ...msg, _id: 'foreign', tenantId: 'other' }]) context.handleNewMessage(foreign);
+  assert.equal(cursor(), 'm1');
+  assert.equal(context.sounds, 1);
+  context.token.value = 'b';
+  context.handleNewMessage({ ...msg, _id: 'stale' });
+  assert.equal(cursor(), 'm1');
+  context.token.value = 'a'; context.sessionActive = false;
+  context.handleNewMessage({ ...msg, _id: 'unmounted' });
+  assert.equal(cursor(), 'm1');
+});
+
+test('read and summary interleavings never overwrite message-derived unread facts', async () => {
+  let rows = [{ tenantId: 't', conversationId: 'c', senderType: 'customer', readByAgent: false }];
+  let afterRead = () => {}, afterAggregate = () => {};
+  const model = {
+    find: filter => ({ cast: () => filter }),
+    aggregate: async pipeline => {
+      const scope = pipeline[0].$match;
+      const evaluate = (expr, row) => {
+        if (typeof expr === 'string' && expr.startsWith('$')) return row[expr.slice(1)];
+        if (Array.isArray(expr)) return expr.map(x => evaluate(x, row));
+        if (!expr || typeof expr !== 'object') return expr;
+        const [op, args] = Object.entries(expr)[0]; const values = evaluate(args, row);
+        if (op === '$eq') return values[0] === values[1];
+        if (op === '$in') return values[1].includes(values[0]);
+        if (op === '$and') return values.every(Boolean);
+        if (op === '$ifNull') return values[0] ?? values[1];
+        if (op === '$cond') return values[0] ? values[1] : values[2];
+        throw Error(op);
+      };
+      const counts = {};
+      for (const key of ['agentUnreadCount', 'customerUnreadCount']) counts[key] = rows.filter(r => Object.entries(scope).every(([k,v]) => r[k] === v)).reduce((n,r) => n + evaluate(pipeline[1].$group[key].$sum, r), 0);
+      await afterAggregate(); return [counts];
+    },
+    findOne: () => ({ sort: async () => null }),
+    updateMany: async filter => { rows.filter(r => Object.entries(filter).every(([k,v]) => r[k] === v)).forEach(r => { r.readByAgent = true; }); await afterRead(); },
+  };
+  const service = loadModule('src/services/conversationUnreadService.js', { '../models/Message': model }).module.exports;
+  const controller = loadModule('src/controllers/ChatController.js', { '../models/Message': model, '../services/conversationUnreadService': service });
+  const conv = { _id: 'c', tenantId: 't', save: () => { throw Error('snapshot write'); } };
+  const incoming = () => rows.push({ tenantId: 't', conversationId: 'c', senderType: 'customer', readByAgent: false });
+  afterRead = async () => { incoming(); afterRead = () => {}; };
+  await controller.markAgentConversationRead({ user: { role: 'owner' }, tenantId: 't' }, conv);
+  assert.equal((await service.conversationUnread(conv)).agentUnreadCount, 1);
+  afterAggregate = async () => { incoming(); afterAggregate = () => {}; };
+  await controller.refreshConversationSummary(conv);
+  assert.equal((await service.conversationUnread(conv)).agentUnreadCount, 2);
+  for (let i = 0; i < 2; i++) await controller.markAgentConversationRead({ user: { role: 'owner' }, tenantId: 't' }, conv);
+  assert.equal((await service.conversationUnread(conv)).agentUnreadCount, 0);
+  rows.push({ tenantId: 'other', conversationId: 'c', senderType: 'customer', readByAgent: false });
+  rows.push({ tenantId: 't', conversationId: 'c', senderType: 'customer', readByAgent: false, deletedForAgentAt: new Date() });
+  rows.push({ tenantId: 't', conversationId: 'c', senderType: 'bot', readByCustomer: false, recalledAt: new Date(), attachmentStatus: 'expired' });
+  assert.equal((await service.conversationUnread(conv)).agentUnreadCount, 0);
+  assert.equal((await service.conversationUnread(conv)).customerUnreadCount, 1);
+});
 const Message = require('./src/models/Message');
 const Tenant = require('./src/models/Tenant');
 const cache = require('./src/utils/cache');
@@ -109,6 +180,7 @@ function query(value) {
  test('summary refresh only emits message.new for explicitly new agent/bot messages', async () => {
   const events = [];
   const context = loadModule('src/controllers/ChatController.js', {
+    '../services/conversationUnreadService': { conversationUnread: async () => ({ customerUnreadCount: 0 }) },
     '../models/Customer': { findOne: () => query({ accountId: 'account' }) },
     '../models/Channel': { findOne: () => query({ _id: 'channel', publicToken: 'public' }) },
   });

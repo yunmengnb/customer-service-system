@@ -1,6 +1,7 @@
 // 忆梦云团队开发
 const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
+const { conversationUnread, unreadLookup } = require('../services/conversationUnreadService');
 const KeywordReply = require('../models/KeywordReply');
 const Customer = require('../models/Customer');
 const CustomerAccount = require('../models/CustomerAccount');
@@ -52,16 +53,13 @@ async function customerAccounts(customers) {
 
 async function refreshConversationSummary(conv) {
   const messageScope = { tenantId: conv.tenantId, conversationId: conv._id };
-  const [agentLastMessage, customerLastMessage, agentUnreadCount, customerUnreadCount] = await Promise.all([
+  const [agentLastMessage, customerLastMessage, counts] = await Promise.all([
     Message.findOne({ ...messageScope, deletedForAgentAt: null }).sort({ createdAt: -1 }),
     Message.findOne({ ...messageScope, deletedForCustomerAt: null }).sort({ createdAt: -1 }),
-    Message.countDocuments({ ...messageScope, deletedForAgentAt: null, senderType: 'customer', readByAgent: false }),
-    Message.countDocuments({ ...messageScope, deletedForCustomerAt: null, senderType: { $in: ['agent', 'bot'] }, readByCustomer: false }),
+    conversationUnread(conv),
   ]);
 
-  conv.agentUnreadCount = agentUnreadCount;
-  conv.customerUnreadCount = customerUnreadCount;
-  await conv.save();
+  const { agentUnreadCount, customerUnreadCount } = counts;
 
   return {
     agent: {
@@ -87,10 +85,7 @@ async function markAgentConversationRead(req, conv) {
       { conversationId: conv._id, tenantId: req.tenantId, readByAgent: false },
       { $set: { readByAgent: true } }
     );
-    await Conversation.updateOne(
-      { _id: conv._id, tenantId: req.tenantId },
-      { $set: { agentUnreadCount: 0 } }
-    );
+    // 已读只修改消息事实，不再跨文档清零。
   }
 }
 
@@ -127,7 +122,7 @@ async function broadcastCustomerChannelSummary(conv, summary, notifyNewMessage =
     conversationId: conv._id,
     lastMessage: summary.lastMessage || null,
     lastMessageAt: summary.lastMessageAt || conv.createdAt,
-    unreadCount: summary.customerUnreadCount || 0,
+    unreadCount: (await conversationUnread(conv)).customerUnreadCount,
   };
   const accountRoom = io.to(`customer-account-${customer.accountId}`);
   accountRoom.emit('channel-history.updated', update);
@@ -298,6 +293,7 @@ class ChatController {
         } },
         { $set: { lastMessageAt: { $ifNull: [{ $arrayElemAt: ['$visibleLastMessage.createdAt', 0] }, '$createdAt'] } } },
         { $unset: 'visibleLastMessage' },
+        ...unreadLookup(),
         { $sort: { ...sort, _id: -1 } },
         { $skip: skip },
         { $limit: limit },
@@ -355,6 +351,7 @@ class ChatController {
     
     return ok(res, {
       ...conv.toJSON(),
+      ...await conversationUnread(conv),
       customer: customer ? customerJson(customer, account) : null,
       channel: channel ? { id: channel._id, name: channel.name, avatarUrl: channel.avatarUrl || '' } : null,
     });
@@ -367,7 +364,7 @@ class ChatController {
     if (!await canAccessConversation(req, conv)) return error(res, '无权接入该会话', 403, 403);
     
     if (conv.status === 'active') {
-      return ok(res, conv.toJSON(), '已在处理中');
+      return ok(res, { ...conv.toJSON(), ...await conversationUnread(conv) }, '已在处理中');
     }
     
     if (conv.status === 'closed') {
@@ -379,7 +376,7 @@ class ChatController {
     // 原子更新：只有 waiting 才能被接
     const updated = await Conversation.findOneAndUpdate(
       { _id: conv._id, tenantId: req.tenantId, status: 'waiting' },
-      { status: 'active', assignedAgentId: req.user.id, acceptedAt: new Date(), agentUnreadCount: 0 },
+      { status: 'active', assignedAgentId: req.user.id, acceptedAt: new Date() },
       { new: true }
     );
     
@@ -422,7 +419,7 @@ class ChatController {
     await broadcastCustomerChannelSummary(updated, {
       lastMessage: systemMsg.toJSON(),
       lastMessageAt: updated.lastMessageAt,
-      customerUnreadCount: updated.customerUnreadCount,
+      ...await conversationUnread(updated),
     }, true);
     
     // Socket 推送
@@ -447,7 +444,7 @@ class ChatController {
       });
     }
     
-    return ok(res, updated.toJSON());
+    return ok(res, { ...updated.toJSON(), ...await conversationUnread(updated) });
   }
   
   // GET /api/tenant/conversations/:id/messages/search
@@ -678,7 +675,7 @@ class ChatController {
         status: 'active',
         assignedAgentId: conv.assignedAgentId,
       },
-      { $set: { lastMessageAt: msg.createdAt }, $inc: { customerUnreadCount: 1 } },
+      { $set: { lastMessageAt: msg.createdAt } },
       { new: true }
     );
     if (!conv) {
@@ -697,7 +694,7 @@ class ChatController {
     await broadcastCustomerChannelSummary(conv, {
       lastMessage: messageData,
       lastMessageAt: conv.lastMessageAt,
-      customerUnreadCount: conv.customerUnreadCount,
+      ...await conversationUnread(conv),
     }, true);
     
     // Socket 推送
@@ -713,8 +710,8 @@ class ChatController {
         conversationId: conv._id,
         lastMessage: messageData,
         lastMessageAt: conv.lastMessageAt,
-        agentUnreadCount: conv.agentUnreadCount,
-        customerUnreadCount: conv.customerUnreadCount,
+        ...await conversationUnread(conv),
+
       });
     }
     
@@ -830,7 +827,7 @@ class ChatController {
     const conv = await Conversation.findOne({ _id: req.params.id, tenantId: req.tenantId });
     if (!conv) return error(res, '会话不存在', 404, 404);
     if (!await canModifyConversation(req, conv)) return error(res, '无权操作', 403, 403);
-    if (conv.status === 'closed') return ok(res, conv.toJSON(), '已关闭');
+    if (conv.status === 'closed') return ok(res, { ...conv.toJSON(), ...await conversationUnread(conv) }, '已关闭');
 
     const previousAudience = io ? tenantConversationRoom(conv) : null;
     const closeWhere = {
@@ -861,7 +858,7 @@ class ChatController {
     await broadcastCustomerChannelSummary(closed, {
       lastMessage: closedMessage.toJSON(),
       lastMessageAt: closed.lastMessageAt,
-      customerUnreadCount: closed.customerUnreadCount,
+      ...await conversationUnread(closed),
     }, true);
 
     if (io) {
@@ -879,7 +876,7 @@ class ChatController {
       previousAudience.emit('conversation.updated', closedData);
     }
     
-    return ok(res, closed.toJSON());
+    return ok(res, { ...closed.toJSON(), ...await conversationUnread(closed) });
   }
   
   // ============ 客户端 ============
@@ -892,12 +889,11 @@ class ChatController {
       tenantId: customer.tenantId,
       channelId: customer.channelId,
       customerId: customer.id,
-      status: { $in: ['waiting', 'active'] },
     }).sort({ lastMessageAt: -1 });
     
     if (!conv) return ok(res, null);
 
-    const data = conv.toJSON();
+    const data = { ...conv.toJSON(), ...await conversationUnread(conv) };
     if (conv.assignedAgentId) {
       const agent = await TenantUser.findById(conv.assignedAgentId).select('_id displayName');
       data.agent = agent ? { id: agent._id, name: agent.displayName } : null;
@@ -943,14 +939,12 @@ class ChatController {
       .sort(afterId ? { createdAt: 1, _id: 1 } : { createdAt: -1, _id: -1 })
       .limit(limit);
     
-    // 仅有未读消息时写入数据库，避免每次进入都执行无效更新。
-    if (conv.customerUnreadCount > 0) {
-      await Message.updateMany(
-        { conversationId: conv._id, tenantId: customer.tenantId, readByCustomer: false },
-        { $set: { readByCustomer: true } }
-      );
-      conv.customerUnreadCount = 0;
-      await conv.save();
+    // 只修改消息事实；重复读取幂等，不依赖遗留计数字段。
+    const readResult = await Message.updateMany(
+      { conversationId: conv._id, tenantId: customer.tenantId, senderType: { $in: ['agent', 'bot'] }, deletedForCustomerAt: null, readByCustomer: false },
+      { $set: { readByCustomer: true } }
+    );
+    if (readResult.modifiedCount) {
       const summaries = await refreshConversationSummary(conv);
       await broadcastCustomerChannelSummary(conv, summaries.customer);
     }
@@ -1156,7 +1150,6 @@ class ChatController {
             acceptedAt: { $cond: [{ $eq: ['$status', 'closed'] }, '$$REMOVE', '$acceptedAt'] },
             closedAt: { $cond: [{ $eq: ['$status', 'closed'] }, '$$REMOVE', '$closedAt'] },
             lastMessageAt: msg.createdAt,
-            agentUnreadCount: { $add: [{ $ifNull: ['$agentUnreadCount', 0] }, 1] },
           },
         },
       ],
@@ -1206,7 +1199,7 @@ class ChatController {
           });
           conv = await Conversation.findOneAndUpdate(
             { _id: conv._id, tenantId: customer.tenantId },
-            { $set: { lastMessageAt: replyMsg.createdAt }, $inc: { customerUnreadCount: 1 } },
+            { $set: { lastMessageAt: replyMsg.createdAt } },
             { new: true }
           );
           break;
@@ -1217,7 +1210,7 @@ class ChatController {
     await broadcastCustomerChannelSummary(conv, {
       lastMessage: (replyMsg || msg).toJSON(),
       lastMessageAt: conv.lastMessageAt,
-      customerUnreadCount: conv.customerUnreadCount,
+      ...await conversationUnread(conv),
     }, Boolean(replyMsg));
     
     // Socket 推送
@@ -1237,7 +1230,7 @@ class ChatController {
         assignedAgentId: conv.assignedAgentId,
         lastMessage: msg.toJSON(),
         lastMessageAt: conv.lastMessageAt,
-        agentUnreadCount: conv.agentUnreadCount,
+        ...await conversationUnread(conv),
       });
       io.to(`customer-${customer.id}`).emit('conversation.updated', {
         conversationId: conv._id,
@@ -1254,8 +1247,8 @@ class ChatController {
           conversationId: conv._id,
           lastMessage: replyData,
           lastMessageAt: conv.lastMessageAt,
-          agentUnreadCount: conv.agentUnreadCount,
-          customerUnreadCount: conv.customerUnreadCount,
+          ...await conversationUnread(conv),
+
         });
       }
     }

@@ -1,6 +1,6 @@
 <!-- 忆梦云团队开发 -->
 <template>
-  <router-view />
+  <router-view :key="$route.path" />
 </template>
 
 <script setup>
