@@ -43,7 +43,7 @@ router.get('/announcements/:id', authTenantUser, AnnouncementController.detail);
 // ===== 员工管理 =====
 router.get('/employees', authTenantUser, requireTenantAdmin, AgentController.list);
 router.post('/employees', authTenantUser, requireTenantAdmin, validators.createAgent, AgentController.create);
-router.patch('/employees/:id', authTenantUser, requireTenantAdmin, AgentController.update);
+router.patch('/employees/:id', authTenantUser, requireTenantAdmin, validators.updateAgent, AgentController.update);
 router.delete('/employees/:id', authTenantUser, requireTenantAdmin, AgentController.delete);
 router.post('/employees/:id/reset-password', authTenantUser, requireTenantAdmin, AgentController.resetPassword);
 router.post('/employees/:id/login', authTenantUser, requireTenantAdmin, AgentController.loginAsEmployee);
@@ -60,13 +60,13 @@ router.put('/channels/:id/employees', authTenantUser, requireTenantAdmin, Channe
 // 关键词回复
 router.get('/channels/:channelId/keywords', authTenantUser, ChannelController.listKeywordReplies);
 router.post('/channels/:channelId/keywords', authTenantUser, validators.keywordReply, ChannelController.createKeywordReply);
-router.patch('/channels/:channelId/keywords/:krId', authTenantUser, ChannelController.updateKeywordReply);
+router.patch('/channels/:channelId/keywords/:krId', authTenantUser, validators.updateKeywordReply, ChannelController.updateKeywordReply);
 router.delete('/channels/:channelId/keywords/:krId', authTenantUser, ChannelController.deleteKeywordReply);
 
 // 快捷回复
 router.get('/channels/:channelId/quick-replies', authTenantUser, ChannelController.listQuickReplies);
 router.post('/channels/:channelId/quick-replies', authTenantUser, validators.quickReply, ChannelController.createQuickReply);
-router.patch('/channels/:channelId/quick-replies/:qrId', authTenantUser, ChannelController.updateQuickReply);
+router.patch('/channels/:channelId/quick-replies/:qrId', authTenantUser, validators.updateQuickReply, ChannelController.updateQuickReply);
 router.delete('/channels/:channelId/quick-replies/:qrId', authTenantUser, ChannelController.deleteQuickReply);
 
 // ===== 会话与消息 =====

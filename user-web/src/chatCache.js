@@ -1,4 +1,5 @@
 // 忆梦云团队开发 - 浏览器聊天消息与媒体缓存
+import { readTenantCache } from './api'
 const DB_NAME = 'yimeng-chat-cache-v1'
 const DB_VERSION = 1
 const MEDIA_CACHE = 'yimeng-chat-media-v1'
@@ -62,8 +63,8 @@ function attachmentExpiry(message, now) {
 
 export function tenantIdentityScope() {
   try {
-    const user = JSON.parse(sessionStorage.getItem('tenant_user') || localStorage.getItem('tenant_user') || 'null')
-    const tenant = JSON.parse(sessionStorage.getItem('tenant_info') || localStorage.getItem('tenant_info') || 'null')
+    const user = readTenantCache('tenant_user')
+    const tenant = readTenantCache('tenant_info')
     if (!user?._id || !(tenant?._id || user?.tenantId)) return ''
     return ['staff', tenant?._id || user.tenantId, user._id].map(String).join(':')
   } catch { return '' }

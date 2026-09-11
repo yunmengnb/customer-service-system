@@ -79,7 +79,7 @@ class TenantAuthController {
 
     const ownerTenant = specifiedTenant || await Tenant.findOne({ username });
     if (ownerTenant && ownerTenant.username === username && comparePassword(password, ownerTenant.password)) {
-      if (ownerTenant.status !== 'active') {
+      if (!['active', 'trial'].includes(ownerTenant.status)) {
         recordLogin({ req, tenantId: ownerTenant._id, user: { username, displayName: ownerTenant.name, role: 'owner' }, result: 'failure', detail: '账号已被禁用' });
         return error(res, '账号已被禁用', 403, 403);
       }

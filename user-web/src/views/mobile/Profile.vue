@@ -1,13 +1,13 @@
 <!-- 忆梦云团队开发 - 移动端"我的"页面 -->
 <script setup>
+import api, { clearTenantSession, readTenantCache } from '../../api'
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import api from '../../api'
 import { clearIdentityCache, tenantIdentityScope } from '../../chatCache'
 
 const router = useRouter()
-const user = ref(JSON.parse(sessionStorage.getItem('tenant_user') || localStorage.getItem('tenant_user') || 'null'))
-const tenant = ref(JSON.parse(sessionStorage.getItem('tenant_info') || localStorage.getItem('tenant_info') || 'null'))
+const user = ref(readTenantCache('tenant_user'))
+const tenant = ref(readTenantCache('tenant_info'))
 const showLogoutConfirm = ref(false)
 
 const roleLabel = computed(() => ({ owner: '客服后台所有者', admin: '管理员', agent: '客服' }[user.value?.role] || user.value?.role))
@@ -48,11 +48,8 @@ function goLogs() {
 async function doLogout() {
   showLogoutConfirm.value = false
   const identityScope = tenantIdentityScope()
-  const storage = sessionStorage.getItem('tenant_token') ? sessionStorage : localStorage
   await clearIdentityCache(identityScope)
-  storage.removeItem('tenant_token')
-  storage.removeItem('tenant_user')
-  storage.removeItem('tenant_info')
+  clearTenantSession()
   router.push('/login')
 }
 </script>

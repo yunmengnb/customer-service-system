@@ -1,4 +1,5 @@
 // 忆梦云团队开发 - 桌面端与手机端独立路由及旧 URL 兼容跳转
+import { readTenantCache } from './api'
 import { createRouter, createWebHistory } from 'vue-router'
 
 const MOBILE_BREAKPOINT = 768
@@ -29,18 +30,26 @@ const routes = [
   {
     path: '/employee-login',
     component: { template: '<div></div>' },
+    meta: { public: true },
     beforeEnter: (to) => {
-      const key = String(to.query.key || '')
-      const raw = key ? localStorage.getItem(key) : null
-      if (!raw) return '/login'
-
-      localStorage.removeItem(key)
-      const data = JSON.parse(raw)
+      // 失败也保持隔离，禁止使用原窗口的管理员身份。
       sessionStorage.setItem('tenant_impersonation', '1')
-      sessionStorage.setItem('tenant_token', data.token)
-      sessionStorage.setItem('tenant_user', JSON.stringify(data.user))
-      sessionStorage.setItem('tenant_info', JSON.stringify(data.tenant))
-      return `${devicePrefix()}/messages`
+      for (const field of ['tenant_token', 'tenant_user', 'tenant_info']) sessionStorage.removeItem(field)
+      try {
+        const key = typeof to.query.key === 'string' ? to.query.key : ''
+        if (!/^employee_login_\d+$/.test(key)) return '/login'
+        const raw = localStorage.getItem(key)
+        localStorage.removeItem(key)
+        const data = JSON.parse(raw || 'null')
+        if (!data || typeof data.token !== 'string' || !data.token || !data.user?._id || !['admin', 'agent'].includes(data.user.role) || !data.tenant?._id) return '/login'
+        sessionStorage.setItem('tenant_token', data.token)
+        sessionStorage.setItem('tenant_user', JSON.stringify(data.user))
+        sessionStorage.setItem('tenant_info', JSON.stringify(data.tenant))
+        return `${devicePrefix()}/messages`
+      } catch (_) {
+        sessionStorage.removeItem('tenant_token')
+        return '/login'
+      }
     },
   },
 
@@ -106,7 +115,7 @@ router.beforeEach((to) => {
   if (!isPublic && !token) return { path: '/login', query: { redirect: to.fullPath } }
   if (isPublic) return true
 
-  const user = JSON.parse(sessionStorage.getItem('tenant_user') || localStorage.getItem('tenant_user') || 'null')
+  const user = readTenantCache('tenant_user')
   if (to.matched.some((record) => record.meta.adminOnly) && !['owner', 'admin'].includes(user?.role)) {
     return { path: `${devicePrefix()}/messages`, replace: true }
   }

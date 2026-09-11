@@ -100,7 +100,7 @@ function ok(res, data = null, message = 'success') {
   return res.json({ code: 0, message, data, requestId: res.locals.requestId });
 }
 
-function error(res, message = 'error', code = 1, status = 400, data = null) {
+function error(res, message = 'error', code = 1, status = (Number.isInteger(code) && code >= 400 && code <= 599 ? code : 400), data = null) {
   return res.status(status).json({ code, message, data, requestId: res.locals.requestId });
 }
 

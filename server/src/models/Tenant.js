@@ -33,10 +33,10 @@ const TenantSchema = new mongoose.Schema({
     default: '',
   },
   plan: {
-    agentLimit: { type: Number, default: 10 },
-    channelLimit: { type: Number, default: 5 },
-    messageRetentionDays: { type: Number, default: 90 },
-    attachmentLimitMB: { type: Number, default: 1024 },
+    agentLimit: { type: Number, default: 10, min: 0, max: Number.MAX_SAFE_INTEGER, validate: Number.isSafeInteger },
+    channelLimit: { type: Number, default: 5, min: 0, max: Number.MAX_SAFE_INTEGER, validate: Number.isSafeInteger },
+    messageRetentionDays: { type: Number, default: 90, min: 0, max: Number.MAX_SAFE_INTEGER, validate: Number.isSafeInteger },
+    attachmentLimitMB: { type: Number, default: 1024, min: 0, max: Number.MAX_SAFE_INTEGER, validate: Number.isSafeInteger },
   },
   status: {
     type: String,

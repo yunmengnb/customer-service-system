@@ -15,7 +15,7 @@ class TenantAdminController {
     const where = {};
     if (req.query.status) where.status = req.query.status;
     if (req.query.keyword) {
-      const kw = req.query.keyword;
+      const kw = String(req.query.keyword).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       where.$or = [
         { name: { $regex: kw, $options: 'i' } },
         { username: { $regex: kw, $options: 'i' } },
@@ -34,7 +34,7 @@ class TenantAdminController {
   // GET /api/admin/tenants/:id
   async detail(req, res) {
     const tenant = await Tenant.findById(req.params.id);
-    if (!tenant) return error(res, '租户不存在', 404);
+    if (!tenant) return error(res, '租户不存在', 404, 404);
     
     const agentCount = await TenantUser.countDocuments({ tenantId: tenant._id });
     return ok(res, { ...tenant.toJSON(), agentCount });
@@ -100,16 +100,21 @@ class TenantAdminController {
   // PATCH /api/admin/tenants/:id/plan
   async updatePlan(req, res) {
     const tenant = await Tenant.findById(req.params.id);
-    if (!tenant) return error(res, '租户不存在', 404);
+    if (!tenant) return error(res, '租户不存在', 404, 404);
     
-    const newPlan = { ...tenant.plan };
-    if (req.body.agentLimit !== undefined) newPlan.agentLimit = Number(req.body.agentLimit);
-    if (req.body.channelLimit !== undefined) newPlan.channelLimit = Number(req.body.channelLimit);
-    if (req.body.messageRetentionDays !== undefined) newPlan.messageRetentionDays = Number(req.body.messageRetentionDays);
-    if (req.body.attachmentLimitMB !== undefined) newPlan.attachmentLimitMB = Number(req.body.attachmentLimitMB);
+    const newPlan = {};
+    // 保留已有 0 值语义；上限采用 JS 安全整数边界，不引入未经定义的商业配额限制。
+    for (const field of ['agentLimit', 'channelLimit', 'messageRetentionDays', 'attachmentLimitMB']) {
+      if (req.body[field] === undefined) continue;
+      const value = req.body[field];
+      if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+        return error(res, field + '须为非负安全整数');
+      }
+      newPlan['plan.' + field] = value;
+    }
     
     // 用 updateOne 避免触发完整 schema 校验（email/password/username required）
-    await Tenant.updateOne({ _id: tenant._id }, { plan: newPlan });
+    await Tenant.updateOne({ _id: tenant._id }, { $set: newPlan }, { runValidators: true });
     
     // 重新获取最新数据返回
     const updated = await Tenant.findById(tenant._id);
@@ -120,7 +125,7 @@ class TenantAdminController {
   async dashboard(req, res) {
     const [tenantCount, activeTenants, agentCount, customerCount] = await Promise.all([
       Tenant.countDocuments(),
-      Tenant.countDocuments({ status: 'active' }),
+      Tenant.countDocuments({ status: { $in: ['active', 'trial'] } }),
       TenantUser.countDocuments(),
       CustomerAccount.countDocuments(),
     ]);

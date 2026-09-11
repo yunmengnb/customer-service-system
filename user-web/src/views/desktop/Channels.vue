@@ -1,11 +1,12 @@
 <!-- 忆梦云团队开发 - 桌面端渠道列表独立视图 -->
 <script setup>
+import { readTenantCache } from '../../api'
 import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import api from '../../api'
 import { buildCustomerServiceUrl, copyText } from '../../clipboard'
 import ConfirmDialog from '../../components/ConfirmDialog.vue'
 import ChannelDetail from './ChannelDetail.vue'
-const user = JSON.parse(sessionStorage.getItem('tenant_user') || localStorage.getItem('tenant_user') || 'null')
+const user = readTenantCache('tenant_user')
 const isAdmin = computed(() => ['owner', 'admin'].includes(user?.role))
 const channels = ref([])
 const showCreate = ref(false)

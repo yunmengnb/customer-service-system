@@ -190,11 +190,12 @@ function handleConversationUpdated(update) {
   const conversation = conversations.value[index]
   Object.assign(conversation, {
     ...(update.status ? { status: update.status } : {}),
-    ...(update.assignedAgentId ? { assignedAgentId: update.assignedAgentId } : {}),
-    ...(update.lastMessage ? { lastMessage: update.lastMessage } : {}),
+    ...(update.assignedAgentId !== undefined ? { assignedAgentId: update.assignedAgentId } : {}),
+    ...(update.lastMessage !== undefined ? { lastMessage: update.lastMessage } : {}),
     ...(update.lastMessageAt ? { lastMessageAt: update.lastMessageAt } : {}),
     ...(Number.isFinite(update.agentUnreadCount) ? { agentUnreadCount: update.agentUnreadCount } : {}),
   })
+  scheduleConversationRefresh()
 }
 
 function openChannel(channel) {

@@ -81,6 +81,19 @@ async function refreshConversationSummary(conv) {
   };
 }
 
+async function markAgentConversationRead(req, conv) {
+  if (req.user.role !== 'agent' || String(conv.assignedAgentId) === String(req.user.id)) {
+    await Message.updateMany(
+      { conversationId: conv._id, tenantId: req.tenantId, readByAgent: false },
+      { $set: { readByAgent: true } }
+    );
+    await Conversation.updateOne(
+      { _id: conv._id, tenantId: req.tenantId },
+      { $set: { agentUnreadCount: 0 } }
+    );
+  }
+}
+
 function tenantConversationRoom(conv) {
   let room = io.to(`tenant-${conv.tenantId}`);
   if (conv.status === 'waiting') {
@@ -91,7 +104,7 @@ function tenantConversationRoom(conv) {
   return room;
 }
 
-async function broadcastCustomerChannelSummary(conv, summary) {
+async function broadcastCustomerChannelSummary(conv, summary, notifyNewMessage = false) {
   if (!io) return;
   const [customer, channel] = await Promise.all([
     Customer.findOne({ _id: conv.customerId, tenantId: conv.tenantId, channelId: conv.channelId })
@@ -118,7 +131,7 @@ async function broadcastCustomerChannelSummary(conv, summary) {
   };
   const accountRoom = io.to(`customer-account-${customer.accountId}`);
   accountRoom.emit('channel-history.updated', update);
-  if (update.lastMessage && ['agent', 'bot'].includes(update.lastMessage.senderType)) {
+  if (notifyNewMessage && update.lastMessage && ['agent', 'bot'].includes(update.lastMessage.senderType)) {
     accountRoom.emit('message.new', {
       ...update.lastMessage,
       publicToken: channel.publicToken,
@@ -266,7 +279,29 @@ class ChatController {
       : { lastMessageAt: -1 };
     
     const [items, total] = await Promise.all([
-      Conversation.find(where).sort(sort).skip(skip).limit(limit),
+      // 按坐席可见消息排序后再分页，不修改客户侧共享活动时间。
+      Conversation.aggregate([
+        { $match: Conversation.find(where).cast(Conversation) },
+        { $lookup: {
+          from: Message.collection.name,
+          let: { conversationId: '$_id', tenantId: '$tenantId' },
+          pipeline: [
+            { $match: { deletedForAgentAt: null, $expr: { $and: [
+              { $eq: ['$conversationId', '$$conversationId'] },
+              { $eq: ['$tenantId', '$$tenantId'] },
+            ] } } },
+            { $sort: { createdAt: -1, _id: -1 } },
+            { $limit: 1 },
+            { $project: { createdAt: 1 } },
+          ],
+          as: 'visibleLastMessage',
+        } },
+        { $set: { lastMessageAt: { $ifNull: [{ $arrayElemAt: ['$visibleLastMessage.createdAt', 0] }, '$createdAt'] } } },
+        { $unset: 'visibleLastMessage' },
+        { $sort: { ...sort, _id: -1 } },
+        { $skip: skip },
+        { $limit: limit },
+      ]).then(rows => rows.map(row => Conversation.hydrate(row))),
       Conversation.countDocuments(where),
     ]);
     
@@ -286,7 +321,7 @@ class ChatController {
           { $group: { _id: '$conversationId', msg: { $first: '$$ROOT' } } },
         ])
       : [];
-    const lastMsgMap = Object.fromEntries(lastMsgs.map(m => [m._id.toString(), m.msg]));
+    const lastMsgMap = Object.fromEntries(lastMsgs.map(m => [m._id.toString(), Message.applyAttachmentUrls(m.msg)]));
     
     const result = items.map(c => {
       const obj = c.toJSON();
@@ -304,9 +339,9 @@ class ChatController {
   // GET /api/tenant/conversations/:id
   async conversationDetail(req, res) {
     const conv = await Conversation.findOne({ _id: req.params.id, tenantId: req.tenantId });
-    if (!conv) return error(res, '会话不存在', 404);
+    if (!conv) return error(res, '会话不存在', 404, 404);
     
-    if (!await canAccessConversation(req, conv)) return error(res, '无权访问', 403);
+    if (!await canAccessConversation(req, conv)) return error(res, '无权访问', 403, 403);
     
     const customer = await Customer.findOne({
       _id: conv.customerId,
@@ -328,8 +363,8 @@ class ChatController {
   // POST /api/tenant/conversations/:id/accept
   async acceptConversation(req, res) {
     const conv = await Conversation.findOne({ _id: req.params.id, tenantId: req.tenantId });
-    if (!conv) return error(res, '会话不存在', 404);
-    if (!await canAccessConversation(req, conv)) return error(res, '无权接入该会话', 403);
+    if (!conv) return error(res, '会话不存在', 404, 404);
+    if (!await canAccessConversation(req, conv)) return error(res, '无权接入该会话', 403, 403);
     
     if (conv.status === 'active') {
       return ok(res, conv.toJSON(), '已在处理中');
@@ -358,8 +393,23 @@ class ChatController {
       return error(res, '会话状态已变化，请刷新');
     }
     
+    // 接待落库后复核员工，覆盖禁用/删除清理先于本次接待写入的竞态。
+    const agent = await TenantUser.findOne({ _id: req.user.id, tenantId: req.tenantId, status: 'active' });
+    if (!agent || !await canAccessConversation({ ...req, user: { ...req.user, role: agent.role } }, updated)) {
+      await Conversation.updateOne(
+        { _id: conv._id, tenantId: req.tenantId, status: 'active', assignedAgentId: req.user.id },
+        { $set: { status: 'waiting', assignedAgentId: null, acceptedAt: null, closedAt: null } }
+      );
+      return error(res, '员工已停用或渠道授权已取消', 403, 403);
+    }
+
+    // 接入后把已有客户消息标记为已读，避免重算未读数时角标复活
+    await Message.updateMany(
+      { conversationId: conv._id, tenantId: req.tenantId, senderType: 'customer', readByAgent: false },
+      { $set: { readByAgent: true } }
+    );
+
     // 发送系统消息
-    const agent = await TenantUser.findOne({ _id: req.user.id, tenantId: req.tenantId });
     const systemMsg = await Message.create({
       tenantId: req.tenantId,
       conversationId: conv._id,
@@ -373,7 +423,7 @@ class ChatController {
       lastMessage: systemMsg.toJSON(),
       lastMessageAt: updated.lastMessageAt,
       customerUnreadCount: updated.customerUnreadCount,
-    });
+    }, true);
     
     // Socket 推送
     if (io) {
@@ -403,8 +453,8 @@ class ChatController {
   // GET /api/tenant/conversations/:id/messages/search
   async searchConversationMessages(req, res) {
     const conv = await Conversation.findOne({ _id: req.params.id, tenantId: req.tenantId });
-    if (!conv) return error(res, '会话不存在', 404);
-    if (!await canAccessConversation(req, conv)) return error(res, '无权访问', 403);
+    if (!conv) return error(res, '会话不存在', 404, 404);
+    if (!await canAccessConversation(req, conv)) return error(res, '无权访问', 403, 403);
 
     const keyword = String(req.query.keyword || '').trim().slice(0, 100);
     if (!keyword) return ok(res, { items: [], total: 0 });
@@ -431,8 +481,8 @@ class ChatController {
   // GET /api/tenant/conversations/:id/messages
   async getMessages(req, res) {
     const conv = await Conversation.findOne({ _id: req.params.id, tenantId: req.tenantId });
-    if (!conv) return error(res, '会话不存在', 404);
-    if (!await canAccessConversation(req, conv)) return error(res, '无权访问', 403);
+    if (!conv) return error(res, '会话不存在', 404, 404);
+    if (!await canAccessConversation(req, conv)) return error(res, '无权访问', 403, 403);
     
     const beforeId = req.query.before;
     const afterId = req.query.after;
@@ -452,6 +502,7 @@ class ChatController {
           { createdAt: cursor.createdAt, _id: { $gt: cursor._id } },
         ],
       }).populate({ path: 'senderId', select: 'displayName avatarUrl' }).sort({ createdAt: 1, _id: 1 }).limit(limit);
+      await markAgentConversationRead(req, conv);
       return ok(res, messages.map(message => {
         const obj = message.toJSON();
         if (message.senderType === 'agent' && message.senderId) {
@@ -470,7 +521,7 @@ class ChatController {
         tenantId: req.tenantId,
         deletedForAgentAt: null,
       });
-      if (!target) return error(res, '消息不存在或已被清理', 404);
+      if (!target) return error(res, '消息不存在或已被清理', 404, 404);
 
       const half = Math.floor(limit / 2);
       const [older, newer] = await Promise.all([
@@ -489,6 +540,7 @@ class ChatController {
       ]);
       await target.populate({ path: 'senderId', select: 'displayName avatarUrl' });
       const locatedMessages = [...older.reverse(), target, ...newer];
+      await markAgentConversationRead(req, conv);
       return ok(res, locatedMessages.map(message => {
         const obj = message.toJSON();
         if (message.senderType === 'agent' && message.senderId) {
@@ -535,8 +587,8 @@ class ChatController {
   // POST /api/tenant/conversations/:id/messages
   async agentSendMessage(req, res) {
     let conv = await Conversation.findOne({ _id: req.params.id, tenantId: req.tenantId });
-    if (!conv) return error(res, '会话不存在', 404);
-    if (!await canAccessConversation(req, conv)) return error(res, '无权访问', 403);
+    if (!conv) return error(res, '会话不存在', 404, 404);
+    if (!await canAccessConversation(req, conv)) return error(res, '无权访问', 403, 403);
     
     // 必须已接入
     if (conv.status !== 'active') {
@@ -598,7 +650,7 @@ class ChatController {
         senderId: agent._id,
         senderTypeModel: 'TenantUser',
         messageType: effectiveType,
-        content: attachment ? '' : (content || '').trim(),
+        content: (content || '').trim(),
         attachmentUrl: attachment ? '' : (attachmentUrl || ''),
         attachmentName: attachment ? attachment.originalName : (attachmentName || ''),
         thumbnailUrl: attachment ? '' : (effectiveType === 'video' ? (thumbnailUrl || '') : ''),
@@ -646,7 +698,7 @@ class ChatController {
       lastMessage: messageData,
       lastMessageAt: conv.lastMessageAt,
       customerUnreadCount: conv.customerUnreadCount,
-    });
+    }, true);
     
     // Socket 推送
     if (io) {
@@ -776,8 +828,8 @@ class ChatController {
   // POST /api/tenant/conversations/:id/close
   async closeConversation(req, res) {
     const conv = await Conversation.findOne({ _id: req.params.id, tenantId: req.tenantId });
-    if (!conv) return error(res, '会话不存在', 404);
-    if (!await canModifyConversation(req, conv)) return error(res, '无权操作', 403);
+    if (!conv) return error(res, '会话不存在', 404, 404);
+    if (!await canModifyConversation(req, conv)) return error(res, '无权操作', 403, 403);
     if (conv.status === 'closed') return ok(res, conv.toJSON(), '已关闭');
 
     const previousAudience = io ? tenantConversationRoom(conv) : null;
@@ -810,7 +862,7 @@ class ChatController {
       lastMessage: closedMessage.toJSON(),
       lastMessageAt: closed.lastMessageAt,
       customerUnreadCount: closed.customerUnreadCount,
-    });
+    }, true);
 
     if (io) {
       const closedData = {
@@ -1166,7 +1218,7 @@ class ChatController {
       lastMessage: (replyMsg || msg).toJSON(),
       lastMessageAt: conv.lastMessageAt,
       customerUnreadCount: conv.customerUnreadCount,
-    });
+    }, Boolean(replyMsg));
     
     // Socket 推送
     if (io) {

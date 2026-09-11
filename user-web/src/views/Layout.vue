@@ -1,5 +1,6 @@
 <!-- 忆梦云团队开发 - 桌面端：可折叠侧边栏布局 -->
 <script setup>
+import { clearTenantSession, readTenantCache } from '../api'
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
@@ -7,8 +8,8 @@ import { clearIdentityCache, tenantIdentityScope } from '../chatCache'
 
 const router = useRouter()
 const route = useRoute()
-const user = ref(JSON.parse(sessionStorage.getItem('tenant_user') || localStorage.getItem('tenant_user') || 'null'))
-const tenant = JSON.parse(sessionStorage.getItem('tenant_info') || localStorage.getItem('tenant_info') || 'null')
+const user = ref(readTenantCache('tenant_user'))
+const tenant = readTenantCache('tenant_info')
 
 // 侧边栏折叠状态（仅桌面端，且不是消息中心时才会隐藏）
 const collapsed = ref(localStorage.getItem('layout_sidebar_collapsed') === '1')
@@ -34,11 +35,8 @@ function active(path) {
 async function logout() {
   showLogoutConfirm.value = false
   const identityScope = tenantIdentityScope()
-  const storage = sessionStorage.getItem('tenant_token') ? sessionStorage : localStorage
   await clearIdentityCache(identityScope)
-  storage.removeItem('tenant_token')
-  storage.removeItem('tenant_user')
-  storage.removeItem('tenant_info')
+  clearTenantSession()
   router.replace('/login')
 }
 

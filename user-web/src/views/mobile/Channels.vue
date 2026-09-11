@@ -1,5 +1,6 @@
 <!-- 忆梦云团队开发 - 手机端渠道列表独立视图 -->
 <script setup>
+import { readTenantCache } from '../../api'
 import { computed, ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../../api'
@@ -7,7 +8,7 @@ import { buildCustomerServiceUrl, copyText } from '../../clipboard'
 import ConfirmDialog from '../../components/ConfirmDialog.vue'
 
 const router = useRouter()
-const user = JSON.parse(sessionStorage.getItem('tenant_user') || localStorage.getItem('tenant_user') || 'null')
+const user = readTenantCache('tenant_user')
 const isAdmin = computed(() => ['owner', 'admin'].includes(user?.role))
 const channels = ref([])
 const loading = ref(true)

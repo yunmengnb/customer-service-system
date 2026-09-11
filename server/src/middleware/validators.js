@@ -116,14 +116,25 @@ const tenantLogin = [
   validate,
 ];
 
-// 创建员工
+// 字符串类型必须在 trim 之前验证，避免数组/数字被隐式转换。
+function employeeFields(partial = false) {
+  return [
+    ...[['username', 3, 50], ['displayName', 1, 50]].map(([field, min, max]) => {
+      const chain = body(field);
+      if (partial) chain.optional();
+      return chain.isString().bail().trim().isLength({ min, max });
+    }),
+    body('role').optional().isString().bail().isIn(['admin', 'agent']),
+    body('status').optional().isString().bail().isIn(['active', 'disabled']),
+    body('avatarUrl').optional().isString(),
+  ];
+}
 const createAgent = [
-  body('username').trim().notEmpty().withMessage('用户名不能为空').isLength({ min: 3 }).withMessage('用户名至少3位'),
-  body('displayName').trim().notEmpty().withMessage('显示名不能为空'),
-  body('password').notEmpty().withMessage('密码不能为空').isLength({ min: 6 }).withMessage('密码至少6位'),
-  body('role').optional().isIn(['admin', 'agent']).withMessage('角色无效'),
+  ...employeeFields(),
+  body('password').isString().bail().isLength({ min: 6, max: 72 }),
   validate,
 ];
+const updateAgent = [...employeeFields(true), validate];
 
 // 访客进入/恢复
 const customerGuest = [
@@ -191,6 +202,23 @@ const createChannel = [
   validate,
 ];
 
+// PATCH 只校验提交字段；合并后的正文/图片非空由控制器校验。
+function replyFields(keyword, partial = false) {
+  const title = body(keyword ? 'keyword' : 'title');
+  if (partial) title.optional();
+  return [
+    title.isString().bail().trim().isLength({ min: 1, max: keyword ? 100 : 50 }),
+    body(keyword ? 'replyContent' : 'content').optional().isString().bail().isLength({ max: 500 }),
+    body('imageUrl').optional().isString(),
+    body('imageName').optional().isString().bail().isLength({ max: 255 }),
+    body('status').optional().isString().bail().isIn(['active', 'disabled']),
+    body(keyword ? 'priority' : 'sortOrder').optional().custom(Number.isSafeInteger),
+    ...(keyword ? [body('matchType').optional().isString().bail().isIn(['exact', 'contains'])] : []),
+  ];
+}
+const updateKeywordReply = [...replyFields(true, true), validate];
+const updateQuickReply = [...replyFields(false, true), validate];
+
 // 关键词回复
 const keywordReply = [
   body('keyword').trim().notEmpty().withMessage('关键词不能为空').isLength({ max: 100 }),
@@ -226,6 +254,7 @@ module.exports = {
   tenantEmail,
   tenantPassword,
   createAgent,
+  updateAgent,
   customerGuest,
   customerLogin,
   customerRegisterCode,
@@ -235,4 +264,6 @@ module.exports = {
   createChannel,
   keywordReply,
   quickReply,
+  updateKeywordReply,
+  updateQuickReply,
 };

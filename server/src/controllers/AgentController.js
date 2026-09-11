@@ -1,6 +1,40 @@
 // 忆梦云团队开发
 const TenantUser = require('../models/TenantUser');
 const Tenant = require('../models/Tenant');
+const Channel = require('../models/Channel');
+const Conversation = require('../models/Conversation');
+const cache = require('../utils/cache');
+
+async function releaseEmployee(req, user) {
+  const tenantId = req.tenantId;
+  const channels = await Channel.find({ tenantId, agentIds: user._id }).select('publicToken');
+  await Channel.updateMany({ tenantId, agentIds: user._id }, { $pull: { agentIds: user._id } });
+  await cache.remove(...channels.map(channel => `config:channel:token:${channel.publicToken}`));
+  const scope = { tenantId, assignedAgentId: user._id, status: { $in: ['active', 'waiting'] } };
+  const conversations = await Conversation.find(scope);
+  const io = req.app.get('io');
+  for (const conv of conversations) {
+    const updated = await Conversation.findOneAndUpdate({ ...scope, _id: conv._id },
+      { $set: { status: 'waiting', assignedAgentId: null, acceptedAt: null, closedAt: null } }, { new: true });
+    if (!updated || !io) continue;
+    const data = { conversationId: conv._id, status: 'waiting', assignedAgentId: null, acceptedAt: null, agent: null };
+    io.to(`tenant-${tenantId}`).to(`channel-staff-${conv.channelId}`).to(`agent-${user._id}`).to(`customer-${conv.customerId}`).emit('conversation.updated', data);
+  }
+  io?.in(`agent-${user._id}`).disconnectSockets(true);
+}
+
+function invalidEmployee(body, creating = false) {
+  for (const [field, min, max] of [['username', 3, 50], ['displayName', 1, 50]]) {
+    if (creating || body[field] !== undefined) {
+      if (typeof body[field] !== 'string' || body[field].trim().length < min || body[field].trim().length > max) return `${field}须为${min}-${max}位字符串`;
+    }
+  }
+  if (body.role !== undefined && !['admin', 'agent'].includes(body.role)) return '角色无效';
+  if (body.status !== undefined && !['active', 'disabled'].includes(body.status)) return '状态无效';
+  if (body.avatarUrl !== undefined && typeof body.avatarUrl !== 'string') return '头像格式无效';
+  if (creating && (typeof body.password !== 'string' || body.password.length < 6 || body.password.length > 72)) return '密码须为6-72位';
+  return '';
+}
 const { ok, error, hashPassword, signToken, passwordVersion } = require('../utils');
 const { recordOperation } = require('../services/auditLogService');
 
@@ -15,7 +49,11 @@ class AgentController {
   // POST /api/tenant/employees
   async create(req, res) {
     const { tenantId } = req;
-    const { username, displayName, password, role = 'agent' } = req.body;
+    const invalid = invalidEmployee(req.body, true);
+    if (invalid) return error(res, invalid);
+    const { password, role = 'agent' } = req.body;
+    const username = req.body.username.trim();
+    const displayName = req.body.displayName.trim();
     
     // 数量限制
     const tenant = await Tenant.findById(tenantId);
@@ -32,14 +70,20 @@ class AgentController {
       return error(res, '用户名已存在');
     }
     
-    const user = await TenantUser.create({
+    let user;
+    try {
+      user = await TenantUser.create({
       tenantId,
       username,
       password: hashPassword(password),
       displayName,
       role,
-      status: 'active',
-    });
+      status: req.body.status || 'active',
+      });
+    } catch (err) {
+      if (err?.code === 11000) return error(res, '用户名已存在', 409, 409);
+      throw err;
+    }
     
     recordOperation({ req, tenantId, user: req.user, action: 'employee_create', detail: `新增员工「${displayName || username}」` });
     return ok(res, user.toJSON());
@@ -50,9 +94,11 @@ class AgentController {
     const { tenantId } = req;
     const { id } = req.params;
     const user = await TenantUser.findOne({ _id: id, tenantId });
-    if (!user) return error(res, '员工不存在', 404);
+    if (!user) return error(res, '员工不存在', 404, 404);
     if (user.role === 'owner') return error(res, '不能修改所有者账号');
 
+    const invalid = invalidEmployee(req.body);
+    if (invalid) return error(res, invalid);
     if (req.body.username !== undefined && req.body.username !== user.username) {
       const username = String(req.body.username).trim();
       if (username.length < 3) return error(res, '用户名至少3位');
@@ -66,11 +112,13 @@ class AgentController {
     if (req.body.status !== undefined && ['active', 'disabled'].includes(req.body.status)) user.status = req.body.status;
     if (req.body.avatarUrl !== undefined) user.avatarUrl = req.body.avatarUrl;
     
-    await user.save();
-    // 禁用员工后立即断开其连接，重连时会因状态非 active 而被拒绝
-    if (user.status === 'disabled') {
-      req.app.get('io')?.in(`agent-${user._id}`).disconnectSockets(true);
+    try {
+      await user.save();
+    } catch (err) {
+      if (err?.code === 11000) return error(res, '用户名已存在', 409, 409);
+      throw err;
     }
+    if (user.status === 'disabled') await releaseEmployee(req, user);
     recordOperation({ req, tenantId, user: req.user, action: 'employee_update', detail: `修改员工「${user.displayName || user.username}」` });
     return ok(res, user.toJSON());
   }
@@ -80,7 +128,7 @@ class AgentController {
     const { tenantId } = req;
     const { id } = req.params;
     const user = await TenantUser.findOne({ _id: id, tenantId });
-    if (!user) return error(res, '员工不存在', 404);
+    if (!user) return error(res, '员工不存在', 404, 404);
     
     if (user.role === 'owner') {
       return error(res, '不能删除所有者账号');
@@ -89,9 +137,9 @@ class AgentController {
       return error(res, '不能删除当前登录账号');
     }
     
-    await TenantUser.deleteOne({ _id: id });
-    // 删除员工后立即断开其连接，避免旧 Socket 继续接收消息
-    req.app.get('io')?.in(`agent-${id}`).disconnectSockets(true);
+    await TenantUser.deleteOne({ _id: id, tenantId });
+    await releaseEmployee(req, user);
+    // releaseEmployee 已断开旧连接。
     recordOperation({ req, tenantId, user: req.user, action: 'employee_delete', detail: `删除员工「${user.displayName || user.username}」` });
     return ok(res, null, '已删除');
   }
@@ -102,12 +150,12 @@ class AgentController {
     const { id } = req.params;
     const { password } = req.body;
     
-    if (!password || password.length < 6) {
+    if (typeof password !== 'string' || password.length < 6 || password.length > 72) {
       return error(res, '密码至少6位');
     }
     
     const user = await TenantUser.findOne({ _id: id, tenantId });
-    if (!user) return error(res, '员工不存在', 404);
+    if (!user) return error(res, '员工不存在', 404, 404);
     if (user.role === 'owner') return error(res, '不能重置所有者密码');
     
     user.password = hashPassword(password);

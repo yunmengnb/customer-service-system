@@ -1,5 +1,6 @@
 <!-- 忆梦云团队开发 - 桌面端渠道详情独立视图 -->
 <script setup>
+import { readTenantCache } from '../../api'
 import { ref, onMounted, reactive, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '../../api'
@@ -10,7 +11,7 @@ const props = defineProps({ channelId: String, embedded: Boolean })
 const emit = defineEmits(['close', 'saved'])
 const route = useRoute()
 const currentChannelId = computed(() => props.channelId || route.params.id)
-const user = JSON.parse(sessionStorage.getItem('tenant_user') || localStorage.getItem('tenant_user') || 'null')
+const user = readTenantCache('tenant_user')
 const isAdmin = computed(() => ['owner', 'admin'].includes(user?.role))
 const channel = ref(null)
 const loading = ref(true)

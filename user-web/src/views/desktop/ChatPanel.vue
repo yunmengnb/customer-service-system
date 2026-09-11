@@ -1,5 +1,6 @@
 <!-- 忆梦云团队开发 - 桌面端聊天展示组件独立实现 -->
 <script setup>
+import { readTenantCache } from '../../api'
 import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import api from '../../api'
 import ConfirmDialog from '../../components/ConfirmDialog.vue'
@@ -53,7 +54,7 @@ let longPressTimer = null
 let longPressStart = null
 let suppressBubbleClickUntil = 0
 
-const currentUserId = JSON.parse(sessionStorage.getItem('tenant_user') || localStorage.getItem('tenant_user') || 'null')?._id
+const currentUserId = readTenantCache('tenant_user')?._id
 const cacheScope = tenantCacheScope()
 const persistMessages = () => cacheMessages(cacheScope, props.conversationId, messages.value)
 const canDeleteMessage = (msg) => msg.senderType !== 'system' && msg._id
@@ -159,7 +160,7 @@ async function accept() {
       accepted.value = true
       conversation.value.status = 'active'
       conversation.value.assignedAgentId = res.data.assignedAgentId || currentUserId
-      const currentUser = JSON.parse(sessionStorage.getItem('tenant_user') || localStorage.getItem('tenant_user') || 'null')
+      const currentUser = readTenantCache('tenant_user')
       assignedAgentName.value = currentUser?.displayName || ''
       assignedAgentUsername.value = currentUser?.username || ''
     } else alert(res.message)
@@ -618,6 +619,7 @@ function applyRecall(data) {
   if (String(data.conversationId) !== String(props.conversationId)) return
   const msg = messages.value.find(item => String(item._id) === String(data.messageId))
   if (msg) {
+    releaseAttachmentUrls(msg)
     Object.assign(msg, { recalledAt: data.recalledAt, attachmentStatus: 'recalled', content: '', attachmentUrl: '', attachmentName: '', thumbnailUrl: '' })
     invalidateAttachment(cacheScope, msg.attachmentId, 'recalled')
     persistMessages()

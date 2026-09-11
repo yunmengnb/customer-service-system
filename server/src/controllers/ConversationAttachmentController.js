@@ -98,7 +98,7 @@ async function resolveConversation(req, client) {
 
 async function upload(req, res, client) {
   const settings = await getSystemSettings();
-  const maxFileSizeMB = Math.min(Number(settings.upload.maxFileSizeMB) || 10, 50);
+  const maxFileSizeMB = Math.min(Math.max(Number(settings.upload.maxFileSizeMB) || 10, 1), 1024);
   const parser = multer({ storage: multer.memoryStorage(), limits: { fileSize: maxFileSizeMB * 1024 * 1024 } }).single('file');
   parser(req, res, async parseError => {
     if (parseError) return error(res, parseError.code === 'LIMIT_FILE_SIZE' ? `文件大小不能超过 ${maxFileSizeMB}MB` : '文件上传失败', 4001, 400);

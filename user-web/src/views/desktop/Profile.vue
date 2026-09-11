@@ -1,5 +1,6 @@
 <!-- 忆梦云团队开发 - 电脑端用户资料管理 -->
 <script setup>
+import { readTenantCache } from '../../api'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../../api'
@@ -100,7 +101,7 @@ async function updateEmail() {
     tenant.email = res.data.email
     emailForm.emailCode = ''
     const storage = sessionStorage.getItem('tenant_token') ? sessionStorage : localStorage
-    storage.setItem('tenant_info', JSON.stringify({ ...JSON.parse(storage.getItem('tenant_info') || '{}'), ...res.data }))
+    storage.setItem('tenant_info', JSON.stringify({ ...readTenantCache('tenant_info', {}), ...res.data }))
     showNotice('success', res.message)
   } catch (error) { showNotice('error', error?.message || '邮箱修改失败')
   } finally { saving.value = false }

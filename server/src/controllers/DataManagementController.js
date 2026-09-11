@@ -140,8 +140,8 @@ class DataManagementController {
   async exportData(req, res) {
     const type = String(req.query.type || 'tenants');
     const format = String(req.query.format || 'csv').toLowerCase();
-    if (!EXPORT_TYPES.includes(type)) return error(res, '不支持的导出类型', 400);
-    if (!['csv', 'json'].includes(format)) return error(res, '不支持的导出格式', 400);
+    if (!EXPORT_TYPES.includes(type)) return error(res, '不支持的导出类型', 400, 400);
+    if (!['csv', 'json'].includes(format)) return error(res, '不支持的导出格式', 400, 400);
 
     let headers;
     let rows;

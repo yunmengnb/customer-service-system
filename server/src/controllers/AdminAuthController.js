@@ -9,13 +9,13 @@ class AdminAuthController {
     
     const admin = await PlatformAdmin.findOne({ username });
     if (!admin) {
-      return error(res, '账号或密码错误', 401);
+      return error(res, '账号或密码错误', 401, 401);
     }
     if (admin.status !== 'active') {
-      return error(res, '账号已被禁用', 403);
+      return error(res, '账号已被禁用', 403, 403);
     }
     if (admin.lockedUntil && admin.lockedUntil > new Date()) {
-      return error(res, '账号已被锁定，请稍后再试', 423);
+      return error(res, '账号已被锁定，请稍后再试', 423, 423);
     }
     
     const matched = comparePassword(password, admin.password);
@@ -27,7 +27,7 @@ class AdminAuthController {
         admin.loginAttempts = 0;
       }
       await admin.save();
-      return error(res, '账号或密码错误', 401);
+      return error(res, '账号或密码错误', 401, 401);
     }
     
     // 登录成功
@@ -53,11 +53,12 @@ class AdminAuthController {
   // PATCH /api/admin/auth/profile
   async updateProfile(req, res) {
     const admin = await PlatformAdmin.findById(req.admin.id);
-    if (!admin || admin.status !== 'active') return error(res, '账号不存在或已禁用', 404);
+    if (!admin || admin.status !== 'active') return error(res, '账号不存在或已禁用', 404, 404);
 
     const { username, email, avatarUrl, currentPassword, newPassword } = req.body || {};
-    const nextUsername = String(username || '').trim();
-    const nextEmail = String(email || '').trim().toLowerCase();
+    if ([username, email, avatarUrl].some(value => value !== undefined && typeof value !== 'string')) return error(res, '资料字段格式无效');
+    const nextUsername = username === undefined ? admin.username : username.trim();
+    const nextEmail = email === undefined ? admin.email : email.trim().toLowerCase();
     if (nextUsername.length < 3 || nextUsername.length > 50) return error(res, '管理员账号须为 3-50 位');
     if (!/^\S+@\S+\.\S+$/.test(nextEmail)) return error(res, '邮箱格式不正确');
 
@@ -75,7 +76,7 @@ class AdminAuthController {
 
     admin.username = nextUsername;
     admin.email = nextEmail;
-    admin.avatarUrl = String(avatarUrl || '').trim();
+    if (avatarUrl !== undefined) admin.avatarUrl = avatarUrl.trim();
     await admin.save();
 
     const token = signToken({
@@ -94,7 +95,7 @@ class AdminAuthController {
   async me(req, res) {
     const admin = await PlatformAdmin.findById(req.admin.id);
     if (!admin || admin.status !== 'active') {
-      return error(res, '账号不存在或已禁用', 404);
+      return error(res, '账号不存在或已禁用', 404, 404);
     }
     return ok(res, admin.toJSON());
   }

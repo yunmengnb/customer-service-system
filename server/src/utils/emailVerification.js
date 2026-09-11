@@ -52,7 +52,7 @@ async function verifyEmailCode({ scope, email, code, consume = true }) {
     && verification.codeHash.length === submittedHash.length
     && crypto.timingSafeEqual(Buffer.from(verification.codeHash), Buffer.from(submittedHash))
   );
-  if (valid && consume) await cache.remove(key);
+  if (valid && consume) return cache.consumeMatchingJson(key, submittedHash);
   return valid;
 }
 

@@ -370,7 +370,7 @@ public class MainActivity extends AppCompatActivity {
                         (dialog, which) -> startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(downloadUrl))));
         if (!forceUpdate) builder.setNegativeButton(R.string.update_later, null);
         activeUpdateDialog = builder.create();
-        activeUpdateDialog.setCancelable(false);
+        activeUpdateDialog.setCancelable(!forceUpdate);
         activeUpdateDialog.setCanceledOnTouchOutside(false);
         activeUpdateDialog.setOnDismissListener(dialog -> activeUpdateDialog = null);
         activeUpdateDialog.show();

@@ -98,7 +98,7 @@ async function validatePendingAttachment({ attachmentId, tenantId, channelId, co
     || (messageType === 'file' && attachment.category === 'audio');
   if (!categoryMatches) throw new Error('附件类型与消息类型不匹配');
   const settings = await getSystemSettings();
-  const maxFileSizeMB = Math.min(Number(settings.upload.maxFileSizeMB) || 10, 50);
+  const maxFileSizeMB = Math.min(Math.max(Number(settings.upload.maxFileSizeMB) || 10, 1), 1024);
   const allowedTypes = Array.isArray(settings.upload.allowedTypes) ? settings.upload.allowedTypes : [];
   if (attachment.size > maxFileSizeMB * 1024 * 1024) throw new Error('附件超过当前大小限制');
   if (!allowedTypes.includes(attachment.extension)) throw new Error('附件类型已被系统设置禁用');

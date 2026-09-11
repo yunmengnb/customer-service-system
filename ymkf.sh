@@ -65,7 +65,16 @@ read_env() {
 port_in_use() {
   local port="$1" current="$2"
   [ "$port" = "$current" ] && return 1
-  command_exists ss && ss -lnt "sport = :$port" 2>/dev/null | awk 'NR > 1 { found=1 } END { exit !found }'
+  local listeners
+  if command_exists ss; then
+    listeners=$(ss -lnt "sport = :$port" 2>/dev/null) || die "ss 端口检测失败"
+    [[ "$listeners" == *LISTEN* ]]
+  elif command_exists netstat; then
+    listeners=$(netstat -lnt 2>/dev/null) || die "netstat 端口检测失败"
+    printf '%s\n' "$listeners" | awk -v port="$port" '$6 == "LISTEN" && $4 ~ (":" port "$") { found=1 } END { exit !found }'
+  else
+    die "无法检测端口：请安装 iproute2（ss）或 net-tools（netstat）"
+  fi
 }
 wait_for_health() {
   local server_id status

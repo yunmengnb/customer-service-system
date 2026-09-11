@@ -140,8 +140,62 @@ async function authCustomer(req, res, next) {
       req.tenantId = payload.tenantId;
       return next();
     }
-    const legacyBinding = !payload.accountId && payload.id ? await Customer.findById(payload.id).select('accountId') : null;
-    const accountId = payload.accountId || legacyBinding?.accountId;
+    let legacyBinding = null;
+    let accountId = payload.accountId;
+    if (!accountId && payload.id) {
+      legacyBinding = await Customer.findOne({
+        _id: payload.id,
+        tenantId: payload.tenantId,
+        channelId: payload.channelId,
+        identityType: 'customer',
+        status: 'active',
+        blocked: false,
+      });
+      accountId = legacyBinding?.accountId;
+      if (legacyBinding && !accountId) {
+        let migrated = await CustomerAccount.findOne({ phone: legacyBinding.phone });
+        if (!migrated) {
+          const accountData = {
+            phone: legacyBinding.phone,
+            password: legacyBinding.password,
+            qq: legacyBinding.qq,
+            email: legacyBinding.email,
+            nickname: legacyBinding.nickname,
+            avatarUrl: legacyBinding.avatarUrl,
+            registerIp: legacyBinding.registerIp,
+            registerUserAgent: legacyBinding.registerUserAgent,
+            registerFingerprintHash: legacyBinding.registerFingerprintHash,
+            lastLoginIp: legacyBinding.lastLoginIp,
+            lastLoginAt: legacyBinding.lastLoginAt,
+            status: legacyBinding.status,
+          };
+          try {
+            migrated = await CustomerAccount.create(accountData);
+          } catch (err) {
+            if (err?.code !== 11000) throw err;
+            migrated = await CustomerAccount.findOne({ phone: legacyBinding.phone });
+            if (!migrated && legacyBinding.email) {
+              accountData.email = '';
+              try {
+                migrated = await CustomerAccount.create(accountData);
+              } catch (retryErr) {
+                if (retryErr?.code !== 11000) throw retryErr;
+                migrated = await CustomerAccount.findOne({ phone: legacyBinding.phone });
+              }
+            }
+          }
+        }
+        // 旧 JWT 无法证明现有全局账户的密码；仅接受完全相同的迁移凭据。
+        if (migrated && (!legacyBinding.password || migrated.password !== legacyBinding.password)) {
+          return error(res, '账号凭据已变更，请重新登录', 4012, 401);
+        }
+        if (migrated) {
+          legacyBinding.accountId = migrated._id;
+          await legacyBinding.save();
+          accountId = migrated._id;
+        }
+      }
+    }
     const account = await CustomerAccount.findOne({ _id: accountId, status: 'active' }).select('_id password');
     if (!account) return error(res, '账号已被禁用或不存在', 4032, 403);
     if (payload.pv && passwordVersion(account.password) !== payload.pv) {

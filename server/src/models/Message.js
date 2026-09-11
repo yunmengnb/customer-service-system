@@ -112,6 +112,8 @@ function applyAttachmentUrls(obj) {
   return obj;
 }
 
+MessageSchema.statics.applyAttachmentUrls = applyAttachmentUrls;
+
 MessageSchema.set('toJSON', {
   transform(doc, ret) {
     return applyAttachmentUrls(ret);

@@ -1,5 +1,6 @@
 <!-- 忆梦云团队开发 - 移动端：底部 4 Tab + 企业微信风格 -->
 <script setup>
+import { clearTenantSession, readTenantCache } from '../api'
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
@@ -7,7 +8,7 @@ import { clearIdentityCache, tenantIdentityScope } from '../chatCache'
 
 const route = useRoute()
 const router = useRouter()
-const user = JSON.parse(sessionStorage.getItem('tenant_user') || localStorage.getItem('tenant_user') || 'null')
+const user = readTenantCache('tenant_user')
 const showLogoutConfirm = ref(false)
 
 const tabs = computed(() => [
@@ -48,11 +49,8 @@ function go(tab) {
 async function logout() {
   showLogoutConfirm.value = false
   const identityScope = tenantIdentityScope()
-  const storage = sessionStorage.getItem('tenant_token') ? sessionStorage : localStorage
   await clearIdentityCache(identityScope)
-  storage.removeItem('tenant_token')
-  storage.removeItem('tenant_user')
-  storage.removeItem('tenant_info')
+  clearTenantSession()
   router.push('/login')
 }
 

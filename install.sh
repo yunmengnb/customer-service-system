@@ -97,7 +97,19 @@ ask_secret() {
 
 valid_port() { [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
 escape_env() { printf '%s' "$1" | tr -d '\r\n'; }
-port_in_use() { command_exists ss && ss -lnt "sport = :$1" 2>/dev/null | grep -q LISTEN; }
+port_in_use() {
+  local port="$1"
+  local listeners
+  if command_exists ss; then
+    listeners=$(ss -lnt "sport = :$port" 2>/dev/null) || die "ss 端口检测失败"
+    [[ "$listeners" == *LISTEN* ]]
+  elif command_exists netstat; then
+    listeners=$(netstat -lnt 2>/dev/null) || die "netstat 端口检测失败"
+    printf '%s\n' "$listeners" | awk -v port="$port" '$6 == "LISTEN" && $4 ~ (":" port "$") { found=1 } END { exit !found }'
+  else
+    die "无法检测端口：请安装 iproute2（ss）或 net-tools（netstat）"
+  fi
+}
 dc() { $SUDO docker compose "$@"; }
 
 install_docker

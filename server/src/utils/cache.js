@@ -59,6 +59,23 @@ async function consumeJson(key) {
   return value;
 }
 
+// 原子比较后删除：错误验证码不消费，Redis 异常不回退已失去一致性的缓存。
+async function consumeMatchingJson(key, expected) {
+  const redis = getRedis();
+  if (redis) {
+    const value = await redis.sendCommand([
+      'EVAL',
+      "local v = redis.call('GET', KEYS[1]); if not v then return 0 end; local ok, obj = pcall(cjson.decode, v); if not ok or type(obj) ~= 'table' or obj.codeHash ~= ARGV[1] then return 0 end; redis.call('DEL', KEYS[1]); return 1",
+      '1', key, expected,
+    ]);
+    return Number(value) === 1;
+  }
+  const value = readMemory(key);
+  if (!value || value.codeHash !== expected) return false;
+  memoryCache.delete(key);
+  return true;
+}
+
 async function remove(...keys) {
   const filtered = keys.filter(Boolean);
   if (!filtered.length) return;
@@ -73,4 +90,4 @@ async function remove(...keys) {
   }
 }
 
-module.exports = { getJson, setJson, consumeJson, remove };
+module.exports = { getJson, setJson, consumeJson, consumeMatchingJson, remove };

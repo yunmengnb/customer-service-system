@@ -14,7 +14,11 @@ api.upload = function(url, formData) {
 api.interceptors.response.use(
   res => res.data,
   err => {
-    if (err.response?.status === 401) localStorage.removeItem('admin_token')
+    if (err.response?.status === 401) {
+      localStorage.removeItem('admin_token')
+      localStorage.removeItem('admin_info')
+      if (window.location.pathname !== '/login') window.location.replace('/login')
+    }
     return Promise.reject(err.response?.data || err)
   }
 )

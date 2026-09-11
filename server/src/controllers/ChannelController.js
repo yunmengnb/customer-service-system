@@ -91,7 +91,7 @@ class ChannelController {
   // GET /api/tenant/channels/:id
   async detail(req, res) {
     const channel = await Channel.findOne(channelScope(req, req.params.id));
-    if (!channel) return error(res, '渠道不存在或无权访问', 404);
+    if (!channel) return error(res, '渠道不存在或无权访问', 404, 404);
     const obj = channel.toJSON();
     const settings = await getSystemSettings();
     obj.link = buildCustomerServiceLink(settings, channel.publicToken);
@@ -107,7 +107,7 @@ class ChannelController {
   // PATCH /api/tenant/channels/:id
   async update(req, res) {
     const channel = await Channel.findOne(channelScope(req, req.params.id));
-    if (!channel) return error(res, '渠道不存在或无权访问', 404);
+    if (!channel) return error(res, '渠道不存在或无权访问', 404, 404);
     
     const allowed = req.user.role === 'agent'
       ? ['brandName', 'brandColor', 'avatarUrl', 'welcomeMessage', 'welcomeImageUrl', 'welcomeImageName', 'offlineMessage']
@@ -124,7 +124,7 @@ class ChannelController {
   // POST /api/tenant/channels/:id/rotate-token
   async rotateToken(req, res) {
     const channel = await Channel.findOne({ _id: req.params.id, tenantId: req.tenantId });
-    if (!channel) return error(res, '渠道不存在', 404);
+    if (!channel) return error(res, '渠道不存在', 404, 404);
     
     const oldToken = channel.publicToken;
     channel.publicToken = generateToken(24);
@@ -141,7 +141,7 @@ class ChannelController {
   // DELETE /api/tenant/channels/:id
   async delete(req, res) {
     const channel = await Channel.findOne({ _id: req.params.id, tenantId: req.tenantId });
-    if (!channel) return error(res, '渠道不存在', 404);
+    if (!channel) return error(res, '渠道不存在', 404, 404);
     
     await Channel.deleteOne({ _id: channel._id });
     await Promise.all([
@@ -160,7 +160,7 @@ class ChannelController {
   // PUT /api/tenant/channels/:id/employees
   async setAgents(req, res) {
     const channel = await Channel.findOne({ _id: req.params.id, tenantId: req.tenantId });
-    if (!channel) return error(res, '渠道不存在', 404);
+    if (!channel) return error(res, '渠道不存在', 404, 404);
     
     const { employeeIds } = req.body;
     if (!Array.isArray(employeeIds)) return error(res, 'employeeIds 必须是数组');
@@ -197,7 +197,7 @@ class ChannelController {
   async listKeywordReplies(req, res) {
     const { channelId } = req.params;
     const channel = await Channel.findOne(channelScope(req, channelId));
-    if (!channel) return error(res, '渠道不存在或无权访问', 404);
+    if (!channel) return error(res, '渠道不存在或无权访问', 404, 404);
     
     const key = keywordListCacheKey(req.tenantId, channelId);
     let items = await cache.getJson(key);
@@ -213,7 +213,7 @@ class ChannelController {
   async createKeywordReply(req, res) {
     const { channelId } = req.params;
     const channel = await Channel.findOne(channelScope(req, channelId));
-    if (!channel) return error(res, '渠道不存在或无权访问', 404);
+    if (!channel) return error(res, '渠道不存在或无权访问', 404, 404);
     
     const { keyword, matchType, replyContent, imageUrl, imageName, priority, status } = req.body;
     if (!String(replyContent || '').trim() && !String(imageUrl || '').trim()) {
@@ -236,9 +236,9 @@ class ChannelController {
   
   async updateKeywordReply(req, res) {
     const channel = await Channel.findOne(channelScope(req, req.params.channelId));
-    if (!channel) return error(res, '渠道不存在或无权访问', 404);
+    if (!channel) return error(res, '渠道不存在或无权访问', 404, 404);
     const item = await KeywordReply.findOne({ _id: req.params.krId, channelId: req.params.channelId, tenantId: req.tenantId });
-    if (!item) return error(res, '配置不存在', 404);
+    if (!item) return error(res, '配置不存在', 404, 404);
     
     const { keyword, matchType, replyContent, imageUrl, imageName, priority, status } = req.body;
     if (keyword !== undefined && !String(keyword).trim()) return error(res, '关键词不能为空');
@@ -257,9 +257,9 @@ class ChannelController {
   
   async deleteKeywordReply(req, res) {
     const channel = await Channel.findOne(channelScope(req, req.params.channelId));
-    if (!channel) return error(res, '渠道不存在或无权访问', 404);
+    if (!channel) return error(res, '渠道不存在或无权访问', 404, 404);
     const result = await KeywordReply.deleteOne({ _id: req.params.krId, channelId: req.params.channelId, tenantId: req.tenantId });
-    if (result.deletedCount === 0) return error(res, '配置不存在', 404);
+    if (result.deletedCount === 0) return error(res, '配置不存在', 404, 404);
     await invalidateKeywordReplies(req.tenantId, req.params.channelId);
     return ok(res, null, '已删除');
   }
@@ -271,7 +271,7 @@ class ChannelController {
     const channelWhere = { _id: channelId, tenantId: req.tenantId };
     if (req.user.role === 'agent') channelWhere.agentIds = req.user.id;
     const channel = await Channel.findOne(channelWhere);
-    if (!channel) return error(res, '渠道不存在或无权访问', 404);
+    if (!channel) return error(res, '渠道不存在或无权访问', 404, 404);
 
     // 返回该渠道专属 + 租户通用（channelId=null）
     const key = quickReplyListCacheKey(req.tenantId, channelId);
@@ -289,7 +289,7 @@ class ChannelController {
   async createQuickReply(req, res) {
     const { channelId } = req.params;
     const channel = await Channel.findOne(channelScope(req, channelId));
-    if (!channel) return error(res, '渠道不存在或无权访问', 404);
+    if (!channel) return error(res, '渠道不存在或无权访问', 404, 404);
     
     const { title, content, imageUrl, imageName, sortOrder, status } = req.body;
     if (!String(content || '').trim() && !String(imageUrl || '').trim()) {
@@ -312,9 +312,9 @@ class ChannelController {
   
   async updateQuickReply(req, res) {
     const channel = await Channel.findOne(channelScope(req, req.params.channelId));
-    if (!channel) return error(res, '渠道不存在或无权访问', 404);
+    if (!channel) return error(res, '渠道不存在或无权访问', 404, 404);
     const item = await QuickReply.findOne({ _id: req.params.qrId, channelId: req.params.channelId, tenantId: req.tenantId });
-    if (!item) return error(res, '配置不存在', 404);
+    if (!item) return error(res, '配置不存在', 404, 404);
     
     const { title, content, imageUrl, imageName, sortOrder, status } = req.body;
     if (title !== undefined && !String(title).trim()) return error(res, '标题不能为空');
@@ -332,9 +332,9 @@ class ChannelController {
   
   async deleteQuickReply(req, res) {
     const channel = await Channel.findOne(channelScope(req, req.params.channelId));
-    if (!channel) return error(res, '渠道不存在或无权访问', 404);
+    if (!channel) return error(res, '渠道不存在或无权访问', 404, 404);
     const result = await QuickReply.deleteOne({ _id: req.params.qrId, channelId: req.params.channelId, tenantId: req.tenantId });
-    if (result.deletedCount === 0) return error(res, '配置不存在', 404);
+    if (result.deletedCount === 0) return error(res, '配置不存在', 404, 404);
     await invalidateQuickReplies(req.tenantId, req.params.channelId);
     return ok(res, null, '已删除');
   }

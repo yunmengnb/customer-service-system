@@ -49,6 +49,7 @@ public class MessageSocketService extends Service {
         String token = safeToken(getPreferences().getString(AppConfig.TOKEN_KEY, ""));
         if (token.isEmpty()) {
             disconnectSocket();
+            stopSelf();
             return;
         }
         if (socket != null && token.equals(activeToken) && socket.connected()) return;

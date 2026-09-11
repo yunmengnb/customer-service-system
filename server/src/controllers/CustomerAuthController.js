@@ -173,12 +173,14 @@ async function bindGuestToAccount(req, channel, account) {
 }
 
 async function resolveAccount(payload) {
+  if (!payload || payload.identity === 'guest') return null;
   if (payload.accountId) {
     const account = await CustomerAccount.findById(payload.accountId);
     if (account) return account;
   }
   const binding = await Customer.findById(payload.id);
-  if (!binding) return null;
+  if (!binding || binding.identityType !== 'customer' || binding.status !== 'active' || binding.blocked) return null;
+  if (String(binding.tenantId) !== String(payload.tenantId) || String(binding.channelId) !== String(payload.channelId)) return null;
   if (binding.accountId) return CustomerAccount.findById(binding.accountId);
 
   // 兼容迁移前签发的 JWT：沿用原 Customer ID，并按旧资料补建账户。
@@ -202,8 +204,32 @@ async function resolveAccount(payload) {
     } catch (err) {
       if (err?.code !== 11000) throw err;
       account = await CustomerAccount.findOne({ phone: binding.phone });
+      // 邮箱已属于其他手机号时仅放弃迁移邮箱，不能按邮箱合并账号。
+      if (!account && binding.email) {
+        try {
+          account = await CustomerAccount.create({
+            phone: binding.phone,
+            password: binding.password,
+            qq: binding.qq,
+            email: '',
+            nickname: binding.nickname,
+            avatarUrl: binding.avatarUrl,
+            registerIp: binding.registerIp,
+            registerUserAgent: binding.registerUserAgent,
+            registerFingerprintHash: binding.registerFingerprintHash,
+            lastLoginIp: binding.lastLoginIp,
+            lastLoginAt: binding.lastLoginAt,
+            status: binding.status,
+          });
+        } catch (retryErr) {
+          if (retryErr?.code !== 11000) throw retryErr;
+          account = await CustomerAccount.findOne({ phone: binding.phone });
+        }
+      }
     }
   }
+  // 包含唯一键竞争后的重查结果，不能仅凭手机号接管已有全局身份。
+  if (!account || !binding.password || account.password !== binding.password) return null;
   binding.accountId = account._id;
   await binding.save();
   return account;
@@ -349,6 +375,7 @@ class CustomerAuthController {
     const verification = await cache.getJson(codeKey);
     const submittedHash = crypto.createHmac('sha256', config.jwt.secret).update(`${email}:${req.body.emailCode}`).digest('hex');
     if (!verification?.codeHash || verification.codeHash.length !== submittedHash.length || !crypto.timingSafeEqual(Buffer.from(verification.codeHash), Buffer.from(submittedHash))) return error(res, '邮箱验证码错误或已过期', 4004, 400);
+    if (!await cache.consumeMatchingJson(codeKey, submittedHash)) return error(res, '邮箱验证码错误或已过期', 4004, 400);
     const ip = getClientIp(req);
     let account;
     try {
@@ -357,7 +384,7 @@ class CustomerAuthController {
       if (err?.code === 11000) return error(res, '手机号或邮箱已被注册');
       throw err;
     }
-    await cache.remove(codeKey);
+
     return createAccountSession(res, account, true);
   }
 
@@ -476,6 +503,7 @@ class CustomerAuthController {
       return error(res, '邮箱验证码错误或已过期', 4004, 400);
     }
 
+    if (!await cache.consumeMatchingJson(codeKey, submittedHash)) return error(res, '邮箱验证码错误或已过期', 4004, 400);
     const ip = getClientIp(req);
     let account;
     try {
@@ -494,7 +522,7 @@ class CustomerAuthController {
       if (err?.code === 11000) return error(res, '手机号或邮箱已被注册');
       throw err;
     }
-    await cache.remove(codeKey);
+
     const guestBinding = await bindGuestToAccount(req, channel, account);
     if (guestBinding.conflict) return error(res, '当前访客记录无法绑定到该客户账号，请刷新后登录已有账号', 4091, 409);
     return CustomerAuthController.prototype.createSession(req, res, channel, account, true, guestBinding.binding);
@@ -565,9 +593,9 @@ class CustomerAuthController {
   // POST /api/client/channels/:token/switch
   async switchChannel(req, res) {
     const account = await resolveAccount(req.customer);
-    if (!account) return error(res, '账号不存在', 404);
+    if (!account) return error(res, '账号不存在', 404, 404);
     const channel = await getChannelByToken(req.params.token);
-    if (!channel) return error(res, '客服链接无效或已过期', 404);
+    if (!channel) return error(res, '客服链接无效或已过期', 404, 404);
 
     const ip = getClientIp(req);
     let binding = await Customer.findOne({ accountId: account._id, channelId: channel._id });
@@ -615,7 +643,7 @@ class CustomerAuthController {
   async getChannelInfo(req, res) {
     const { token: publicToken } = req.params;
     const channel = await getChannelByToken(publicToken);
-    if (!channel) return error(res, '客服链接无效或已过期', 404);
+    if (!channel) return error(res, '客服链接无效或已过期', 404, 404);
     const agentIds = (channel.agentIds || []).map(id => String(id));
     const onlineStates = await Promise.all(agentIds.map(id => presence.isOnline('tenant_user', id)));
     return ok(res, {
@@ -637,7 +665,7 @@ class CustomerAuthController {
     if (req.customer.identity === 'guest') return error(res, '访客不能修改客户资料，请先绑定客户账号', 4036, 403);
     const account = await resolveAccount(req.customer);
     const binding = await Customer.findById(req.customer.id);
-    if (!account || !binding) return error(res, '账号不存在', 404);
+    if (!account || !binding) return error(res, '账号不存在', 404, 404);
     const { qq } = req.body;
     const previousQQAvatar = qqAvatarUrl(account.qq);
     account.qq = qq;
@@ -654,11 +682,11 @@ class CustomerAuthController {
   async me(req, res) {
     if (req.customer.identity === 'guest') {
       const binding = await Customer.findById(req.customer.id);
-      if (!binding) return error(res, '访客身份不存在', 404);
+      if (!binding) return error(res, '访客身份不存在', 404, 404);
       return ok(res, guestJson(binding));
     }
     const account = await resolveAccount(req.customer);
-    if (!account) return error(res, '账号不存在', 404);
+    if (!account) return error(res, '账号不存在', 404, 404);
     const binding = req.customer.id ? await Customer.findById(req.customer.id) : null;
     return ok(res, accountJson(account, binding));
   }
@@ -666,7 +694,7 @@ class CustomerAuthController {
   // GET /api/client/channels/history
   async channelHistory(req, res) {
     const account = await resolveAccount(req.customer);
-    if (!account) return error(res, '账号不存在', 404);
+    if (!account) return error(res, '账号不存在', 404, 404);
     const bindings = await Customer.find({ accountId: account._id }).lean();
     const channelIds = bindings.map(item => item.channelId);
     const bindingIds = bindings.map(item => item._id);

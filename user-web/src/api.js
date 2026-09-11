@@ -1,5 +1,24 @@
 // 忆梦云团队开发
 import axios from 'axios'
+
+export function readTenantCache(key, fallback = null) {
+  try {
+    const isolated = sessionStorage.getItem('tenant_impersonation') === '1'
+    const raw = sessionStorage.getItem(key) || (!isolated ? localStorage.getItem(key) : null)
+    const value = JSON.parse(raw || 'null')
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : fallback
+  } catch (_) {
+    return fallback
+  }
+}
+
+export function clearTenantSession() {
+  const impersonating = sessionStorage.getItem('tenant_impersonation') === '1'
+  const storage = impersonating || sessionStorage.getItem('tenant_token') ? sessionStorage : localStorage
+  for (const key of ['tenant_token', 'tenant_user', 'tenant_info']) storage.removeItem(key)
+  // 保留隔离标志直到显式登录成功，401 后重复退出也不能回落或清除原管理员身份。
+}
+
 const api = axios.create({ baseURL: '/api', timeout: 15000 })
 
 function isSameOriginApiRequest(config) {
