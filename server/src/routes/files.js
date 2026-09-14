@@ -4,6 +4,9 @@ const { authAny } = require('../middleware/auth');
 const FileController = require('../controllers/FileController');
 
 const router = express.Router();
+router.post('/:id/playback', authAny, FileController.issuePlayback);
+router.head('/:id/playback/:nonce', FileController.playback);
+router.get('/:id/playback/:nonce', FileController.playback);
 router.get('/:id/status', authAny, FileController.status);
 router.get('/:id/thumbnail', authAny, FileController.thumbnail);
 router.get('/:id', authAny, FileController.original);

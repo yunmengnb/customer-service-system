@@ -77,7 +77,7 @@
               <span v-if="msg.sendFailed" class="message-send-error" title="消息发送失败">!</span>
             <div
               class="msg-bubble"
-              :class="{ 'media-message-bubble': ['image', 'video', 'file'].includes(msg.messageType) && (msg.attachmentId || msg.attachmentUrl), 'message-menu-active': contextMenu?.msg === msg }"
+              :class="{ 'bare-media': ['image', 'video'].includes(msg.messageType), 'media-message-bubble': ['image', 'video', 'file'].includes(msg.messageType) && (msg.attachmentId || msg.attachmentUrl || msg.localObjectUrl || msg.uploadPhase), 'message-menu-active': contextMenu?.msg === msg }"
               @contextmenu="showContextMenu($event, msg)"
               @touchstart="startLongPress($event, msg)"
               @touchend="finishLongPress"
@@ -86,18 +86,28 @@
               @click.capture="handleBubbleClick"
             >
               <span v-if="msg.recalledAt" class="message-recalled">消息已撤回</span>
-              <span v-else-if="attachmentExpired(msg)">该文件已过期并自动清理</span>
-              <template v-else-if="msg.messageType === 'image' && (msg.attachmentId || msg.attachmentUrl)"><img class="message-image" :src="mediaSrc(msg)" v-lazy-media="{ msg }" :alt="msg.attachmentName || '图片'" loading="lazy" decoding="async" @load="scheduleScroll(false)" @click="openPreview(msg)" /><div v-if="imageCaption(msg)" class="message-caption">{{ imageCaption(msg) }}</div></template>
-              <template v-else-if="msg.messageType === 'video' && (msg.attachmentId || msg.attachmentUrl)">
-                <button type="button" class="message-video-wrap" :aria-label="`播放${msg.attachmentName || '视频'}`" @click="openPreview(msg)">
-                  <span class="video-thumbnail-placeholder">视频</span>
-                  <img class="message-image message-video" :src="videoPosterUrl(msg)" v-lazy-media="{ msg, thumbnail: true }" :alt="msg.attachmentName || '视频封面'" loading="lazy" decoding="async" @load="handleVideoThumbnailLoad" @error="handleVideoThumbnailError" />
-                  <span class="video-play-icon" aria-hidden="true">▶</span>
-                </button>
-              </template>
-              <button v-else-if="msg.messageType === 'file' && (msg.attachmentId || msg.attachmentUrl)" type="button" class="message-file" @click="downloadFile(msg)">
+              <template v-else-if="attachmentExpired(msg)"><span class="chat-media-expired">该文件已过期并自动清理</span><div v-if="['image', 'video'].includes(msg.messageType) && imageCaption(msg)" class="message-caption">{{ imageCaption(msg) }}</div></template>
+              <template v-else-if="msg.messageType === 'image'">
+                    <button type="button" class="chat-media" :disabled="Boolean(msg.uploadPhase)" :aria-label="msg.uploadPhase ? '附件尚未发送' : '查看原图'" @click="openPreview(msg)">
+                      <span class="chat-media-placeholder">图片加载中</span>
+                      <img :src="mediaSrc(msg)" v-lazy-media="{ msg }" class="chat-media-image" alt="" loading="lazy" decoding="async" @load="handleChatMediaLoad" @error="handleChatMediaError" />
+
+                      <span v-if="msg.uploadPhase === 'uploading'" class="chat-media-progress" aria-hidden="true"><i :style="{ width: msg.uploadProgress + '%' }"></i></span>
+                    </button>
+                    <div v-if="imageCaption(msg)" class="message-caption">{{ imageCaption(msg) }}</div>
+                  </template>
+              <template v-else-if="msg.messageType === 'video'">
+                    <button type="button" class="chat-media message-video-wrap" :disabled="Boolean(msg.uploadPhase)" :aria-label="msg.uploadPhase ? '附件尚未发送' : '播放视频'" @click="openPreview(msg)">
+                      <span class="chat-media-placeholder">暂无视频封面</span>
+                      <img :src="mediaSrc(msg, true)" v-lazy-media="{ msg, thumbnail: true }" class="chat-media-image" alt="" loading="lazy" decoding="async" @load="handleChatMediaLoad" @error="handleChatMediaError" />
+                      <span class="chat-media-play"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M9 5v14l11-7z" fill="currentColor" /></svg></span>
+                      <span v-if="msg.uploadPhase === 'uploading'" class="chat-media-progress" aria-hidden="true"><i :style="{ width: msg.uploadProgress + '%' }"></i></span>
+                    </button>
+                    <div v-if="imageCaption(msg)" class="message-caption">{{ imageCaption(msg) }}</div>
+                  </template>
+              <button v-else-if="msg.messageType === 'file' && (msg.attachmentId || msg.attachmentUrl || msg.uploadPhase)" type="button" class="message-file" :disabled="Boolean(msg.uploadPhase)" @click="downloadFile(msg)">
                 <span class="message-file-icon">▤</span>
-                <span>{{ msg.attachmentName || '下载文件' }}</span>
+                <span>{{ msg.attachmentName || '文件' }}<small v-if="!msg.uploadPhase">{{ isDownloaded(msg) ? (getNativeAttachmentBridge() ? '已保存' : '分享/选择应用') : '下载' }}</small></span>
               </button>
               <template v-else>
                 <template v-for="(part, index) in parseMessageContent(msg.content)" :key="index">
@@ -113,6 +123,11 @@
                 </template>
               </template>
             </div>
+            </div>
+            <div v-if="msg.uploadPhase || msg.sendFailed" class="message-transfer-status" :class="{ failed: msg.uploadPhase === 'failed' || msg.sendFailed }" :tabindex="msg.uploadPhase === 'failed' || msg.sendFailed ? 0 : undefined" role="status">
+              <template v-if="msg.uploadPhase === 'uploading'">正在上传 {{ msg.uploadProgress }}%</template>
+              <template v-else-if="msg.uploadPhase === 'sending'">上传完成，正在发送消息</template>
+              <template v-else>上传或发送失败</template>
             </div>
             <div v-if="msg.autoReplyType === 'keyword'" class="keyword-reply-notice">关键词自动回复内容可作为参考</div>
             <div class="msg-time">{{ formatTime(msg.createdAt) }}</div>
@@ -171,8 +186,11 @@
         <button type="button" @click.stop="downloadFile(preview.msg || preview.url, preview.name || (preview.type === 'video' ? '视频' : '图片'))">保存</button>
         <button type="button" class="media-preview-close" aria-label="关闭预览" @click.stop="closePreview">×</button>
       </div>
-      <img v-if="preview.type === 'image'" :src="preview.url" :alt="preview.name || '图片预览'" />
-      <video v-else :src="preview.url" controls autoplay @dblclick.stop="closePreview"></video>
+      <div v-if="preview.loading" role="status" style="color:white">正在安全加载…</div>
+      <button v-else-if="preview.error" type="button" @click="openPreview(preview.msg)">{{ preview.errorMessage || '加载失败，点击重试' }}</button>
+      <img v-else-if="preview.type === 'image'" :src="preview.url" :alt="preview.name || '图片预览'" />
+      <video v-else-if="preview.url" ref="previewVideo" :key="preview.url" :src="preview.url" controls autoplay preload="metadata" playsinline @loadedmetadata="previewMediaEvent" @canplay="previewMediaEvent" @playing="previewMediaEvent" @waiting="previewMediaEvent" @error="previewMediaEvent"></video>
+      <div v-if="preview.type === 'video' && preview.buffering && !preview.error && !preview.loading" role="status" style="position:absolute;bottom:80px;left:10%;right:10%;text-align:center;color:white;pointer-events:none">正在加载/缓冲视频…</div>
     </div>
 
     <div v-if="contextMenu" class="message-menu-mask" @pointerdown="contextMenu = null">
@@ -183,9 +201,12 @@
       </div>
     </div>
 
-    <div v-if="downloadProgress !== null" class="download-progress">
-      <div>正在下载 {{ downloadProgress }}%</div>
-      <span><i :style="{ width: downloadProgress + '%' }"></i></span>
+    <div v-if="downloadProgress" class="download-progress" :class="{ failed: downloadProgress.status === 'failed', indeterminate: downloadProgress.status === 'downloading' && !downloadProgress.computable }">
+      <div v-if="downloadProgress.status === 'failed'">下载失败</div>
+      <div v-else-if="downloadProgress.status === 'success'">文件已保存</div>
+      <div v-else-if="downloadProgress.computable">正在下载 {{ downloadProgress.percent }}% · {{ formatBytes(downloadProgress.loaded) }} / {{ formatBytes(downloadProgress.total) }}</div>
+      <div v-else>正在下载 · 已接收 {{ formatBytes(downloadProgress.loaded) }}</div>
+      <span><i :style="downloadProgress.computable ? { width: downloadProgress.percent + '%' } : undefined"></i></span>
     </div>
     <div v-else-if="toast" class="bottom-toast">{{ toast }}</div>
 
@@ -438,6 +459,8 @@ import { ref, onMounted, onUnmounted, nextTick, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, getSocket } from '../api'
 import {
+  acquireObjectUrl,
+  avatarCacheKey,
   cacheMessages,
   cleanupChatCache,
   clearIdentityCache,
@@ -446,9 +469,28 @@ import {
   getCachedMessages,
   initializeChatCache,
   invalidateAttachment,
+  isPrivateAvatarUrl,
   loadCachedAvatar,
   loadCachedMedia,
+  mediaCacheKey,
+  releaseObjectUrl,
+  subscribePrivateMedia,
 } from '../chatCache'
+import {
+  canShareBlob,
+  clearAttachmentDownloaded,
+  createClientMessageId,
+  deleteNativeAttachment,
+  downloadProgressState,
+  formatBytes,
+  getNativeAttachmentBridge,
+  getNativeAttachmentState,
+  markAttachmentDownloaded,
+  openNativeAttachment,
+  saveBlob,
+  saveNativeAttachment,
+  wasAttachmentDownloaded,
+} from '../attachmentActions'
 
 const route = useRoute()
 const router = useRouter()
@@ -479,7 +521,11 @@ const agentOnline = ref(false)
 const messages = ref([])
 const cacheScope = computed(() => clientCacheScope(customer.value, channel.value?.id || channel.value?._id || customer.value?.channelId || token.value))
 const conversationCacheId = computed(() => conversation.value?._id || conversation.value?.id || customer.value?.conversationId || token.value)
-const persistMessages = () => cacheMessages(cacheScope.value, conversationCacheId.value, messages.value)
+const persistMessages = () => cacheMessages(
+  cacheScope.value,
+  conversationCacheId.value,
+  messages.value.filter(message => !message.uploadPhase && !message.localObjectUrl),
+)
 const inputText = ref('')
 const sending = ref(false)
 const uploading = ref(false)
@@ -490,14 +536,19 @@ const fileInput = ref(null)
 const msgContainer = ref(null)
 const loadingHistory = ref(false)
 const hasMoreMessages = ref(true)
+const positionMode = ref('latest')
+const pendingMessages = ref(0)
 const preview = ref(null)
+const previewVideo = ref(null)
 const mediaUrls = ref({})
 const mediaRequests = new Map()
+const mediaSubscriptions = new Map()
 const avatarUrls = ref({})
 const failedAvatarUrls = ref({})
 const avatarRequests = new Map()
 const contextMenu = ref(null)
 const downloadProgress = ref(null)
+const downloadedVersion = ref(0)
 const toast = ref('')
 const viewportHeight = ref('100dvh')
 const viewportTop = ref('0px')
@@ -561,9 +612,15 @@ let toastTimer = null
 let longPressTimer = null
 let longPressStart = null
 let suppressBubbleClickUntil = 0
-let initialScrollTimers = []
 let scrollFrame = null
-let pendingScrollForce = false
+let positionObserver = null
+let positionMutation = null
+let positionAnchor = null
+let positionIntentUntil = 0
+let positionTouchY = 0
+let sessionGeneration = 0
+let messageRequestAbort = null
+let serverSnapshotCursor = null
 let codeCountdownTimer = null
 let resetCodeTimer = null
 let complaintEmailCodeTimer = null
@@ -785,7 +842,8 @@ async function loadChannel() {
     if (meRes?.code === 0) {
       customer.value = meRes.data
       setupSocket()
-      await Promise.all([loadConversation(), loadMessages()])
+      await loadConversation()
+      await loadMessages()
       if (isGuest.value) {
         guestPromptReason.value = 'return'
         showGuestAppBlocked.value = true
@@ -798,7 +856,6 @@ async function loadChannel() {
     }
   } finally {
     loading.value = false
-    await scrollInitialMessagesToBottom()
     if (!showLogin.value) requestInstallGuide()
   }
 }
@@ -809,7 +866,8 @@ async function loadMe() {
     if (!isCurrentSession()) return
     if (res.code === 0) {
       customer.value = res.data
-      await Promise.all([loadConversation(), loadMessages()])
+      await loadConversation()
+      await loadMessages()
       setupSocket()
       if (!customer.value.qq) showQQModal.value = true
     }
@@ -868,7 +926,8 @@ async function completeAuth(res) {
   customer.value = res.data.customer
   conversationStatus.value = res.data.conversation.status
   showLogin.value = false
-  await Promise.all([loadConversation(), loadMessages()])
+  await loadConversation()
+  await loadMessages()
   setupSocket()
   if (res.data.profileRequired) showQQModal.value = true
   requestInstallGuide()
@@ -1272,44 +1331,68 @@ async function loadConversation() {
   } catch {}
 }
 
-async function loadMessages() {
-  await loadConversation()
-  if (!isCurrentSession() || !conversation.value?._id) return
-  const cached = await getCachedMessages(cacheScope.value, conversationCacheId.value)
-  if (!isCurrentSession()) return
-  if (cached.length) messages.value = cached.filter(belongsToConversation)
-  cleanupChatCache(cacheScope.value)
+async function loadMessages(forceLatest = false) {
+  if (!conversation.value?._id) return false
+  const generation = ++sessionGeneration
+  messageSyncInFlight = null
+  messageRequestAbort?.abort()
+  messageRequestAbort = new AbortController()
+  const signal = messageRequestAbort.signal
+  positionMode.value = 'latest'
+  pendingMessages.value = 0
+  positionAnchor = null
+
+  if (!forceLatest) {
+    const cached = await getCachedMessages(cacheScope.value, conversationCacheId.value)
+    if (generation !== sessionGeneration || !isCurrentSession()) return false
+    if (cached.length) messages.value = cached.filter(belongsToConversation)
+    cleanupChatCache(cacheScope.value)
+  }
+
   try {
-    const res = await api.get('/client/conversation/messages', { params: { limit: 50 } })
-    if (res.code === 0) {
-      if (!isCurrentSession()) return
-      messages.value = (res.data || []).filter(belongsToConversation)
-      hasMoreMessages.value = messages.value.length === 50
-      persistMessages()
-      await scrollToBottom()
-    }
-  } catch {}
+    const res = await api.get('/client/conversation/messages', {
+      params: { limit: 50 },
+      signal,
+    })
+    if (generation !== sessionGeneration || !isCurrentSession()) return false
+    if (res.code !== 0) return false
+    messages.value = (res.data || []).filter(belongsToConversation)
+    serverSnapshotCursor = messages.value.at(-1)?._id || null
+    hasMoreMessages.value = messages.value.length === 50
+    persistMessages()
+    await nextTick()
+    schedulePosition()
+    return true
+  } catch {
+    return false
+  }
 }
 
 async function syncLatestMessages() {
-  if (!customer.value || messageSyncInFlight) return
-  messageSyncInFlight = true
+  if (!customer.value || messageSyncInFlight || positionMode.value !== 'latest') return
+  const generation = sessionGeneration
+  const syncRun = {}
+  messageSyncInFlight = syncRun
   try {
-    let cursor = [...messages.value].reverse().find(message => message._id && !String(message._id).startsWith('temp_'))?._id
-    if (!cursor) return await loadMessages()
-    const previousLength = messages.value.length
-    while (customer.value) {
+    let cursor = serverSnapshotCursor
+    if (!cursor) return await loadMessages(true)
+    let added = 0
+    while (customer.value && generation === sessionGeneration) {
       const res = await api.get('/client/conversation/messages', { params: { limit: 50, after: cursor } })
-      if (res.code !== 0) break
-      if (!isCurrentSession()) return
+      if (res.code !== 0 || generation !== sessionGeneration || !isCurrentSession()) break
       const page = (res.data || []).filter(belongsToConversation)
-      page.forEach(mergeMessage)
+      page.forEach(message => { if (mergeMessage(message)) added++ })
+      if (page.length) cursor = page.at(-1)._id
       if (page.length < 50) break
-      cursor = page[page.length - 1]._id
     }
-    if (messages.value.length > previousLength) scheduleScroll(false)
+    if (generation === sessionGeneration) {
+      serverSnapshotCursor = cursor
+      if (added) schedulePosition()
+    }
   } catch {}
-  finally { messageSyncInFlight = false }
+  finally {
+    if (messageSyncInFlight === syncRun) messageSyncInFlight = null
+  }
 }
 
 function handleVisibilityChange() {
@@ -1320,15 +1403,16 @@ async function loadPreviousMessages() {
   if (loadingHistory.value || !hasMoreMessages.value || !messages.value.length) return
   const firstMessage = messages.value.find(message => message._id && !String(message._id).startsWith('temp_'))
   if (!firstMessage) return
+  const generation = sessionGeneration
   loadingHistory.value = true
-  const container = msgContainer.value
-  const previousHeight = container?.scrollHeight || 0
+  positionMode.value = 'history'
+  capturePosition()
   try {
     const res = await api.get('/client/conversation/messages', {
       params: { limit: 50, before: firstMessage._id },
     })
+    if (generation !== sessionGeneration || !isCurrentSession()) return
     if (res.code === 0) {
-      if (!isCurrentSession()) return
       const olderMessages = (res.data || []).filter(belongsToConversation)
       const existingIds = new Set(messages.value.map(message => String(message._id)))
       messages.value = [
@@ -1337,17 +1421,41 @@ async function loadPreviousMessages() {
       ]
       hasMoreMessages.value = olderMessages.length === 50
       await nextTick()
-      if (container) container.scrollTop = container.scrollHeight - previousHeight
+      restorePosition()
     }
   } catch {} finally {
-    loadingHistory.value = false
+    if (generation === sessionGeneration) loadingHistory.value = false
+  }
+}
+
+function handlePositionInput(event) {
+  const container = msgContainer.value
+  if (!container) return
+  if (event.type === 'touchstart') {
+    positionTouchY = event.touches[0]?.clientY || 0
+    return
+  }
+  if (event.type === 'keydown' && !['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) return
+  if (event.type === 'pointerdown' && event.clientX < container.getBoundingClientRect().right - 18) return
+  positionIntentUntil = performance.now() + 1200
+  const upward = event.deltaY < 0 || ['ArrowUp', 'PageUp', 'Home'].includes(event.key) ||
+    (event.type === 'touchmove' && event.touches[0]?.clientY > positionTouchY)
+  if (upward || event.type === 'pointerdown') {
+    positionMode.value = 'history'
+    capturePosition()
   }
 }
 
 function handleMessageScroll() {
   cancelLongPress()
+  if (performance.now() > positionIntentUntil) return
   const container = msgContainer.value
-  if ((container?.scrollTop || 0) <= 24) loadPreviousMessages()
+  if (!container) return
+  const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight <= 24
+  positionMode.value = nearBottom ? 'latest' : 'history'
+  if (nearBottom) pendingMessages.value = 0
+  capturePosition()
+  if (!nearBottom && container.scrollTop <= 24) loadPreviousMessages()
 }
 
 function mergeMessage(message) {
@@ -1359,12 +1467,25 @@ function mergeMessage(message) {
   )
   if (index >= 0) {
     // 重复新消息不能复活已经撤回的消息。
-    if (!messages.value[index].recalledAt) messages.value.splice(index, 1, message)
+    const current = messages.value[index]
+    if (!current.recalledAt) {
+      if (current.localObjectUrl && current.localObjectUrl !== message.localObjectUrl) {
+        URL.revokeObjectURL(current.localObjectUrl)
+      }
+      messages.value.splice(index, 1, message)
+    }
     return false
   }
 
   messages.value.push(message)
   return true
+}
+
+function updatePendingMessage(clientMessageId, patch) {
+  const message = messages.value.find(item => item.clientMessageId === clientMessageId)
+  if (!message) return null
+  Object.assign(message, patch)
+  return message
 }
 
 function markMessageFailed(message) {
@@ -1381,7 +1502,7 @@ function showToast(message) {
 
 function imageCaption(msg) {
   const content = String(msg.content || '').trim()
-  if (!content || content === '[图片]' || content === String(msg.attachmentUrl || '').trim()) return ''
+  if (!content || ['[图片]', '[视频]'].includes(content) || content === String(msg.attachmentUrl || '').trim()) return ''
   return content
 }
 
@@ -1412,12 +1533,15 @@ function parseMessageContent(content = '') {
 
 function attachmentUrl(msg) { return msg.attachmentId ? `/api/files/${msg.attachmentId}` : msg.attachmentUrl }
 function thumbnailUrl(msg) { return msg.attachmentId ? `/api/files/${msg.attachmentId}/thumbnail` : msg.thumbnailUrl }
-function attachmentExpired(msg) { return ['expired', 'deleted'].includes(msg.attachmentStatus) }
-function releaseAttachmentUrls(msg) {
+function attachmentExpired(msg) { return Boolean(msg?.recalledAt || ['expired', 'recalled', 'deleted'].includes(msg?.attachmentStatus) || (msg?.attachmentExpiredAt && new Date(msg.attachmentExpiredAt).getTime() <= Date.now())) }
+function releaseAttachmentUrls(msg, scope = cacheScope.value) {
   if (!msg) return
   for (const thumbnail of [false, true]) {
     const key = mediaKey(msg, thumbnail)
-    if (mediaUrls.value[key]) URL.revokeObjectURL(mediaUrls.value[key])
+    const cacheKey = mediaCacheKey(scope, msg, thumbnail)
+    mediaSubscriptions.get(key)?.()
+    mediaSubscriptions.delete(key)
+    if (mediaUrls.value[key]) releaseObjectUrl(cacheKey)
     delete mediaUrls.value[key]
     mediaRequests.delete(key)
   }
@@ -1437,12 +1561,13 @@ function handleAvatarError(url) {
   failedAvatarUrls.value = { ...failedAvatarUrls.value, [url]: true }
 }
 function loadAvatar(el, url) {
-  if (!url || avatarUrls.value[url]) return
+  if (!url || avatarUrls.value[url] || !isPrivateAvatarUrl(url)) return
   if (!avatarRequests.has(url)) {
-    avatarRequests.set(url, loadCachedAvatar(cacheScope.value, url, () => api.get(url, { baseURL: '', responseType: 'blob' }))
+    const requestScope = cacheScope.value
+    avatarRequests.set(url, loadCachedAvatar(requestScope, url, () => api.get(url, { baseURL: '', responseType: 'blob' }))
       .then(blob => {
-        if (!blob) return
-        avatarUrls.value[url] = URL.createObjectURL(blob)
+        if (!blob || requestScope !== cacheScope.value || !el.isConnected) return
+        avatarUrls.value[url] = acquireObjectUrl(avatarCacheKey(requestScope, url), blob)
         el.src = avatarUrls.value[url]
       })
       .catch(() => {})
@@ -1451,63 +1576,208 @@ function loadAvatar(el, url) {
 }
 const vCachedAvatar = { mounted(el, binding) { loadAvatar(el, binding.value) }, updated(el, binding) { if (binding.value !== binding.oldValue) loadAvatar(el, binding.value) } }
 function mediaKey(msg, thumbnail = false) { return `${msg._id || msg.clientMessageId}:${thumbnail ? 'thumbnail' : 'original'}` }
-function loadMedia(msg, thumbnail = false) {
+function loadMedia(msg, thumbnail = false, onDownloadProgress) {
   if (!msg.attachmentId) return Promise.resolve(thumbnail ? thumbnailUrl(msg) : attachmentUrl(msg))
-  if (attachmentExpired(msg)) return Promise.resolve('')
-  const key = mediaKey(msg, thumbnail)
+  if (attachmentExpired(msg) || (msg.attachmentId && msg.attachmentStatus !== 'active')) return Promise.resolve('')
+  // 每次视频预览独占 URL，避免旧预览释放新预览复用的 URL。
+  const key = msg.messageType === 'video' && !thumbnail ? Symbol(mediaKey(msg, thumbnail)) : mediaKey(msg, thumbnail)
   if (mediaUrls.value[key]) return Promise.resolve(mediaUrls.value[key])
   if (!mediaRequests.has(key)) {
+    const requestScope = cacheScope.value
     const request = loadCachedMedia(
-      cacheScope.value,
+      requestScope,
       msg,
       thumbnail,
-      () => api.get(thumbnail ? thumbnailUrl(msg) : attachmentUrl(msg), { baseURL: '', responseType: 'blob' }),
+      () => api.get(thumbnail ? thumbnailUrl(msg) : attachmentUrl(msg), { baseURL: '', responseType: 'blob', timeout: 120000, onDownloadProgress }),
+      () => api.get(`/files/${msg.attachmentId}/status`),
     ).then(blob => {
-      if (!blob) return ''
-      const url = URL.createObjectURL(blob)
-      if (msg.messageType !== 'video' || thumbnail) mediaUrls.value[key] = url
+      if (!blob || mediaRequests.get(key) !== request || attachmentExpired(msg)) return ''
+        if ((thumbnail || msg.messageType === 'image') && !blob.type.startsWith('image/')) return ''
+      const cacheKey = mediaCacheKey(requestScope, msg, thumbnail)
+      const url = acquireObjectUrl(cacheKey, blob)
+      if (msg.messageType !== 'video' || thumbnail) {
+        mediaUrls.value[key] = url
+        mediaSubscriptions.get(key)?.()
+        mediaSubscriptions.set(key, subscribePrivateMedia(cacheKey, () => {
+          if (mediaUrls.value[key] !== url) return
+          delete mediaUrls.value[key]
+          mediaRequests.delete(key)
+          msg.attachmentStatus = 'expired'
+          if (preview.value?.msg === msg) closePreview()
+          persistMessages()
+        }))
+      }
       return url
     })
       .catch(error => {
-        if (error?.httpStatus === 410) markAttachmentExpired(msg)
+        if (mediaRequests.get(key) === request && [403, 404, 410].includes(error?.httpStatus)) markAttachmentExpired(msg)
         return ''
       })
-      .finally(() => mediaRequests.delete(key))
+      .finally(() => { if (mediaRequests.get(key) === request) mediaRequests.delete(key) })
     mediaRequests.set(key, request)
   }
   return mediaRequests.get(key)
 }
 function mediaSrc(msg, thumbnail = false) {
+  if (msg.localObjectUrl && !thumbnail) return msg.localObjectUrl
   if (!msg.attachmentId) return thumbnail ? thumbnailUrl(msg) : attachmentUrl(msg)
-  return mediaUrls.value[mediaKey(msg, thumbnail)] || ''
+  return mediaUrls.value[mediaKey(msg, thumbnail)] || undefined
+}
+// 忆梦云团队开发：使用专用容器定位，不依赖直接父节点层级。
+function handleChatMediaLoad(event) {
+  const el = event.currentTarget
+  if (!el.naturalWidth) return
+  el.hidden = false
+  const wrap = el.closest('.chat-media')
+  const ratio = el.naturalWidth / el.naturalHeight
+  if (wrap && Number.isFinite(ratio) && ratio > 0) {
+    const isVideo = wrap.classList.contains('message-video-wrap')
+    wrap.style.setProperty('--media-width', (isVideo ? 240 : Math.min(el.naturalWidth, 280, 220 * ratio)) + 'px')
+    wrap.style.setProperty('--media-mobile-width', (isVideo ? 210 : Math.min(el.naturalWidth, 220, 180 * ratio)) + 'px')
+    wrap.style.setProperty('--media-ratio', isVideo ? '16 / 10' : String(ratio))
+    wrap.classList.add('has-media')
+    wrap.classList.remove('media-error')
+  }
+  scheduleScroll(false)
+}
+function handleChatMediaError(event) {
+  const el = event.currentTarget
+  el.hidden = true
+  const wrap = el.closest('.chat-media')
+  wrap?.classList.remove('has-media')
+  wrap?.classList.add('media-error')
+  const label = wrap?.querySelector('.chat-media-placeholder')
+  if (label) label.textContent = wrap.classList.contains('message-video-wrap') ? '封面不可用，点击重试' : '图片加载失败，点击重试'
+}
+function bindMedia(el, binding) {
+  const { msg, thumbnail = false } = binding.value
+  const signature = [mediaKey(msg, thumbnail), msg.attachmentId, msg.attachmentUrl, msg.thumbnailUrl, msg.localObjectUrl, msg.attachmentStatus, msg.recalledAt].join(':')
+  if (el._mediaSignature === signature) return
+  el._attachmentObserver?.disconnect()
+  el._mediaSignature = signature
+  const load = () => (msg.localObjectUrl && !thumbnail ? Promise.resolve(msg.localObjectUrl) : loadMedia(msg, thumbnail)).then(url => {
+    if (!url && el.isConnected && el._mediaSignature === signature) handleChatMediaError({ currentTarget: el })
+    if (url && el.isConnected && el._mediaSignature === signature && !attachmentExpired(msg)) { el.hidden = false; el.src = url }
+  })
+  if (!('IntersectionObserver' in window)) { load(); return }
+  const observer = new IntersectionObserver(entries => {
+    if (entries.some(entry => entry.isIntersecting)) { observer.disconnect(); load() }
+  }, { rootMargin: '160px' })
+  el._attachmentObserver = observer
+  observer.observe(el.closest('.chat-media') || el)
 }
 const vLazyMedia = {
-  mounted(el, binding) {
-    const { msg, thumbnail = false } = binding.value
-    if (!msg.attachmentId) return
-    const load = () => loadMedia(msg, thumbnail).then(url => { if (url) el.src = url })
-    if (!('IntersectionObserver' in window)) { load(); return }
-    const observer = new IntersectionObserver(entries => {
-      if (entries.some(entry => entry.isIntersecting)) {
-        observer.disconnect()
-        load()
-      }
-    }, { rootMargin: '160px' })
-    el._attachmentObserver = observer
-    observer.observe(el)
-  },
-  unmounted(el) { el._attachmentObserver?.disconnect() },
+  mounted: bindMedia, updated: bindMedia,
+  unmounted(el) { el._mediaSignature = ''; el._attachmentObserver?.disconnect() },
 }
-
 async function openPreview(msg) {
   if (attachmentExpired(msg)) return
-  const url = await loadMedia(msg)
-  if (url && !attachmentExpired(msg)) preview.value = { url, type: msg.messageType, name: msg.attachmentName, msg }
+  closePreview()
+  preview.value = { url: '', type: msg.messageType, name: msg.attachmentName, msg, loading: true, error: false }
+  const current = preview.value
+  try {
+    let url
+    if (msg.messageType === 'video') {
+      if (!msg.attachmentId) throw new Error('旧视频缺少受保护附件标识，请下载或重新上传')
+      current.abort = new AbortController()
+      const result = await api.post('/files/' + encodeURIComponent(msg.attachmentId) + '/playback', {}, { signal: current.abort.signal })
+      if (preview.value !== current || attachmentExpired(msg)) return
+      const data = result?.data
+      if (!data || !new RegExp('^/api/files/' + msg.attachmentId + '/playback/[a-f0-9]{32}$').test(data.url)
+        || !Number.isFinite(data.expiresAt) || data.expiresAt <= Date.now()) throw new Error('播放授权无效，请重试')
+      url = data.url
+      current.expiresAt = data.expiresAt
+      current.timer = setTimeout(() => {
+        if (preview.value !== current) return
+        stopPreviewVideo()
+        current.url = ''
+        current.loading = false
+        current.error = true
+        current.errorMessage = '播放授权已到期，点击重新授权播放'
+      }, data.expiresAt - Date.now())
+      current.buffering = true
+    } else {
+      url = await loadMedia(msg, false, event => {
+        if (preview.value === current) current.progress = downloadProgressState(event)
+      })
+    }
+    if (preview.value !== current || attachmentExpired(msg)) return
+    current.url = url
+    current.error = !url
+  } catch (error) {
+    if (preview.value === current) {
+      if (error?.httpStatus === 410) { markAttachmentExpired(msg); return }
+      current.error = true
+      current.errorMessage = error?.message || '加载失败，点击重试'
+    }
+  } finally {
+    if (preview.value === current) {
+      current.loading = false
+      if (!current.url) current.error = true
+    }
+  }
+}
+function stopPreviewVideo() {
+  const video = previewVideo.value
+  if (video) { video.pause(); video.removeAttribute('src'); video.load() }
+}
+function previewMediaEvent(event) {
+  const current = preview.value
+  if (!current || event.target !== previewVideo.value || !current.url || current.error) return
+  if (Date.now() >= current.expiresAt) {
+    stopPreviewVideo()
+    current.url = ''
+    current.error = true
+    current.errorMessage = '播放授权已到期，点击重新授权播放'
+    return
+  }
+  current.buffering = event.type === 'waiting' || event.type === 'loadedmetadata'
+  if (event.type === 'error') {
+    current.error = true
+    current.errorMessage = '视频无法播放：格式/编码不支持、授权失效或网络异常，点击重试'
+    clearTimeout(current.timer)
+    stopPreviewVideo()
+    current.url = ''
+  }
+}
+function closePreview() {
+  preview.value?.abort?.abort()
+  clearTimeout(preview.value?.timer)
+  stopPreviewVideo()
+  preview.value = null
+}
+function isDownloaded(msg) {
+  downloadedVersion.value
+  if (!msg?.attachmentId) return false
+  const bridge = getNativeAttachmentBridge()
+  if (bridge) {
+    try { return getNativeAttachmentState(bridge, cacheScope.value, msg.attachmentId).status === 'saved' } catch { return false }
+  }
+  return wasAttachmentDownloaded(localStorage, cacheScope.value, msg.attachmentId)
 }
 
-function closePreview() {
-  if (preview.value?.type === 'video') URL.revokeObjectURL(preview.value.url)
-  preview.value = null
+function handleNativeAttachment(event) {
+  const detail = event?.detail || {}
+  if (!detail.attachmentId) return
+  if (detail.status === 'progress') downloadProgress.value = downloadProgressState(detail)
+  if (detail.status === 'saved') {
+    markAttachmentDownloaded(localStorage, cacheScope.value, detail.attachmentId)
+    downloadedVersion.value += 1
+    downloadProgress.value = { status: 'success', loaded: detail.loaded, total: detail.total, computable: true, percent: 100 }
+    showToast('文件已保存')
+    setTimeout(() => { downloadProgress.value = null }, 1800)
+  }
+  if (detail.status === 'failed') {
+    clearAttachmentDownloaded(localStorage, cacheScope.value, detail.attachmentId)
+    downloadedVersion.value += 1
+    if (Number(detail.httpStatus) === 410) {
+      const msg = messages.value.find(item => String(item.attachmentId) === String(detail.attachmentId))
+      markAttachmentExpired(msg)
+    }
+    downloadProgress.value = { ...downloadProgress.value, status: 'failed' }
+    showToast(detail.message || '下载失败')
+    setTimeout(() => { downloadProgress.value = null }, 1800)
+  }
 }
 
 async function downloadFile(msgOrUrl, name = '下载文件') {
@@ -1516,30 +1786,67 @@ async function downloadFile(msgOrUrl, name = '下载文件') {
   if (attachmentExpired(msg)) return
   const url = msg ? attachmentUrl(msg) : msgOrUrl
   const fileName = msg?.attachmentName || name
-  downloadProgress.value = 0
+  const shouldShare = isDownloaded(msg)
+  const bridge = msg?.attachmentId ? getNativeAttachmentBridge() : null
+  downloadProgress.value = { status: 'downloading', loaded: 0, total: 0, computable: false, percent: null }
+  if (bridge) {
+    try {
+      if (shouldShare) {
+        const opened = openNativeAttachment(bridge, cacheScope.value, msg.attachmentId)
+        if (opened.status !== 'missing') {
+          if (opened.status === 'no_handler' || opened.status === 'error') showToast(opened.message || '无法打开文件')
+          downloadProgress.value = null
+          return
+        }
+        clearAttachmentDownloaded(localStorage, cacheScope.value, msg.attachmentId)
+        downloadedVersion.value += 1
+      }
+      const started = saveNativeAttachment(
+        bridge,
+        cacheScope.value,
+        msg.attachmentId,
+        fileName,
+        msg.attachmentMimeType || 'application/octet-stream',
+      )
+      if (started.status === 'busy') showToast(started.message || '文件正在保存')
+      else if (started.status !== 'started') throw new Error(started.message || '无法开始保存文件')
+    } catch (error) {
+      downloadProgress.value = { ...downloadProgress.value, status: 'failed' }
+      showToast(error?.message || '下载失败')
+      setTimeout(() => { downloadProgress.value = null }, 1800)
+    }
+    return
+  }
   try {
     const blob = await api.get(url, {
-      baseURL: '',
-      responseType: 'blob',
-      onDownloadProgress: (event) => {
-        downloadProgress.value = event.total ? Math.round(event.loaded * 100 / event.total) : 0
-      },
+      baseURL: '', responseType: 'blob', timeout: 120000,
+      onDownloadProgress: event => { downloadProgress.value = downloadProgressState(event) },
     })
-    const objectUrl = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = objectUrl
-    link.download = fileName || '下载文件'
-    document.body.appendChild(link)
-    link.click()
-    link.remove()
-    URL.revokeObjectURL(objectUrl)
-    downloadProgress.value = 100
-    showToast('文件已保存')
+    downloadProgress.value = { status: 'success', loaded: blob.size, total: blob.size, computable: true, percent: 100 }
+    const sharedFile = shouldShare ? canShareBlob(navigator, blob, fileName) : null
+    if (sharedFile) {
+      try {
+        await navigator.share({ files: [sharedFile], title: sharedFile.name })
+        showToast('已打开分享/应用选择')
+      } catch (error) {
+        if (error?.name === 'AbortError') return
+        saveBlob(blob, fileName)
+        showToast('分享不可用，已下载')
+      }
+    } else {
+      saveBlob(blob, fileName)
+      showToast(shouldShare ? '当前环境不支持文件分享，已下载' : '文件已保存')
+    }
+    if (msg?.attachmentId) {
+      markAttachmentDownloaded(localStorage, cacheScope.value, msg.attachmentId)
+      downloadedVersion.value += 1
+    }
   } catch (error) {
     if (error?.httpStatus === 410) markAttachmentExpired(msg)
+    downloadProgress.value = { ...downloadProgress.value, status: 'failed' }
     showToast(error?.httpStatus === 410 ? '该文件已过期并自动清理' : '下载失败')
   } finally {
-    setTimeout(() => { downloadProgress.value = null }, 500)
+    setTimeout(() => { downloadProgress.value = null }, 1800)
   }
 }
 
@@ -1606,12 +1913,15 @@ function videoPosterUrl(msg) {
 }
 
 function handleVideoThumbnailLoad(event) {
+  event.currentTarget.hidden = false
+  event.currentTarget.closest('.message-video-wrap')?.classList.remove('has-thumbnail-error')
   event.currentTarget.classList.add('is-loaded')
   event.currentTarget.closest('.message-video-wrap')?.classList.add('has-thumbnail')
   scheduleScroll(false)
 }
 
 function handleVideoThumbnailError(event) {
+  if (!event.currentTarget.getAttribute('src')) return
   event.currentTarget.hidden = true
   event.currentTarget.closest('.message-video-wrap')?.classList.add('has-thumbnail-error')
 }
@@ -1716,42 +2026,63 @@ async function handleAttachment(event, messageType) {
   if (!file || uploading.value || !customer.value) return
 
   uploading.value = true
-  let localMsg = null
+  const clientMessageId = createClientMessageId('c_attachment')
+  const localMsg = {
+    _id: `temp_${clientMessageId}`,
+    clientMessageId,
+    conversationId: conversation.value?._id,
+    senderType: 'customer',
+    createdAt: new Date().toISOString(),
+    attachmentName: file.name,
+    messageType,
+    localObjectUrl: messageType === 'image' ? URL.createObjectURL(file) : '',
+    uploadPhase: 'uploading',
+    uploadProgress: 0,
+  }
+  mergeMessage(localMsg)
+  showAttachments.value = false
+  await scrollOwnMessageToBottom()
   try {
     const formData = new FormData()
     formData.append('file', file)
-    const uploadRes = await api.post('/client/conversation/attachments', formData)
+    // #region debug-point A-D:client-upload-zero
+    fetch(`/api/__debug_client_upload_zero/start?size=${encodeURIComponent(file.size)}&type=${encodeURIComponent(messageType)}`, { credentials: 'same-origin' }).catch(() => {})
+    // #endregion
+    const uploadRes = await api.post('/client/conversation/attachments', formData, {
+      timeout: 120000,
+      onUploadProgress: event => {
+        // #region debug-point A-D:client-upload-zero
+        const pendingExists = Boolean(messages.value.find(item => item.clientMessageId === clientMessageId))
+        fetch(`/api/__debug_client_upload_zero/progress?loaded=${encodeURIComponent(event.loaded ?? '')}&total=${encodeURIComponent(event.total ?? '')}&computable=${encodeURIComponent(event.lengthComputable ?? '')}&progress=${encodeURIComponent(event.progress ?? '')}&pending=${pendingExists ? 1 : 0}`, { credentials: 'same-origin' }).catch(() => {})
+        // #endregion
+        updatePendingMessage(clientMessageId, {
+          uploadProgress: event.total ? Math.min(100, Math.round(event.loaded * 100 / event.total)) : 0,
+        })
+      },
+    })
     if (uploadRes.code !== 0) throw new Error(uploadRes.message || '上传失败')
 
     const effectiveType = ['image', 'video'].includes(uploadRes.data.category) ? uploadRes.data.category : 'file'
-    const clientMessageId = 'c_' + Date.now()
-    const payload = {
+    Object.assign(localMsg, {
       attachmentId: uploadRes.data.attachmentId,
-      clientMessageId,
+      attachmentName: uploadRes.data.name || file.name,
+      attachmentStatus: uploadRes.data.status,
       messageType: effectiveType,
-    }
-    localMsg = {
-      _id: 'temp_' + Date.now(),
-      senderType: 'customer',
-      createdAt: new Date().toISOString(),
-      attachmentName: uploadRes.data.name || uploadRes.data.originalName || file.name,
-      ...payload,
-    }
-    mergeMessage(localMsg)
-    showAttachments.value = false
-    scrollToBottom()
-
+      uploadPhase: 'sending',
+      uploadProgress: 100,
+    })
+    const payload = { attachmentId: localMsg.attachmentId, clientMessageId, messageType: effectiveType }
     const res = await api.post('/client/conversation/messages', payload)
     if (res.code !== 0) throw new Error(res.message || '发送失败')
     mergeMessage(res.data?.message)
     mergeMessage(res.data?.botReply)
     scrollToBottom()
   } catch (error) {
-    if (localMsg && error?.code === 4034) {
-      markMessageFailed(localMsg)
-      await nextTick()
-      scrollToBottom()
-    } else window.alert(error?.message || '附件发送失败')
+    localMsg.uploadPhase = 'failed'
+    localMsg.sendFailed = true
+    showToast(error?.message || '附件发送失败')
+    await nextTick()
+    scrollToBottom()
   } finally {
     uploading.value = false
   }
@@ -1896,30 +2227,88 @@ function setupSocket() {
   socket.on('presence:changed', handlePresenceChanged)
 }
 
-async function scheduleScroll(force = true) {
-  pendingScrollForce = pendingScrollForce || force
+function capturePosition() {
+  const container = msgContainer.value
+  if (!container) return
+  const top = container.getBoundingClientRect().top
+  const row = [...container.querySelectorAll('[data-message-id]')]
+    .find(item => item.getBoundingClientRect().bottom > top + 1)
+  if (row) {
+    positionAnchor = {
+      id: row.dataset.messageId,
+      offset: row.getBoundingClientRect().top - top,
+      height: container.scrollHeight,
+    }
+  }
+}
+
+function restorePosition() {
+  const container = msgContainer.value
+  if (!container) return
+  if (positionMode.value === 'latest') {
+    container.scrollTop = container.scrollHeight
+    return
+  }
+  if (!positionAnchor) return
+  const row = [...container.querySelectorAll('[data-message-id]')]
+    .find(item => item.dataset.messageId === positionAnchor.id)
+  if (row) {
+    container.scrollTop += row.getBoundingClientRect().top -
+      container.getBoundingClientRect().top - positionAnchor.offset
+  } else if (Number.isFinite(positionAnchor.height)) {
+    container.scrollTop += container.scrollHeight - positionAnchor.height
+  }
+  positionAnchor.height = container.scrollHeight
+}
+
+async function schedulePosition() {
+  const generation = sessionGeneration
   await nextTick()
-  if (scrollFrame) return
+  cancelAnimationFrame(scrollFrame)
   scrollFrame = requestAnimationFrame(() => {
-    const shouldForce = pendingScrollForce
-    pendingScrollForce = false
     scrollFrame = null
-    const container = msgContainer.value
-    if (!container) return
-    const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 120
-    if (shouldForce || nearBottom) container.scrollTop = container.scrollHeight
+    if (generation === sessionGeneration) restorePosition()
   })
+}
+
+function observeMessageLayout() {
+  positionObserver?.disconnect()
+  positionMutation?.disconnect()
+  const container = msgContainer.value
+  if (!container) return
+  container.style.overflowAnchor = 'none'
+  positionObserver = new ResizeObserver(schedulePosition)
+  positionObserver.observe(container)
+  container.querySelectorAll('[data-message-id]').forEach(row => positionObserver.observe(row))
+  positionMutation = new MutationObserver(() => {
+    observeMessageLayout()
+    schedulePosition()
+  })
+  positionMutation.observe(container, { childList: true, subtree: true })
+}
+
+function scheduleScroll(force = true) {
+  if (force) {
+    positionMode.value = 'latest'
+    pendingMessages.value = 0
+  }
+  return schedulePosition()
 }
 
 function scrollToBottom() {
   return scheduleScroll(true)
 }
 
+async function returnToLatest() {
+  const loaded = await loadMessages(true)
+  if (loaded) schedulePosition()
+}
+
 function updateViewport() {
   const viewport = window.visualViewport
   viewportHeight.value = `${Math.round(viewport?.height || window.innerHeight)}px`
   viewportTop.value = `${Math.round(viewport?.offsetTop || 0)}px`
-  scheduleScroll(false)
+  schedulePosition()
 }
 
 function handleComposerFocus() {
@@ -1927,43 +2316,19 @@ function handleComposerFocus() {
   requestAnimationFrame(() => scheduleScroll(true))
 }
 
-async function scrollInitialMessagesToBottom() {
-  initialScrollTimers.forEach(clearTimeout)
-  initialScrollTimers = []
-  await nextTick()
-  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
-  await scrollToBottom()
-  const container = msgContainer.value
-  if (!container) return
-  container.querySelectorAll('.message-image').forEach(media => {
-    const eventName = media.tagName === 'VIDEO' ? 'loadedmetadata' : 'load'
-    if (media.tagName === 'IMG' && media.complete) return
-    media.addEventListener(eventName, scrollToBottom, { once: true })
-  })
-  ;[100, 300, 800].forEach(delay => {
-    initialScrollTimers.push(setTimeout(scrollToBottom, delay))
-  })
+function scrollOwnMessageToBottom() {
+  return scheduleScroll(true)
 }
 
-async function scrollOwnMessageToBottom() {
-  await nextTick()
-  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
-  const container = msgContainer.value
-  if (!container) return
-  container.scrollTop = container.scrollHeight
-  const images = container.querySelectorAll('.msg.customer img:not(.msg-avatar)')
-  images.forEach(image => {
-    if (!image.complete) image.addEventListener('load', scrollToBottom, { once: true })
-  })
-}
+watch(msgContainer, () => {
+  observeMessageLayout()
+  schedulePosition()
+}, { flush: 'post' })
 
-watch(
-  () => [loading.value, customer.value?._id],
-  ([isLoading, customerId]) => {
-    if (!isLoading && customerId) scheduleScroll(true)
-  },
-  { flush: 'post' },
-)
+watch(() => messages.value.length, () => {
+  observeMessageLayout()
+  schedulePosition()
+}, { flush: 'post' })
 
 function formatTime(iso) {
   if (!iso) return ''
@@ -1998,6 +2363,7 @@ function generateFingerprint() {
 }
 
 onMounted(() => {
+  window.addEventListener('yimeng-native-attachment', handleNativeAttachment)
   window.addEventListener('pointerdown', unlockNotificationSound, { once: true })
   window.addEventListener('keydown', unlockNotificationSound, { once: true })
   updateViewport()
@@ -2010,11 +2376,19 @@ onMounted(() => {
   loadChannel()
 })
 
-watch(cacheScope, scope => {
+watch(cacheScope, (scope, previousScope) => {
+  if (previousScope && previousScope !== scope) {
+    closePreview()
+    messages.value.forEach(msg => releaseAttachmentUrls(msg, previousScope))
+    Object.keys(avatarUrls.value).forEach(url => releaseObjectUrl(avatarCacheKey(previousScope, url)))
+    avatarUrls.value = {}
+    avatarRequests.clear()
+  }
   if (scope) initializeChatCache(scope)
 }, { immediate: true })
 
 onUnmounted(() => {
+  window.removeEventListener('yimeng-native-attachment', handleNativeAttachment)
   sessionActive = false
   window.removeEventListener('pointerdown', unlockNotificationSound)
   window.removeEventListener('keydown', unlockNotificationSound)
@@ -2029,7 +2403,10 @@ onUnmounted(() => {
   clearInterval(complaintEmailCodeTimer)
   clearTimeout(toastTimer)
   clearTimeout(longPressTimer)
-  initialScrollTimers.forEach(clearTimeout)
+  sessionGeneration++
+  messageRequestAbort?.abort()
+  positionObserver?.disconnect()
+  positionMutation?.disconnect()
   if (scrollFrame) cancelAnimationFrame(scrollFrame)
   geetestInstance?.destroy?.()
   complaintGeetestInstance?.destroy?.()
@@ -2046,7 +2423,14 @@ onUnmounted(() => {
   }
   notificationAudioContext?.close().catch(() => {})
   notificationAudioContext = null
-  Object.values(mediaUrls.value).forEach(url => URL.revokeObjectURL(url))
-  Object.values(avatarUrls.value).forEach(url => URL.revokeObjectURL(url))
+  closePreview()
+  mediaRequests.clear()
+  mediaSubscriptions.forEach(unsubscribe => unsubscribe())
+  mediaSubscriptions.clear()
+  messages.value.forEach(msg => {
+    if (msg.localObjectUrl) URL.revokeObjectURL(msg.localObjectUrl)
+    for (const thumbnail of [false, true]) if (mediaUrls.value[mediaKey(msg, thumbnail)]) releaseObjectUrl(mediaCacheKey(cacheScope.value, msg, thumbnail))
+  })
+  Object.keys(avatarUrls.value).forEach(url => releaseObjectUrl(avatarCacheKey(cacheScope.value, url)))
 })
 </script>

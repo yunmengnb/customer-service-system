@@ -1,5 +1,19 @@
 // 忆梦云团队开发 - 浏览器聊天消息与媒体缓存
 import { readTenantCache } from './api'
+import { reportDebugEvent } from './attachmentActions'
+import {
+  cleanupPrivateMediaCache,
+  clearPrivateMediaScope,
+  invalidatePrivateMedia,
+  loadPrivateMedia,
+  privateMediaKey,
+} from './services/privateMediaCache'
+export {
+  acquireObjectUrl,
+  privateMediaKey,
+  releaseObjectUrl,
+  subscribePrivateMedia,
+} from './services/privateMediaCache'
 const DB_NAME = 'yimeng-chat-cache-v1'
 const DB_VERSION = 1
 const MEDIA_CACHE = 'yimeng-chat-media-v1'
@@ -66,12 +80,22 @@ export function tenantIdentityScope() {
     const user = readTenantCache('tenant_user')
     const tenant = readTenantCache('tenant_info')
     if (!user?._id || !(tenant?._id || user?.tenantId)) return ''
-    return ['staff', tenant?._id || user.tenantId, user._id].map(String).join(':')
+    return ['staff', user.role || 'agent', tenant?._id || user.tenantId, user._id].map(String).join(':')
   } catch { return '' }
 }
 export function tenantCacheScope(channelId = '') {
   const identityScope = tenantIdentityScope()
   return identityScope ? `${identityScope}:${channelId || 'all'}` : ''
+}
+function attachmentVersion(message, kind) {
+  return message?.attachmentVersion || message?.attachmentUpdatedAt || message?.updatedAt || message?.attachmentHash || `${message?.attachmentId || 'unknown'}:${kind}:v1`
+}
+export function mediaCacheKey(scope, message, thumbnail = false) {
+  const kind = thumbnail ? 'thumbnail' : 'original'
+  return privateMediaKey({ scope, resourceId: message?.attachmentId, kind, version: attachmentVersion(message, kind) })
+}
+export function avatarCacheKey(scope, url, resource = {}) {
+  return privateMediaKey({ scope, resourceId: String(resource.id || url), kind: 'avatar', version: resource.version || url })
 }
 
 export async function cacheConversations(scope, conversations) {
@@ -130,70 +154,36 @@ export async function clearCachedConversation(scope, conversationId) {
   })
 }
 
-export async function loadCachedMedia(scope, message, thumbnail, loader) {
+export async function loadCachedMedia(scope, message, thumbnail, loader, verify) {
   const attachmentId = String(message?.attachmentId || '')
-  if (!scope || !attachmentId || !('caches' in window)) return loader()
+  if (!scope || !attachmentId) return loader()
   if (INVALID_STATUSES.has(message.attachmentStatus)) {
     await invalidateAttachment(scope, attachmentId)
     return null
   }
-  const variant = thumbnail ? 'thumbnail' : 'original'
+  const kind = thumbnail ? 'thumbnail' : 'original'
   if (!thumbnail && message.messageType !== 'image') return loader()
-  const cacheKey = `${scope}:${attachmentId}:${variant}`
-  const request = mediaRequest(cacheKey)
-  try {
-    const cache = await caches.open(MEDIA_CACHE)
-    const cached = await cache.match(request)
-    if (cached) {
-      touchAttachment(scope, attachmentId, cacheKey)
-      return cached.blob()
-    }
-    const blob = await loader()
-    if (!blob || (!thumbnail && blob.size > IMAGE_LIMIT)) return blob
-    const estimate = await navigator.storage?.estimate?.().catch(() => ({})) || {}
-    if (estimate.quota && estimate.quota - (estimate.usage || 0) <= blob.size * 2) {
-      const shortfall = blob.size * 2 - (estimate.quota - (estimate.usage || 0))
-      await cleanupChatCache(scope, true, shortfall)
-      const refreshed = await navigator.storage?.estimate?.().catch(() => ({})) || {}
-      if (refreshed.quota && refreshed.quota - (refreshed.usage || 0) <= blob.size) return blob
-    }
-    await ensureMediaSpace(scope, blob.size)
-    await cache.put(request, new Response(blob, { headers: { 'Content-Type': blob.type || 'application/octet-stream' } }))
-    const now = Date.now()
-    await withStore(['attachments'], 'readwrite', tx => requestResult(tx.objectStore('attachments').put({ key: `${scope}:${attachmentId}:${variant}`, scope, attachmentId, status: message.attachmentStatus || 'active', expiresAt: attachmentExpiry(message, now), size: blob.size, cachedAt: now, lastAccessedAt: now, cacheKey })))
-    return blob
-  } catch { return loader() }
+  const descriptor = { scope, resourceId: attachmentId, kind, version: attachmentVersion(message, kind) }
+  const result = await loadPrivateMedia(descriptor, loader, verify)
+  reportDebugEvent('E', 'chatCache.js:loadCachedMedia', result?.cached ? 'media cache hit' : 'media cache miss', { phase: 'cache-lookup', resourceKind: kind, stableId: attachmentId.slice(-6), cachePath: result?.cached ? 'indexeddb' : 'network', variant: kind })
+  return result?.blob || null
 }
-export async function loadCachedAvatar(scope, url, loader) {
-  if (!scope || !url || !('caches' in window)) return loader()
-  const attachmentId = `avatar:${url}`
-  const cacheKey = `${scope}:${attachmentId}`
-  const request = mediaRequest(cacheKey)
-  let blob = null
+export function isPrivateAvatarUrl(url) {
   try {
-    const cache = await caches.open(MEDIA_CACHE)
-    const cached = await cache.match(request)
-    if (cached) {
-      touchAttachment(scope, attachmentId, cacheKey)
-      return cached.blob()
-    }
-    blob = await loader()
-    if (!blob || !String(blob.type || '').startsWith('image/') || blob.size > AVATAR_LIMIT) return blob
-    const estimate = await navigator.storage?.estimate?.().catch(() => ({})) || {}
-    if (estimate.quota && estimate.quota - (estimate.usage || 0) <= blob.size * 2) {
-      const shortfall = blob.size * 2 - (estimate.quota - (estimate.usage || 0))
-      await cleanupChatCache(scope, true, shortfall)
-      const refreshed = await navigator.storage?.estimate?.().catch(() => ({})) || {}
-      if (refreshed.quota && refreshed.quota - (refreshed.usage || 0) <= blob.size) return blob
-    }
-    await ensureMediaSpace(scope, blob.size)
-    await cache.put(request, new Response(blob, { headers: { 'Content-Type': blob.type } }))
-    const now = Date.now()
-    await withStore(['attachments'], 'readwrite', tx => requestResult(tx.objectStore('attachments').put({ key: `${scope}:${attachmentId}`, scope, attachmentId, status: 'active', expiresAt: new Date(now + ATTACHMENT_TTL).toISOString(), size: blob.size, cachedAt: now, lastAccessedAt: now, cacheKey })))
-    return blob
+    const parsed = new URL(url, window.location.origin)
+    return parsed.origin === window.location.origin && /^\/api\/files\//.test(parsed.pathname)
   } catch {
-    return blob || loader()
+    return false
   }
+}
+
+export async function loadCachedAvatar(scope, url, loader, verify, resource = {}) {
+  if (!scope || !url || (!resource.private && !isPrivateAvatarUrl(url))) return loader()
+  const resourceId = String(resource.id || url)
+  const descriptor = { scope, resourceId, kind: 'avatar', version: resource.version || url }
+  const result = await loadPrivateMedia(descriptor, loader, verify)
+  reportDebugEvent('E', 'chatCache.js:loadCachedAvatar', result?.cached ? 'avatar cache hit' : 'avatar cache miss', { phase: 'cache-lookup', resourceKind: 'avatar', stableId: resourceId.slice(-6), cachePath: result?.cached ? 'indexeddb' : 'network' })
+  return result?.blob || null
 }
 
 async function touchAttachment(scope, attachmentId, cacheKey) {
@@ -204,6 +194,7 @@ async function touchAttachment(scope, attachmentId, cacheKey) {
 }
 export async function invalidateAttachment(scope, attachmentId, status = 'expired') {
   if (!scope || !attachmentId) return
+  await invalidatePrivateMedia({ scope, resourceId: String(attachmentId) }, status)
   const rows = await withStore(['attachments'], 'readonly', tx => requestResult(tx.objectStore('attachments').getAll())) || []
   const targets = rows.filter(row => row.scope === scope && String(row.attachmentId) === String(attachmentId))
   if ('caches' in window) {
@@ -228,6 +219,7 @@ async function ensureMediaSpace(scope, incomingSize = 0) {
 }
 export async function cleanupChatCache(scope, forceLru = false, bytesToFree = 0) {
   if (!scope) return
+  if (forceLru) await cleanupPrivateMediaCache(scope)
   const now = Date.now()
   const rows = await withStore(['attachments'], 'readonly', tx => requestResult(tx.objectStore('attachments').getAll())) || []
   const scoped = rows.filter(row => row.scope === scope)
@@ -265,6 +257,7 @@ export async function initializeChatCache(scope) {
 }
 export async function clearIdentityCache(scope) {
   if (!scope) return
+  await clearPrivateMediaScope(scope, true)
   for (const [timerScope, timer] of cleanupTimers) {
     if (timerScope === scope || timerScope.startsWith(`${scope}:`)) {
       clearInterval(timer)

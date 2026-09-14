@@ -1,5 +1,6 @@
 // 忆梦云团队开发
 import axios from 'axios'
+import { reportDebugEvent } from './attachmentActions'
 
 export function readTenantCache(key, fallback = null) {
   try {
@@ -33,11 +34,32 @@ api.interceptors.request.use(config => {
   const impersonating = sessionStorage.getItem('tenant_impersonation') === '1'
   const token = sessionStorage.getItem('tenant_token') || (!impersonating ? localStorage.getItem('tenant_token') : '')
   if (token && isSameOriginApiRequest(config)) config.headers.Authorization = `Bearer ${token}`
+  // #region debug-point E:blob-request-start
+  if (config.responseType === 'blob') {
+    config._debugBlobStartedAt = Date.now()
+    const path = String(config.url || '').split('?')[0]
+    reportDebugEvent('E', 'api.js:request', 'authenticated blob request start', { phase: 'request-start', resourceKind: path.endsWith('/thumbnail') ? 'thumbnail' : path.includes('avatar') ? 'avatar' : 'media', stableId: path.split('/').filter(Boolean).at(-1)?.slice(-6) || 'media', cachePath: 'network', timeout: Number(config.timeout || 0), authorizationAttached: Boolean(token && isSameOriginApiRequest(config)) })
+  }
+  // #endregion
   return config
 })
 api.interceptors.response.use(
-  res => res.data,
+  res => {
+    // #region debug-point E:blob-request-end
+    if (res.config?.responseType === 'blob') {
+      const path = String(res.config.url || '').split('?')[0]
+      reportDebugEvent('E', 'api.js:response', 'authenticated blob request end', { phase: 'request-end', resourceKind: path.endsWith('/thumbnail') ? 'thumbnail' : path.includes('avatar') ? 'avatar' : 'media', stableId: path.split('/').filter(Boolean).at(-1)?.slice(-6) || 'media', cachePath: 'network', status: Number(res.status || 0), durationMs: Date.now() - Number(res.config._debugBlobStartedAt || Date.now()), cacheControl: String(res.headers?.['cache-control'] || '').slice(0, 80), etagPresent: Boolean(res.headers?.etag), expiresPresent: Boolean(res.headers?.expires) })
+    }
+    // #endregion
+    return res.data
+  },
   err => {
+    // #region debug-point E:blob-request-error
+    if (err.config?.responseType === 'blob') {
+      const path = String(err.config.url || '').split('?')[0]
+      reportDebugEvent('E', 'api.js:response-error', 'authenticated blob request failed', { phase: 'request-end', resourceKind: path.endsWith('/thumbnail') ? 'thumbnail' : path.includes('avatar') ? 'avatar' : 'media', stableId: path.split('/').filter(Boolean).at(-1)?.slice(-6) || 'media', cachePath: 'network', status: Number(err.response?.status || 0), durationMs: Date.now() - Number(err.config._debugBlobStartedAt || Date.now()), cacheControl: String(err.response?.headers?.['cache-control'] || '').slice(0, 80), etagPresent: Boolean(err.response?.headers?.etag), expiresPresent: Boolean(err.response?.headers?.expires), errorKind: String(err.code || 'request-error').slice(0, 40) })
+    }
+    // #endregion
     if (err.response?.status === 401) {
       if (sessionStorage.getItem('tenant_impersonation') === '1') {
         sessionStorage.removeItem('tenant_token')

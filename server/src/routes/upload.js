@@ -134,6 +134,7 @@ function apkUpload(subDir) {
     const upload = multer({
       storage: buildStorage(subDir),
       limits: { fileSize: 200 * 1024 * 1024 },
+      defParamCharset: 'utf8',
       fileFilter: (uploadReq, file, cb) => {
         const ext = path.extname(file.originalname).toLowerCase();
         const mime = String(file.mimetype || '').toLowerCase();

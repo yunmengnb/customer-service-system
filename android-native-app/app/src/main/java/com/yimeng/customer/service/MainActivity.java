@@ -40,6 +40,7 @@ import java.nio.charset.StandardCharsets;
 public class MainActivity extends AppCompatActivity {
     private WebView webView;
     private ProgressBar loading;
+    private AttachmentStore attachmentStore;
     private String pendingUrl = AppConfig.MESSAGES_URL;
     private ValueCallback<Uri[]> fileChooserCallback;
     private AlertDialog activeStartupDialog;
@@ -63,6 +64,7 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
         webView = findViewById(R.id.web_view);
         loading = findViewById(R.id.loading);
+        attachmentStore = new AttachmentStore(this, webView);
         configureWebView();
         handleIntent(getIntent());
         requestNotificationPermission();
@@ -382,7 +384,23 @@ public class MainActivity extends AppCompatActivity {
 
     private final class NativeBridge {
         @JavascriptInterface public void syncTenantToken(String token) {
-            runOnUiThread(() -> startMessageService(token == null ? "" : token));
+            String safeToken = token == null ? "" : token.trim();
+            getSharedPreferences(AppConfig.PREFS_NAME, MODE_PRIVATE).edit()
+                    .putString(AppConfig.TOKEN_KEY, safeToken).commit();
+            attachmentStore.syncIdentity(safeToken);
+            runOnUiThread(() -> startMessageService(safeToken));
+        }
+
+        @JavascriptInterface public String getSavedAttachmentState(String attachmentId) {
+            return attachmentStore.state(attachmentId);
+        }
+
+        @JavascriptInterface public String saveAttachment(String attachmentId, String fileName, String mimeType) {
+            return attachmentStore.save(attachmentId, fileName, mimeType);
+        }
+
+        @JavascriptInterface public String openSavedAttachment(String attachmentId) {
+            return attachmentStore.open(attachmentId);
         }
 
         @JavascriptInterface public void showAbout() {

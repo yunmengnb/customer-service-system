@@ -321,6 +321,9 @@ JSON 请求使用 `Content-Type: application/json`，JSON body 限制 5mb。也�
 | POST /api/upload/tenant | T | F file!普通上传，配置类型/大小 | PublicUpload |
 | POST /api/upload/client | C | F file!普通上传，配置类型/大小 | PublicUpload |
 | POST /api/upload/complaint | CC | F file!投诉图片，配置大小、图片类型交集 | {url,signature,name,size,mimetype,isImage:true} |
+| POST /api/files/:id/playback | Any+附件权限 | P id=attachmentId；空JSON | {url,expiresAt:epoch毫秒}，HttpOnly短时Cookie；仅video，非访客须pv |
+| GET /api/files/:id/playback/:nonce | 播放Cookie+实时权限 | P id/nonce；H Range? | 200/206视频流；授权过期401，失效410 |
+| HEAD /api/files/:id/playback/:nonce | 播放Cookie+实时权限 | 同GET | 同GET响应头，无body |
 | GET /api/files/:id/status | Any+附件权限 | P id=attachmentId | {attachmentId,status,expiresAt}；只可用active附件成功 |
 | GET /api/files/:id/thumbnail | Any+附件权限 | P id=attachmentId；Range不作用于缩略图 | 文件流；无缩略图404，图片可回退原图 |
 | GET /api/files/:id | Any+附件权限 | P id=attachmentId；H Range?单字节区间 | 200文件流或206部分内容，详见7 |
@@ -376,6 +379,16 @@ PublicSettings仅返回：`siteTitle/siteKeywords/siteDescription/tenantRegister
 - pending默认24小时；active默认2天（均由设置控制新附件）。读取时检查expiresAt，不必等定时物理删除才失效；撤回变为deleting、随后清理，消息保留recalled状态。过期/已撤回/本侧删除/无有效关联消息返回4101/410；权限不足4031/403，ID或文件不存在4041/404。
 - 文件响应 `Cache-Control: private, no-store, max-age=0`、nosniff，inline UTF-8文件名；私有文件不能通过公开静态目录访问。前端通常带Bearer请求blob后生成对象URL，不应直接把JWT放下载query。
 - 原文件支持单Range：`bytes=0-1023`、`bytes=1024-`、`bytes=-1024`。有效范围206并有Content-Range/Content-Length/Accept-Ranges；无Range200。多范围、非法/越界范围416，带`Content-Range: bytes */总字节数`，无标准JSON；不支持multipart byte ranges。缩略图不执行Range。
+
+### 7.1 视频播放授权
+
+- 三端视频以已鉴权POST换取最长300秒的播放授权（不超过登录有效期），只返回受限URL和expiresAt；登录JWT和播放票据均不放URL。票据由JWT密钥派生的独立密钥签名，HS256、aud=attachment-playback、purpose=video，绑定附件ID、随机nonce及主体上下文。普通Bearer鉴权不能接受此票据。
+- HttpOnly、SameSite=Strict、host-only Cookie仅匹配每次预览独立路径，多标签页/多附件不覆盖；过期自动清除，不写应用存储或缓存。短期大量预览可能触发浏览器Cookie淘汰，表现为明确失败，可重新打开。HTTP同源可用；直接HTTPS或同Host HTTPS Origin签发Secure。HTTPS反代必须保留Host和Origin；不可信转发头不作为Secure依据。禁止在代理/APM日志记录Cookie/Set-Cookie。
+- 每个GET/HEAD重新回查当前主体状态、pv、租户/客户渠道及原附件可见性、消息撤回/单侧删除/失效。非访客旧登录令牌缺pv需重新登录。沿用原授权角色边界，不扩大管理员/租户权限。
+- 播放响应与授权响应no-store、no-referrer、nosniff。Express sendFile处理Range，包括开放/后缀、越界416；HEAD无body。非法或多段Range遵循Express行为（可能忽略返回200），不提供multipart承诺。
+- 到期终止仍在发送的响应；前端停止视频并提示点击重新授权，无自动重试。关闭/切换/撤回中止签发请求、移除src、停止媒体和定时器，迟到响应不能覆盖新预览。浏览器暂停后台计时不影响后端拒绝过期请求。每次请求校验不等于已发出字节可被追回。
+- 图片/缩略图继续鉴权blob和原下载功能；视频使用metadata preload、原生controls/playsinline和媒体事件状态。无attachmentId旧视频禁止直接URL预览，可走原下载兼容入口或重新上传。浏览器不支持的MIME/编码明确提示，不承诺所有MOV/WEBM编码均可播放。
+- 仅新会话MP4上传使用FFmpeg stream copy +faststart（30秒超时），同受保护目录临时输出；成功替换后stat/checksum，超限或失败保留原文件并清理临时文件。无旧库迁移、全量转码或HLS。
 
 ## 8. 消息幂等、撤回、单侧删除
 

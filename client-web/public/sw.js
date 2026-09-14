@@ -1,5 +1,6 @@
 // 忆梦云团队开发
-const CACHE_NAME = 'client-web-shell-v3'
+const CACHE_NAME = 'client-web-shell-v4'
+const PRESERVED_CACHES = new Set([CACHE_NAME])
 const APP_SHELL = ['/account', '/', '/favicon.svg', '/pwa-192.png', '/pwa-512.png', '/manifest.webmanifest']
 
 self.addEventListener('install', event => {

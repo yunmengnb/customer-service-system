@@ -6,6 +6,7 @@ import ChatPanel from './ChatPanel.vue'
 import api from '../../api'
 import { getTenantSocket } from '../../socket'
 import { cacheConversations, getCachedConversations, initializeChatCache, loadCachedAvatar, tenantCacheScope } from '../../chatCache'
+import { reportDebugEvent } from '../../attachmentActions'
 
 const route = useRoute()
 const router = useRouter()
@@ -31,6 +32,7 @@ let socket = null
 const avatarUrls = ref({})
 const failedAvatarUrls = ref({})
 const avatarRequests = new Map()
+const avatarScopes = new Map()
 
 function avatarSrc(url) {
   return avatarUrls.value[url] || url
@@ -43,17 +45,22 @@ function handleAvatarError(url) {
 }
 
 function loadAvatar(el, url) {
-  if (!url || avatarUrls.value[url]) return
+  if (!url || avatarUrls.value[url] || !isPrivateAvatarUrl(url)) return
   if (!avatarRequests.has(url)) {
-    avatarRequests.set(url, loadCachedAvatar(
-      tenantCacheScope(selectedChannelId.value),
+    const scope = tenantCacheScope(selectedChannelId.value)
+    const request = loadCachedAvatar(
+      scope,
       url,
       () => api.get(url, { baseURL: '', responseType: 'blob' }),
     ).then(blob => {
-      if (!blob) return
-      avatarUrls.value[url] = URL.createObjectURL(blob)
+      if (!blob || scope !== tenantCacheScope(selectedChannelId.value) || !el.isConnected) return
+      avatarUrls.value[url] = acquireObjectUrl(avatarCacheKey(scope, url), blob)
+      avatarScopes.set(url, scope)
       el.src = avatarUrls.value[url]
-    }).catch(() => {}).finally(() => avatarRequests.delete(url)))
+    }).catch(() => {}).finally(() => {
+      if (avatarRequests.get(url) === request) avatarRequests.delete(url)
+    })
+    avatarRequests.set(url, request)
   }
 }
 
@@ -226,6 +233,9 @@ function returnToChannels() {
 }
 
 function selectConv(id) {
+  // #region debug-point C:desktop-list-entry
+  reportDebugEvent('C', 'desktop/Messages.vue:selectConv', 'conversation selected', { phase: 'list-entry', conversationId: String(id || '').slice(-6), targetPresentBefore: Boolean(targetMessageId.value), routeMessageFlag: route.query.message !== undefined, routeAroundFlag: route.query.around !== undefined, keepAliveCandidate: true })
+  // #endregion
   selectedId.value = id
   targetMessageId.value = null
   clearConversationUnread(id)
@@ -305,7 +315,11 @@ onUnmounted(() => {
   socket?.off('conversation.accepted', handleConversationUpdated)
   socket?.off('conversation.updated', handleConversationUpdated)
   socket?.off('message.new', handleNewMessage)
-  Object.values(avatarUrls.value).forEach(url => URL.revokeObjectURL(url))
+  Object.keys(avatarUrls.value).forEach(url => {
+    const scope = avatarScopes.get(url)
+    if (scope) releaseObjectUrl(avatarCacheKey(scope, url))
+  })
+  avatarScopes.clear()
 })
 </script>
 
@@ -409,7 +423,7 @@ onUnmounted(() => {
 
         <!-- 右栏：聊天面板 -->
         <main class="msg-main">
-          <ChatPanel v-if="selectedId" :conversationId="selectedId" :target-message-id="targetMessageId" @conversation-read="clearConversationUnread" @message-located="targetMessageId = null" />
+          <ChatPanel v-if="selectedId" :conversationId="selectedId" :target-message-id="targetMessageId" @conversation-read="clearConversationUnread" />
           <div v-else class="msg-welcome">
             <div class="mw-emoji">👋</div>
             <div class="mw-title">欢迎来到消息中心</div>

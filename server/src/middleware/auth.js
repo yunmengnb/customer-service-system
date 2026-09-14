@@ -11,15 +11,15 @@ const Channel = require('../models/Channel');
  * 平台管理员认证中间件
  * 同时检查 token 合法性 + admin 是否活跃
  */
-async function authAdmin(req, res, next) {
+async function authAdmin(req, res, next, verifiedIdentity = null) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
   
-  if (!token) {
+  if (!token && !verifiedIdentity) {
     return error(res, '未登录', 4011, 401);
   }
   
-  const payload = verifyToken(token);
+  const payload = verifiedIdentity || verifyToken(token);
   if (!payload || payload.type !== 'admin') {
     return error(res, '令牌无效或已过期', 4012, 401);
   }
@@ -61,15 +61,15 @@ function requireSuperAdmin(req, res, next) {
 /**
  * 租户用户认证中间件（包含所有者/管理员/员工）
  */
-async function authTenantUser(req, res, next) {
+async function authTenantUser(req, res, next, verifiedIdentity = null) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
   
-  if (!token) {
+  if (!token && !verifiedIdentity) {
     return error(res, '未登录', 4011, 401);
   }
   
-  const payload = verifyToken(token);
+  const payload = verifiedIdentity || verifyToken(token);
   if (!payload || payload.type !== 'tenant_user') {
     return error(res, '令牌无效或已过期', 4012, 401);
   }
@@ -117,11 +117,11 @@ function requireTenantAdmin(req, res, next) {
 /**
  * 客户认证中间件
  */
-async function authCustomer(req, res, next) {
+async function authCustomer(req, res, next, verifiedIdentity = null) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
-  if (!token) return error(res, '未登录', 4011, 401);
-  const payload = verifyToken(token);
+  if (!token && !verifiedIdentity) return error(res, '未登录', 4011, 401);
+  const payload = verifiedIdentity || verifyToken(token);
   if (!payload || payload.type !== 'customer') return error(res, '令牌无效或已过期', 4012, 401);
 
   try {

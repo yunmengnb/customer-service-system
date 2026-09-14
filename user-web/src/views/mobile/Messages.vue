@@ -4,7 +4,8 @@ import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '../../api'
 import { getTenantSocket } from '../../socket'
-import { cacheConversations, getCachedConversations, initializeChatCache, loadCachedAvatar, tenantCacheScope } from '../../chatCache'
+import { acquireObjectUrl, avatarCacheKey, cacheConversations, getCachedConversations, initializeChatCache, isPrivateAvatarUrl, loadCachedAvatar, releaseObjectUrl, tenantCacheScope } from '../../chatCache'
+import { reportDebugEvent } from '../../attachmentActions'
 
 const route = useRoute()
 const router = useRouter()
@@ -28,6 +29,7 @@ let socket = null
 const avatarUrls = ref({})
 const failedAvatarUrls = ref({})
 const avatarRequests = new Map()
+const avatarScopes = new Map()
 
 function avatarSrc(url) {
   return avatarUrls.value[url] || url
@@ -40,17 +42,22 @@ function handleAvatarError(url) {
 }
 
 function loadAvatar(el, url) {
-  if (!url || avatarUrls.value[url]) return
+  if (!url || avatarUrls.value[url] || !isPrivateAvatarUrl(url)) return
   if (!avatarRequests.has(url)) {
-    avatarRequests.set(url, loadCachedAvatar(
-      tenantCacheScope(selectedChannelId.value),
+    const scope = tenantCacheScope(selectedChannelId.value)
+    const request = loadCachedAvatar(
+      scope,
       url,
       () => api.get(url, { baseURL: '', responseType: 'blob' }),
     ).then(blob => {
-      if (!blob) return
-      avatarUrls.value[url] = URL.createObjectURL(blob)
+      if (!blob || scope !== tenantCacheScope(selectedChannelId.value) || !el.isConnected) return
+      avatarUrls.value[url] = acquireObjectUrl(avatarCacheKey(scope, url), blob)
+      avatarScopes.set(url, scope)
       el.src = avatarUrls.value[url]
-    }).catch(() => {}).finally(() => avatarRequests.delete(url)))
+    }).catch(() => {}).finally(() => {
+      if (avatarRequests.get(url) === request) avatarRequests.delete(url)
+    })
+    avatarRequests.set(url, request)
   }
 }
 
@@ -217,11 +224,17 @@ function handleNewMessage(message) {
 }
 
 function openConversation(conversation) {
+  // #region debug-point C:mobile-list-entry
+  reportDebugEvent('C', 'mobile/Messages.vue:openConversation', 'conversation selected', { phase: 'list-entry', conversationId: String(conversation?._id || '').slice(-6), searchActive: Boolean(search.value.trim()), searchMatch: Boolean(conversation?.searchMatch), routeMessageFlag: route.query.message !== undefined, routeAroundFlag: route.query.around !== undefined, keepAliveCandidate: true })
+  // #endregion
   if (search.value.trim() && conversation.searchMatch) {
     openSearchMatches(conversation)
     return
   }
-  router.push({ path: `/m/messages/${conversation._id}`, query: { ...route.query } })
+  const query = { ...route.query }
+  delete query.message
+  delete query.around
+  router.push({ path: `/m/messages/${conversation._id}`, query })
 }
 
 async function openSearchMatches(conversation) {
@@ -302,7 +315,11 @@ onUnmounted(() => {
   socket?.off('conversation.accepted', handleConversationUpdated)
   socket?.off('conversation.updated', handleConversationUpdated)
   socket?.off('message.new', handleNewMessage)
-  Object.values(avatarUrls.value).forEach(url => URL.revokeObjectURL(url))
+  Object.keys(avatarUrls.value).forEach(url => {
+    const scope = avatarScopes.get(url)
+    if (scope) releaseObjectUrl(avatarCacheKey(scope, url))
+  })
+  avatarScopes.clear()
 })
 </script>
 

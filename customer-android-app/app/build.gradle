@@ -8,24 +8,29 @@ configurations.configureEach {
     exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk8'
 }
 
-def releaseKeystore = rootProject.file('signing/customer-release.jks')
-def releaseStorePassword = providers.gradleProperty('CUSTOMER_RELEASE_STORE_PASSWORD')
-        .orElse(providers.environmentVariable('CUSTOMER_RELEASE_STORE_PASSWORD'))
-        .orNull
-def releaseKeyAlias = providers.gradleProperty('CUSTOMER_RELEASE_KEY_ALIAS')
-        .orElse(providers.environmentVariable('CUSTOMER_RELEASE_KEY_ALIAS'))
-        .orNull
-def releaseKeyPassword = providers.gradleProperty('CUSTOMER_RELEASE_KEY_PASSWORD')
-        .orElse(providers.environmentVariable('CUSTOMER_RELEASE_KEY_PASSWORD'))
-        .orNull
+def releasePropertiesFile = rootProject.file('signing/customer-release-v2.properties')
+def releaseProperties = new Properties()
+if (releasePropertiesFile.isFile()) {
+    releasePropertiesFile.withInputStream { releaseProperties.load(it) }
+}
+def releaseValue = { String name ->
+    def environmentValue = providers.environmentVariable(name).orNull
+    environmentValue ?: releaseProperties.getProperty(name) ?: providers.gradleProperty(name).orNull ?: ''
+}
+def releaseKeystorePath = releaseValue('CUSTOMER_RELEASE_STORE_FILE')
+def releaseKeystore = releaseKeystorePath ? rootProject.file(releaseKeystorePath) : null
+def releaseStorePassword = releaseValue('CUSTOMER_RELEASE_STORE_PASSWORD')
+def releaseKeyAlias = releaseValue('CUSTOMER_RELEASE_KEY_ALIAS')
+def releaseKeyPassword = releaseValue('CUSTOMER_RELEASE_KEY_PASSWORD')
 def releaseBuildRequested = gradle.startParameter.taskNames.any {
     it.toLowerCase(Locale.ROOT).contains('release')
 }
-def releaseSigningReady = releaseKeystore.isFile() && releaseStorePassword && releaseKeyAlias && releaseKeyPassword
+def releaseSigningReady = releaseKeystore?.isFile() && releaseStorePassword && releaseKeyAlias && releaseKeyPassword
 
 if (releaseBuildRequested && !releaseSigningReady) {
     throw new GradleException(
-            'Release 签名配置不完整。请通过环境变量或用户级 ~/.gradle/gradle.properties 设置 ' +
+            'Release 签名配置不完整。请配置 signing/customer-release-v2.properties，' +
+                    '或通过环境变量/用户级 ~/.gradle/gradle.properties 设置 CUSTOMER_RELEASE_STORE_FILE、' +
                     'CUSTOMER_RELEASE_STORE_PASSWORD、CUSTOMER_RELEASE_KEY_ALIAS、CUSTOMER_RELEASE_KEY_PASSWORD。'
     )
 }
@@ -38,8 +43,8 @@ android {
         applicationId 'com.yimeng.customer'
         minSdk 24
         targetSdk 35
-        versionCode 8
-        versionName '1.1.6'
+        versionCode 9
+        versionName '1.1.7'
     }
 
     signingConfigs {

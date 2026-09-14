@@ -76,6 +76,7 @@ router.post('/', authCustomer, async (req, res) => {
         },
       }),
       limits: { fileSize: settings.upload.maxFileSizeMB * 1024 * 1024 },
+      defParamCharset: 'utf8',
       fileFilter: (uploadReq, file, cb) => {
         const ext = path.extname(file.originalname).toLowerCase().slice(1);
         if (allowed.has(ext) && IMAGE_MIMES[ext] === String(file.mimetype).toLowerCase()) return cb(null, true);

@@ -44,6 +44,21 @@ function categoryFor(mime) {
   return 'file';
 }
 
+async function fastStart(input, maxBytes = Infinity) {
+  const output = path.join(path.dirname(input), 'faststart-' + require('crypto').randomUUID() + '.mp4');
+  try {
+    await new Promise((resolve, reject) => execFile(ffmpegPath, [
+      '-hide_banner', '-loglevel', 'error', '-n', '-i', input, '-map', '0',
+      '-c', 'copy', '-movflags', '+faststart', output,
+    ], { windowsHide: true, timeout: 30000 }, err => err ? reject(err) : resolve()));
+    const stat = await fs.promises.stat(output);
+    if (!stat.size || stat.size > maxBytes) return false;
+    await fs.promises.rename(output, input);
+    return true;
+  } catch (_) { return false; } // Original stays intact when remux fails.
+  finally { await fs.promises.rm(output, { force: true }).catch(() => {}); }
+}
+
 async function makeThumbnail(input, output) {
   await new Promise((resolve, reject) => execFile(ffmpegPath, [
     '-hide_banner', '-loglevel', 'error', '-y', '-ss', '0.2', '-i', input,
@@ -99,7 +114,11 @@ async function resolveConversation(req, client) {
 async function upload(req, res, client) {
   const settings = await getSystemSettings();
   const maxFileSizeMB = Math.min(Math.max(Number(settings.upload.maxFileSizeMB) || 10, 1), 1024);
-  const parser = multer({ storage: multer.memoryStorage(), limits: { fileSize: maxFileSizeMB * 1024 * 1024 } }).single('file');
+  const parser = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: maxFileSizeMB * 1024 * 1024 },
+    defParamCharset: 'utf8',
+  }).single('file');
   parser(req, res, async parseError => {
     if (parseError) return error(res, parseError.code === 'LIMIT_FILE_SIZE' ? `文件大小不能超过 ${maxFileSizeMB}MB` : '文件上传失败', 4001, 400);
     if (!req.file) return error(res, '未上传文件');
@@ -124,6 +143,8 @@ async function upload(req, res, client) {
       await fs.promises.mkdir(diskDir, { recursive: true });
       const diskPath = path.join(UPLOAD_ROOT, ...storageKey.split('/'));
       await fs.promises.writeFile(diskPath, req.file.buffer, { flag: 'wx' });
+      if (ext === 'mp4') await fastStart(diskPath, maxFileSizeMB * 1024 * 1024);
+      const storedSize = (await fs.promises.stat(diskPath)).size;
       if (thumbnailStorageKey) await makeThumbnail(diskPath, path.join(UPLOAD_ROOT, ...thumbnailStorageKey.split('/')));
       const uploadedAt = new Date();
       const attachment = await ConversationAttachment.create({
@@ -139,7 +160,7 @@ async function upload(req, res, client) {
         originalName: path.basename(req.file.originalname).replace(/[\r\n"]/g, '').slice(0, 255),
         extension: ext,
         mimeType: req.file.mimetype,
-        size: req.file.size,
+        size: storedSize,
         checksum: await checksum(diskPath),
         uploadedAt,
         deleteAfter: new Date(uploadedAt.getTime() + settings.storage.pendingAttachmentHours * 3600000),
@@ -160,6 +181,7 @@ async function upload(req, res, client) {
 }
 
 module.exports = {
+  fastStart,
   uploadTenant(req, res) { return upload(req, res, false); },
   uploadCustomer(req, res) { return upload(req, res, true); },
 };
